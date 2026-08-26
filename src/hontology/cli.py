@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 from hontology.config import get_settings
 from hontology.db.session import session_scope
-from hontology.ingest import service
+from hontology.ingest import scrape, service
 from hontology.judge.providers.base import ProviderError
 from hontology.judge.providers.ollama import OllamaChatProvider
 from hontology.ontology import service as ontology_service
@@ -144,6 +144,32 @@ def ingest_backfill(start: str, end: str) -> None:
     with session_scope() as session:
         result = service.backfill(session, start, end)
     typer.echo(f"processed {result['processed']} slice(s) from {start} to {end}")
+
+
+@ingest_app.command("scrape")
+def ingest_scrape(
+    limit: int | None = typer.Option(None, help="Max documents this run (default: budget)."),
+    retry_failed: bool = typer.Option(
+        False, help="Also re-attempt URLs already recorded as failures."
+    ),
+    reader_proxy: bool = typer.Option(
+        False, help="Allow the third-party reader service as a last resort."
+    ),
+) -> None:
+    """Fetch article text for documents that do not have it yet."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(message)s")
+    with session_scope() as session:
+        result = scrape.scrape_pending(
+            session, limit=limit, retry_failed=retry_failed, use_reader_proxy=reader_proxy
+        )
+
+    typer.echo(
+        f"attempted {result['attempted']}: {result['ok']} ok, {result['junk']} junk, "
+        f"{result['failed']} failed, {result['blocked_by_robots']} blocked by robots"
+    )
+    if result["methods"]:
+        typer.echo(f"extractors   {result['methods']}")
+    typer.echo(f"remaining    {result['pending_remaining']}")
 
 
 @ingest_app.command("watch")

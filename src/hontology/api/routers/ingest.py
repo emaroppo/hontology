@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from hontology.db.session import get_db
+from hontology.ingest import scrape as scrape_service
 from hontology.ingest import service
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -64,3 +65,23 @@ def backfill(payload: BackfillIn, db: Session = Depends(get_db)):
         raise HTTPException(
             http_status.HTTP_502_BAD_GATEWAY, f"backfill failed: {exc}"
         ) from exc
+
+
+class ScrapeIn(BaseModel):
+    limit: int | None = None
+    retry_failed: bool = False
+    # The third-party reader service sends target URLs to an external host, so it
+    # stays opt-in per request rather than becoming a silent fallback.
+    reader_proxy: bool = False
+
+
+@router.post("/scrape")
+def scrape(payload: ScrapeIn | None = None, db: Session = Depends(get_db)):
+    """Fetch article text for documents that do not have it yet."""
+    body = payload or ScrapeIn()
+    return scrape_service.scrape_pending(
+        db,
+        limit=body.limit,
+        retry_failed=body.retry_failed,
+        use_reader_proxy=body.reader_proxy,
+    )

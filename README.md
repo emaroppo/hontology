@@ -9,9 +9,9 @@ pipeline finds evidence of them in the [GDELT](https://www.gdeltproject.org/)
 global news feed, then scores itself against ground truth you accumulate as you
 go.
 
-> **Status: in development.** You can define an ontology and pull the live
-> GDELT feed into a corpus today. Scraping, detection and evaluation are next
-> — see [Roadmap](#roadmap).
+> **Status: in development.** You can define an ontology, pull the live GDELT
+> feed, and scrape article text today. Detection and evaluation are next —
+> see [Roadmap](#roadmap).
 
 ---
 
@@ -162,6 +162,30 @@ What the watcher does that a `while true; sleep 900` loop does not:
 - **Shuts down gracefully.** SIGTERM finishes and commits the slice in flight
   instead of losing it, and the sleep is interruptible so stopping is immediate.
 
+### Fetching article text
+
+The feed gives URLs, not article bodies. Fetching them is a separate, bounded step:
+
+```bash
+hontology ingest scrape --limit 200
+```
+
+Extraction runs a **fallback chain behind a quality gate** — trafilatura first,
+then readability, with a third-party reader service available but off by default
+because it sends target URLs to an external host.
+
+The gate is the part that matters. A failed fetch is easy to spot; the expensive
+failure is a *successful* fetch of something that is not an article — a 404 page
+served with a 200, a paywall stub, a cookie wall, a navigation dump. That text
+reads fine, embeds fine, and quietly degrades everything downstream. So junk is
+treated as **failure**: it does not end the chain, it falls through to the next
+extractor, which is what makes having a chain worth anything.
+
+Fetching is polite by construction: robots.txt honored and cached per host
+(a 5xx on robots means *disallow*, per RFC 9309, rather than assuming permission),
+requests to one host serialized with a minimum gap while concurrency happens
+across hosts, retries only on transient statuses, and a hard per-run budget.
+
 `lag_slices` is the number to watch. It is `null` before the first ingest rather
 than `0`, because a fresh install that has never run is idle, not current.
 
@@ -208,7 +232,7 @@ A few decisions that are load-bearing and non-obvious:
 - [x] Ontology service, import/export, snapshots, API and editor UI
 - [x] CAMEO ingest, embeddings, similarity review
 - [x] GDELT ingest: watermarking, catch-up, backfill, optional continuous watcher
-- [ ] Article scraping with a polite bounded fetcher and content-addressed cache
+- [x] Article scraping: extractor chain, quality gate, robots and rate limiting
 - [ ] Run configuration, both retrieval sources, judge loop with resume
 - [ ] Ground-truth bank, labeling queue, staleness handling
 - [ ] Metrics, A/B comparison, consistency checks, regression gate, leaderboard
