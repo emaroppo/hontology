@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     # --- Provider defaults (behavior: hashed when a run adopts them) --------
     default_judge_provider: str = "ollama"
-    default_judge_model: str = "qwen2.5:7b-instruct"
+    default_judge_model: str = "huihui_ai/qwen3.5-abliterated:9b"
     default_embed_provider: str = "ollama"
     default_embed_model: str = "nomic-embed-text"
 

@@ -1,0 +1,25 @@
+{
+  "name": "baseline-semantic",
+  "description": "Semantic retrieval with adaptive cutoff, strict judge prompt.",
+  "common": {
+    "ontology_version": "latest",
+    "body_limit": 2500
+  },
+  "candidates": {
+    "source": "semantic",
+    "embed_model": "nomic-embed-text",
+    "concept_fields": "name+definition",
+    "selection": "adaptive",
+    "min_score": 0.5,
+    "rel_margin": 0.05,
+    "max_k": 3,
+    "pool_size": 8
+  },
+  "judge": {
+    "provider": "ollama",
+    "model": "huihui_ai/qwen3.5-abliterated:9b",
+    "prompt_id": "strict_v1",
+    "think": false,
+    "samples": 1
+  }
+}

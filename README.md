@@ -9,9 +9,9 @@ pipeline finds evidence of them in the [GDELT](https://www.gdeltproject.org/)
 global news feed, then scores itself against ground truth you accumulate as you
 go.
 
-> **Status: in development.** You can define an ontology, pull the live GDELT
-> feed, and scrape article text today. Detection and evaluation are next —
-> see [Roadmap](#roadmap).
+> **Status: in development.** The pipeline runs end to end today: define an
+> ontology, pull the live GDELT feed, scrape article text, retrieve candidates
+> and judge them. The evaluation layer is next — see [Roadmap](#roadmap).
 
 ---
 
@@ -191,6 +191,48 @@ than `0`, because a fresh install that has never run is idle, not current.
 
 ---
 
+## Running detection
+
+A run is one JSON file. Check what it will cost before paying for it:
+
+```bash
+hontology run keys examples/baseline.json --ontology-version v1
+#   candidates  5b2874d141ad
+#   judge       219a3416600d_5b2874d141ad
+
+hontology run keys examples/lenient-prompt.json --ontology-version v1
+#   candidates  5b2874d141ad      <- identical: retrieval will be reused
+#   judge       5dc88ccdca0d_5b2874d141ad
+```
+
+Those two configs differ only in `judge.prompt_id`, so they share a candidates
+key and the second run **copies** the first's retrieval instead of re-embedding
+the corpus. Prompt iteration is the loop you run most, and this is what makes it
+cost only the judging.
+
+```bash
+hontology run start <ontology-id> examples/baseline.json --documents 100
+hontology run resume <run-id>      # continues, skipping pairs already judged
+hontology run list
+```
+
+**Resume is per pair.** Each verdict commits as it completes, so a run killed two
+thirds through restarts from where it stopped. With a local model that is
+wall-clock time; with a hosted one it is money.
+
+**Failures are recorded, not raised.** An unparseable response becomes a verdict
+row carrying the error, and the loop continues. A separate liveness check asserts
+every pair produced a usable verdict — worth its own gate because a
+malformed-output bug does not move precision or recall, it silently removes pairs
+from the denominator.
+
+**Repeated sampling beats self-reported confidence.** Set `judge.samples` above 1
+and the majority vote's fraction replaces the model's own number. A model asked
+five times and answering yes three times is uncertain in a way its stated 0.95
+does not capture.
+
+---
+
 ## Design notes
 
 A few decisions that are load-bearing and non-obvious:
@@ -233,6 +275,6 @@ A few decisions that are load-bearing and non-obvious:
 - [x] CAMEO ingest, embeddings, similarity review
 - [x] GDELT ingest: watermarking, catch-up, backfill, optional continuous watcher
 - [x] Article scraping: extractor chain, quality gate, robots and rate limiting
-- [ ] Run configuration, both retrieval sources, judge loop with resume
+- [x] Run configuration, both retrieval sources, judge loop with resume
 - [ ] Ground-truth bank, labeling queue, staleness handling
 - [ ] Metrics, A/B comparison, consistency checks, regression gate, leaderboard

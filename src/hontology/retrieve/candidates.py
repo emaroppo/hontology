@@ -1,0 +1,302 @@
+"""Candidate selection: two strategies, one contract.
+
+Both sources emit the same `(document, concept, score, rank, selected)` rows, so
+nothing downstream can tell which produced its input and the two can be A/B'd
+directly on the same ground truth.
+
+**The full pre-cutoff pool is stored**, with ``selected`` marking what survived.
+That extra column separates two questions a single number conflates:
+
+    did retrieval rank the right concept highly?   — measured over the pool
+    did the cutoff keep it?                        — measured over `selected`
+
+A run that loses recall at the cutoff needs a different fix from one whose
+embedding never surfaced the concept at all, and without the pool you cannot tell
+which you are looking at.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+
+from sqlalchemy import delete, select, text
+from sqlalchemy.orm import Session
+
+from hontology.config import get_settings
+from hontology.db.models import Candidate, Code, Concept, ConceptCode, Document, FeedEvent
+from hontology.retrieve import embed
+
+log = logging.getLogger(__name__)
+
+# Most specific first. The first tier that maps to any concept wins; we do not
+# fall back to a broader tier once a finer one has matched, because a broader
+# match would drag in far more concepts than the event actually supports.
+CODE_TIERS = ("event_code", "base_code", "root_code")
+
+
+@dataclass
+class CandidateStats:
+    documents: int = 0
+    pool_rows: int = 0
+    selected_rows: int = 0
+
+    def as_dict(self) -> dict:
+        return {
+            "documents": self.documents,
+            "pool_rows": self.pool_rows,
+            "selected_rows": self.selected_rows,
+        }
+
+
+def select_adaptive(
+    ranked: list[tuple[int, float]], *, min_score: float, rel_margin: float, max_k: int
+) -> list[tuple[int, float]]:
+    """Keep concepts within *rel_margin* of this document's best score.
+
+    A flat threshold suits documents unevenly: one whose best match scores 0.8
+    and one whose best scores 0.5 need different cutoffs, and a single number
+    either floods the first or starves the second.
+    """
+    if not ranked:
+        return []
+    cutoff = max(min_score, ranked[0][1] - rel_margin)
+    return [(cid, score) for cid, score in ranked if score >= cutoff][:max_k]
+
+
+def _document_body(document: Document, limit: int) -> str | None:
+    settings = get_settings()
+    if not document.body_path:
+        return None
+    path = settings.scrape_cache_dir / document.body_path
+    if not path.exists():
+        # The file is the source of truth; a missing one means no usable body.
+        return None
+    return path.read_text(encoding="utf-8")[:limit]
+
+
+def _clear_run(session: Session, run_id: int) -> None:
+    session.execute(delete(Candidate).where(Candidate.run_id == run_id))
+    session.flush()
+
+
+# ---------------------------------------------------------------------------
+# Semantic
+# ---------------------------------------------------------------------------
+
+_NEAREST_CONCEPTS = text(
+    """
+    SELECT object_id AS concept_id,
+           1 - (embedding <=> CAST(:vec AS vector)) AS score
+    FROM embeddings
+    WHERE model_id = :model_id
+      AND object_type = 'concept'
+      AND text_key = ANY(:text_keys)
+    ORDER BY embedding <=> CAST(:vec AS vector)
+    LIMIT :pool_size
+    """
+)
+
+
+def build_semantic(
+    session: Session,
+    run_id: int,
+    *,
+    ontology_id: int,
+    documents: list[Document],
+    config: dict,
+    embed_body_limit: int,
+) -> CandidateStats:
+    """Rank concepts against each document body by cosine similarity."""
+    settings = get_settings()
+    provider = embed.get_provider(config["embed_provider"], settings.ollama_host)
+    model = config["embed_model"]
+
+    model_id, concept_keys = embed.embed_concepts(
+        session, provider, model, ontology_id, fields=config["concept_fields"]
+    )
+    if not concept_keys:
+        return CandidateStats()
+    text_keys = list(set(concept_keys.values()))
+
+    stats = CandidateStats()
+    query_prefix = embed.query_prefix(model)
+
+    for document in documents:
+        body = _document_body(document, embed_body_limit)
+        if not body:
+            continue
+
+        vector = provider.embed(
+            [query_prefix + embed.normalize_for_embedding(body)], model=model
+        )[0]
+        literal = "[" + ",".join(str(v) for v in vector) + "]"
+
+        pool = [
+            (int(row[0]), float(row[1]))
+            for row in session.execute(
+                _NEAREST_CONCEPTS,
+                {
+                    "vec": literal,
+                    "model_id": model_id,
+                    "text_keys": text_keys,
+                    "pool_size": config["pool_size"],
+                },
+            ).all()
+        ]
+        if not pool:
+            continue
+
+        chosen = (
+            select_adaptive(
+                pool,
+                min_score=config["min_score"],
+                rel_margin=config["rel_margin"],
+                max_k=config["max_k"],
+            )
+            if config["selection"] == "adaptive"
+            else pool[: config["top_k"]]
+        )
+        chosen_ids = {cid for cid, _ in chosen}
+
+        for rank, (concept_id, score) in enumerate(pool, start=1):
+            session.add(
+                Candidate(
+                    run_id=run_id,
+                    document_id=document.id,
+                    concept_id=concept_id,
+                    source="semantic",
+                    score=score,
+                    rank=rank,
+                    selected=concept_id in chosen_ids,
+                )
+            )
+        stats.documents += 1
+        stats.pool_rows += len(pool)
+        stats.selected_rows += len(chosen_ids)
+
+    session.flush()
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Code
+# ---------------------------------------------------------------------------
+
+
+def build_code(
+    session: Session,
+    run_id: int,
+    *,
+    ontology_id: int,
+    documents: list[Document],
+) -> CandidateStats:
+    """Reach concepts through the feed's own event codes.
+
+    Cheap — no model involved — but only meaningful for an ontology whose
+    concepts have been mapped onto the code system.
+    """
+    concept_ids = {
+        c.id for c in session.scalars(select(Concept).where(Concept.ontology_id == ontology_id))
+    }
+    if not concept_ids:
+        return CandidateStats()
+
+    # code string -> concepts linked to it
+    links: dict[str, set[int]] = {}
+    for link, code in session.execute(
+        select(ConceptCode, Code)
+        .join(Code, Code.id == ConceptCode.code_id)
+        .where(ConceptCode.concept_id.in_(concept_ids))
+    ).all():
+        links.setdefault(code.code, set()).add(link.concept_id)
+
+    if not links:
+        return CandidateStats()
+
+    document_ids = [d.id for d in documents]
+    events = session.scalars(
+        select(FeedEvent).where(FeedEvent.document_id.in_(document_ids))
+    ).all()
+
+    # document -> {concept: matched code and tier}
+    matched: dict[int, dict[int, tuple[str, str]]] = {}
+    for event in events:
+        if event.document_id is None:
+            # The feed row lost its document (deleted, or never resolved).
+            continue
+        for tier in CODE_TIERS:
+            code_value = getattr(event, tier)
+            if not code_value:
+                continue
+            hits = links.get(code_value)
+            if not hits:
+                continue
+            bucket = matched.setdefault(event.document_id, {})
+            for concept_id in hits:
+                bucket.setdefault(concept_id, (code_value, tier.replace("_code", "")))
+            # First tier that matched anything wins for this event.
+            break
+
+    stats = CandidateStats()
+    for document_id, concepts in matched.items():
+        for rank, (concept_id, (code_value, tier)) in enumerate(concepts.items(), start=1):
+            session.add(
+                Candidate(
+                    run_id=run_id,
+                    document_id=document_id,
+                    concept_id=concept_id,
+                    source="code",
+                    # A code match is a set membership, not a ranking, so there is
+                    # no meaningful score to report here.
+                    score=None,
+                    rank=rank,
+                    selected=True,
+                    matched_code=code_value,
+                    matched_level=tier,
+                )
+            )
+        stats.documents += 1
+        stats.pool_rows += len(concepts)
+        stats.selected_rows += len(concepts)
+
+    session.flush()
+    return stats
+
+
+def build_candidates(
+    session: Session,
+    run_id: int,
+    *,
+    ontology_id: int,
+    documents: list[Document],
+    config: dict,
+    embed_body_limit: int,
+) -> dict:
+    """Dispatch to the configured source, replacing any previous rows for the run."""
+    _clear_run(session, run_id)
+
+    if config["source"] == "code":
+        stats = build_code(session, run_id, ontology_id=ontology_id, documents=documents)
+    else:
+        stats = build_semantic(
+            session,
+            run_id,
+            ontology_id=ontology_id,
+            documents=documents,
+            config=config,
+            embed_body_limit=embed_body_limit,
+        )
+
+    log.info("candidates (%s): %s", config["source"], stats.as_dict())
+    return stats.as_dict() | {"source": config["source"]}
+
+
+def selected_pairs(session: Session, run_id: int) -> list[Candidate]:
+    return list(
+        session.scalars(
+            select(Candidate)
+            .where(Candidate.run_id == run_id, Candidate.selected.is_(True))
+            .order_by(Candidate.document_id, Candidate.concept_id)
+        )
+    )

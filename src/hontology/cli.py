@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 
 import typer
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from hontology.config import get_settings
 from hontology.db.session import session_scope
@@ -21,7 +21,9 @@ app = typer.Typer(help="hontology — ontology-driven event detection and evalua
 ontology_app = typer.Typer(help="Manage ontologies.")
 ingest_app = typer.Typer(help="Pull slices from the news feed.")
 app.add_typer(ontology_app, name="ontology")
+run_app = typer.Typer(help="Configure and execute detection runs.")
 app.add_typer(ingest_app, name="ingest")
+app.add_typer(run_app, name="run")
 
 
 @app.command()
@@ -193,6 +195,122 @@ def ingest_watch(
     watcher = Watcher(grace_seconds=grace_seconds, max_slices=max_slices)
     watcher.install_signal_handlers()
     watcher.run()
+
+
+# ---------------------------------------------------------------------------
+# Runs
+# ---------------------------------------------------------------------------
+
+
+def _load_run(session, run_id: int):
+    """Fetch a run or exit with a clear message rather than a traceback."""
+    from hontology.db.models import Run
+
+    run = session.get(Run, run_id)
+    if run is None:
+        typer.secho(f"no run with id {run_id}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    return run
+
+
+@run_app.command("prompts")
+def run_prompts() -> None:
+    """List the registered prompt templates."""
+    from hontology.judge import prompts
+
+    for prompt_id in prompts.available():
+        template = prompts.get(prompt_id)
+        typer.echo(f"{prompt_id:<20} {template.mode}")
+
+
+@run_app.command("keys")
+def run_keys(config_path: Path, ontology_version: str = "v1") -> None:
+    """Show the stage keys a config resolves to, without executing anything.
+
+    Useful for checking what an edit will recompute before paying for it.
+    """
+    from hontology.evalkit import config as run_config
+
+    normalized = run_config.normalize(json.loads(config_path.read_text(encoding="utf-8")))
+    keys = run_config.stage_keys(normalized, ontology_version)
+    typer.echo(f"candidates  {keys['candidates']}")
+    typer.echo(f"judge       {keys['judge']}")
+
+
+@run_app.command("list")
+def run_list() -> None:
+    """List runs with their status and stage keys."""
+    from hontology.db.models import Run
+
+    with session_scope() as session:
+        runs = list(session.scalars(select(Run).order_by(Run.id)))
+        if not runs:
+            typer.echo("(no runs yet)")
+            return
+        for run in runs:
+            typer.echo(
+                f"{run.id:>4}  {run.status:<10} {run.name:<24} "
+                f"{run.ontology_version:<5} cand={run.candidates_key} "
+                f"judge={run.judge_key.split('_')[0]}"
+            )
+
+
+@run_app.command("start")
+def run_start(
+    ontology_id: int,
+    config_path: Path,
+    name: str | None = typer.Option(None, help="Override the config's name."),
+    documents: int = typer.Option(100, help="How many documents to consider."),
+    judge_limit: int | None = typer.Option(None, help="Cap pairs judged this pass."),
+    skip_judge: bool = typer.Option(False, help="Build candidates only."),
+) -> None:
+    """Execute a run from a JSON config."""
+    from hontology.evalkit import runner
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(message)s")
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+
+    with session_scope() as session:
+        run = runner.create_run(session, ontology_id=ontology_id, config=payload, name=name)
+        run_id = run.id
+        typer.echo(f"run {run_id}: candidates={run.candidates_key} judge={run.judge_key}")
+
+    with session_scope() as session:
+        result = runner.execute(
+            session,
+            _load_run(session, run_id),
+            document_limit=documents,
+            judge_limit=judge_limit,
+            skip_judge=skip_judge,
+        )
+
+    typer.echo(f"candidates  {result['candidates']}")
+    if result.get("reused_from_run"):
+        typer.secho(
+            f"            retrieval reused from run {result['reused_from_run']}",
+            fg=typer.colors.GREEN,
+        )
+    if result.get("judge"):
+        typer.echo(f"judge       {result['judge']}")
+        live = result["liveness"]
+        typer.secho(
+            f"liveness    {live['clean']}/{live['verdicts']} clean, {live['errors']} errors",
+            fg=typer.colors.GREEN if live["ok"] else typer.colors.RED,
+        )
+
+
+@run_app.command("resume")
+def run_resume(
+    run_id: int,
+    judge_limit: int | None = typer.Option(None, help="Cap pairs judged this pass."),
+) -> None:
+    """Continue a run, skipping pairs already judged."""
+    from hontology.evalkit import runner
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(message)s")
+    with session_scope() as session:
+        result = runner.execute(session, _load_run(session, run_id), judge_limit=judge_limit)
+    typer.echo(f"judge  {result['judge']}")
 
 
 if __name__ == "__main__":
