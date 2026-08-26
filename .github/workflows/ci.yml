@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: hontology
+          POSTGRES_PASSWORD: hontology
+          POSTGRES_DB: hontology
+        ports:
+          - 5435:5432
+        options: >-
+          --health-cmd "pg_isready -U hontology"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      HONTOLOGY_DATABASE_URL: postgresql+psycopg://hontology:hontology@localhost:5435/hontology
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --all-extras
+
+      - name: Lint
+        run: |
+          uv run ruff check src tests
+          uv run ruff format --check src tests
+
+      - name: Type-check
+        run: uv run mypy src
+
+      - name: Migrate
+        run: uv run alembic upgrade head
+
+      - name: Test
+        # No LLM provider is reachable in CI, so those tests are excluded.
+        run: uv run pytest -q -m "not requires_llm"

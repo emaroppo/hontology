@@ -1,0 +1,18 @@
+# Environment
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Runtime data: scrape cache, run artifacts, DuckDB warehouse, downloaded feeds.
+# None of this is source, and some of it is large.
+data/
+artifacts/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

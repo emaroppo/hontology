@@ -1,0 +1,21 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: hontology-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hontology}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hontology}
+      POSTGRES_DB: ${POSTGRES_DB:-hontology}
+    # Published on 5435 so a Postgres already running on the host keeps 5432.
+    ports:
+      - "${POSTGRES_PORT:-5435}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hontology} -d ${POSTGRES_DB:-hontology}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  pgdata:
