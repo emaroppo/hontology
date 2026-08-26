@@ -166,3 +166,27 @@ class Api:
         return self._request(
             "POST", f"/labels/{label_id}/adjudicate", json={"matched": matched, "note": note}
         )
+
+    # --- evaluation ---------------------------------------------------------
+
+    def list_runs(self) -> list[dict]:
+        return self._request("GET", "/eval/runs")
+
+    def evaluate_run(
+        self, run_id: int, *, include_machine: bool = False, include_stale: bool = False
+    ) -> dict:
+        return self._request(
+            "GET",
+            f"/eval/runs/{run_id}",
+            params={"include_machine": include_machine, "include_stale": include_stale},
+        )
+
+    def compare_runs(self, run_a: int, run_b: int, *, include_machine: bool = False) -> dict:
+        return self._request(
+            "GET",
+            "/eval/compare",
+            params={"run_a": run_a, "run_b": run_b, "include_machine": include_machine},
+        )
+
+    def leaderboard(self, limit: int = 50) -> list[dict]:
+        return self._request("GET", "/eval/leaderboard", params={"limit": limit})

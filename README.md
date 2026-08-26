@@ -9,9 +9,10 @@ pipeline finds evidence of them in the [GDELT](https://www.gdeltproject.org/)
 global news feed, then scores itself against ground truth you accumulate as you
 go.
 
-> **Status: in development.** The pipeline runs end to end today: define an
-> ontology, pull the live GDELT feed, scrape article text, retrieve candidates
-> and judge them. The evaluation layer is next — see [Roadmap](#roadmap).
+> **Status: all seven stages implemented.** Define an ontology, pull the live
+> GDELT feed, scrape article text, retrieve candidates, judge them, build
+> ground truth, and score the result. Verified end to end against the live
+> feed with a local model.
 
 ---
 
@@ -233,6 +234,43 @@ does not capture.
 
 ---
 
+## Evaluating
+
+```bash
+hontology eval run 1                    # per-stage metrics for a run
+hontology eval run 1 --record           # ...and add it to the leaderboard
+hontology eval compare 1 2              # paired comparison
+hontology eval consistency 1 --against 2
+hontology eval baseline 1 --out baseline.json
+hontology eval gate 1                   # liveness, then metric floors
+hontology eval leaderboard
+```
+
+Three things this layer refuses to do:
+
+**Report a rate without its denominator.** Every metric is printed with the
+label count it was computed over, and precision and recall carry Wilson
+intervals while F1 carries a bootstrap one. A ten-point F1 gap on thirty pairs
+is noise, and an interval makes that visible instead of arguable.
+
+**Compare unpaired.** Two runs judged the same pairs, so only the pairs they
+answered *differently* say anything about which is better. McNemar's test over
+those discordant pairs, and the verdict says plainly when a difference is inside
+the noise.
+
+**Pass a gate that checked nothing.** The regression gate runs liveness first —
+did every pair produce a usable verdict — because a malformed-output bug does
+not move precision or recall, it silently shrinks the denominator. Then metric
+floors. And if no trusted label covers the run, the gate reports
+**inconclusive** and exits non-zero rather than green, because a gate that
+passes on an empty bank is worse than no gate.
+
+Retrieval and judgment are scored separately, always. A concept the retriever
+never surfaced needs a different fix from one it ranked first and the judge then
+rejected, and a single F1 hides which you have.
+
+---
+
 ## Design notes
 
 A few decisions that are load-bearing and non-obvious:
@@ -287,4 +325,4 @@ A few decisions that are load-bearing and non-obvious:
 - [x] Article scraping: extractor chain, quality gate, robots and rate limiting
 - [x] Run configuration, both retrieval sources, judge loop with resume
 - [x] Ground-truth bank, labelling queue, staleness handling
-- [ ] Metrics, A/B comparison, consistency checks, regression gate, leaderboard
+- [x] Metrics, A/B comparison, consistency checks, regression gate, leaderboard

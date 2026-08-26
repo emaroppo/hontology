@@ -23,7 +23,9 @@ ingest_app = typer.Typer(help="Pull slices from the news feed.")
 app.add_typer(ontology_app, name="ontology")
 run_app = typer.Typer(help="Configure and execute detection runs.")
 app.add_typer(ingest_app, name="ingest")
+eval_app = typer.Typer(help="Score runs against the ground-truth bank.")
 app.add_typer(run_app, name="run")
+app.add_typer(eval_app, name="eval")
 
 
 @app.command()
@@ -311,6 +313,146 @@ def run_resume(
     with session_scope() as session:
         result = runner.execute(session, _load_run(session, run_id), judge_limit=judge_limit)
     typer.echo(f"judge  {result['judge']}")
+
+
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+
+
+@eval_app.command("run")
+def eval_run(
+    run_id: int,
+    include_machine: bool = typer.Option(
+        False, help="Count un-adjudicated machine labels. Off by default."
+    ),
+    include_stale: bool = typer.Option(
+        False, help="Count labels whose concept was reworded after labelling."
+    ),
+    record: bool = typer.Option(False, help="Also write the result to the leaderboard."),
+) -> None:
+    """Per-stage metrics for one run, with intervals and denominators."""
+    from hontology.evalkit import evaluate, warehouse
+
+    with session_scope() as session:
+        evaluation = evaluate.evaluate_run(
+            session, run_id, include_machine=include_machine, include_stale=include_stale
+        )
+        typer.echo(evaluate.format_report(evaluation))
+        if record:
+            run = _load_run(session, run_id)
+            warehouse.record(
+                evaluation,
+                config=run.config,
+                candidates_key=run.candidates_key,
+                judge_key=run.judge_key,
+            )
+            typer.secho("recorded to the leaderboard", fg=typer.colors.GREEN)
+
+
+@eval_app.command("compare")
+def eval_compare(
+    run_a: int,
+    run_b: int,
+    include_machine: bool = typer.Option(False, help="Count machine labels."),
+) -> None:
+    """Paired comparison of two runs over the pairs they both judged."""
+    from hontology.evalkit import compare
+
+    with session_scope() as session:
+        result = compare.compare_runs(session, run_a, run_b, include_machine=include_machine)
+
+    typer.echo(f"shared labelled pairs  {result.n_shared_labelled}")
+    typer.echo(
+        f"discordant             {result.paired['discordant']} "
+        f"(only A right: {result.paired['only_a_correct']}, "
+        f"only B right: {result.paired['only_b_correct']})"
+    )
+    p = result.paired["p_value"]
+    typer.echo(
+        f"p-value                {p:.4f}" if p is not None else "p-value                —"
+    )
+    typer.secho(f"\n{result.verdict}", bold=True)
+
+
+@eval_app.command("consistency")
+def eval_consistency(run_id: int, against: int | None = None) -> None:
+    """Determinism against another run, and agreement across documents."""
+    from hontology.evalkit import compare
+
+    with session_scope() as session:
+        if against is not None:
+            result = compare.determinism(session, run_id, against)
+            status = "reproducible" if result["reproducible"] else "NOT reproducible"
+            typer.secho(
+                f"determinism: {status} "
+                f"({result['n_shared']} shared, {result['flipped']} flipped)",
+                fg=typer.colors.GREEN if result["reproducible"] else typer.colors.RED,
+            )
+            if not result["reproducible"]:
+                typer.echo("  run-to-run noise is a floor under every A/B delta; a smaller")
+                typer.echo("  difference than this cannot be attributed to a config change")
+        agreement = compare.cross_document_agreement(session, run_id)
+    typer.echo(
+        f"cross-document: {agreement['multi_document_groups']} group(s), "
+        f"{agreement['split_groups']} split, mean {agreement['mean_agreement']}"
+    )
+
+
+@eval_app.command("baseline")
+def eval_baseline(
+    run_id: int, out: Path = Path("baseline.json"), tolerance: float = 0.05
+) -> None:
+    """Record a run's metrics as the floor future runs must clear."""
+    from hontology.evalkit import regression
+
+    with session_scope() as session:
+        baseline = regression.capture_baseline(session, run_id, tolerance=tolerance)
+    regression.save_baseline(baseline, out)
+    typer.echo(f"baseline from run {run_id} -> {out}")
+
+
+@eval_app.command("gate")
+def eval_gate(run_id: int, baseline_path: Path = Path("baseline.json")) -> None:
+    """Regression gate: liveness first, then metric floors. Exits non-zero on failure."""
+    from hontology.evalkit import regression
+
+    baseline = regression.load_baseline(baseline_path)
+    with session_scope() as session:
+        result = regression.check(session, run_id, baseline)
+
+    live = result["liveness"]
+    typer.echo(f"liveness  {live['clean']}/{live['verdicts']} clean, {live['errors']} error(s)")
+    for floor in result["floors"]:
+        actual = floor["actual"]
+        shown = f"{actual:.3f}" if actual is not None else "—"
+        mark = "ok " if floor["ok"] else "FAIL"
+        limit = f"{floor['limit']:.3f}" if floor.get("limit") is not None else "—"
+        typer.echo(f"{mark}      {floor['metric']:<10} {shown}  (floor {limit})")
+
+    if result["ok"]:
+        typer.secho(
+            f"\ngate passed ({result['n_judged_labelled']} labelled pairs checked)",
+            fg=typer.colors.GREEN,
+        )
+    elif result["inconclusive"]:
+        typer.secho("\ngate INCONCLUSIVE — nothing to check", fg=typer.colors.YELLOW)
+        for failure in result["failures"]:
+            typer.echo(f"  - {failure}")
+        raise typer.Exit(2)
+    else:
+        typer.secho("\ngate FAILED", fg=typer.colors.RED)
+        for failure in result["failures"]:
+            typer.echo(f"  - {failure}")
+        raise typer.Exit(1)
+
+
+@eval_app.command("leaderboard")
+def eval_leaderboard(limit: int = 50) -> None:
+    """Recorded runs, ranked by F1, with intervals and denominators."""
+    from hontology.evalkit import warehouse
+
+    typer.echo(warehouse.format_leaderboard(warehouse.leaderboard(limit=limit)))
 
 
 if __name__ == "__main__":
