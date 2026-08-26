@@ -190,3 +190,32 @@ class Api:
 
     def leaderboard(self, limit: int = 50) -> list[dict]:
         return self._request("GET", "/eval/leaderboard", params={"limit": limit})
+
+    def pending_adjudication(self, ontology_id: int, limit: int = 50) -> list[dict]:
+        return self._request(
+            "GET", "/labels/pending", params={"ontology_id": ontology_id, "limit": limit}
+        )
+
+    def stale_detail(self, ontology_id: int, limit: int = 50) -> list[dict]:
+        return self._request(
+            "GET", "/labels/stale/detail", params={"ontology_id": ontology_id, "limit": limit}
+        )
+
+    # --- runs ---------------------------------------------------------------
+
+    def start_run(self, **payload: Any) -> dict:
+        return self._request("POST", "/runs", json=payload)
+
+    def get_run(self, run_id: int) -> dict:
+        return self._request("GET", f"/runs/{run_id}")
+
+    def resume_run(self, run_id: int, judge_limit: int | None = None) -> dict:
+        params = {"judge_limit": judge_limit} if judge_limit else {}
+        return self._request("POST", f"/runs/{run_id}/resume", params=params)
+
+    def preview_keys(self, config: dict, ontology_version: str = "v1") -> dict:
+        return self._request(
+            "POST",
+            "/runs/keys",
+            json={"config": config, "ontology_version": ontology_version},
+        )

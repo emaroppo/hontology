@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from hontology.config import get_settings
-from hontology.db.models import Candidate, Document, Run
+from hontology.db.models import Candidate, Document, Ontology, Run
 from hontology.evalkit import config as run_config
 from hontology.judge import run as judge_run_module
 from hontology.ontology import snapshots
@@ -43,6 +43,12 @@ def create_run(
     name: str | None = None,
 ) -> Run:
     """Register a run, resolving its ontology version and stage keys."""
+    # Validate the ontology up front. Without this, resolving a snapshot for a
+    # nonexistent ontology inserts a row that fails on the foreign key, which
+    # surfaces as an integrity error rather than "no such ontology".
+    if session.get(Ontology, ontology_id) is None:
+        raise LookupError(f"ontology {ontology_id} does not exist")
+
     normalized = run_config.normalize(config)
     if name:
         normalized["name"] = name

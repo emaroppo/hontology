@@ -71,6 +71,69 @@ if stats["stale"]:
 
 st.divider()
 
+
+def adjudication_panel(rows: list[dict], *, kind: str) -> None:
+    """Confirm or flip a proposal. This is the step that makes a label count."""
+    for row in rows:
+        with st.container(border=True):
+            head = st.columns([3, 1])
+            head[0].markdown(
+                f"**{row['concept_name']}** · "
+                f"[{row['document_title'] or row['document_url'][:64]}]({row['document_url']})"
+            )
+            proposed = "matched" if row["proposed_matched"] else "no match"
+            by = row.get("proposed_by") or "a model"
+            head[1].markdown(f"proposed: **{proposed}**")
+            head[1].caption(f"by {by} · {row.get('ontology_version') or '—'}")
+
+            if row.get("note"):
+                st.caption(f"note: {row['note']}")
+
+            buttons = st.columns([1, 1, 6])
+            key = f"{kind}_{row['id']}"
+            if buttons[0].button("Confirm", key=f"ok_{key}", type="primary"):
+                try:
+                    api.adjudicate_label(row["id"], matched=row["proposed_matched"])
+                    st.rerun()
+                except ApiError as exc:
+                    st.error(exc.detail)
+            if buttons[1].button("Flip", key=f"flip_{key}"):
+                try:
+                    api.adjudicate_label(row["id"], matched=not row["proposed_matched"])
+                    st.rerun()
+                except ApiError as exc:
+                    st.error(exc.detail)
+
+
+if stats["pending_adjudication"]:
+    st.subheader(f"Awaiting review ({stats['pending_adjudication']})")
+    st.caption(
+        "Machine proposals. They do **not** count as ground truth until confirmed "
+        "or flipped here — scoring a model against another model's unreviewed "
+        "labels measures agreement, not correctness. Disagreeing is the most "
+        "valuable outcome, not an error."
+    )
+    try:
+        adjudication_panel(api.pending_adjudication(ontology["id"], limit=25), kind="pending")
+    except ApiError as exc:
+        st.error(exc.detail)
+    st.divider()
+
+if stats["stale"]:
+    with st.expander(f"Stale labels ({stats['stale']}) — re-adjudicate to restore them"):
+        st.caption(
+            "The concept was reworded after these were made, so they answer a "
+            "question no longer being asked. Confirming against the current wording "
+            "makes them count again."
+        )
+        try:
+            adjudication_panel(api.stale_detail(ontology["id"], limit=25), kind="stale")
+        except ApiError as exc:
+            st.error(exc.detail)
+    st.divider()
+
+st.subheader("Queue")
+
 try:
     items = api.labelling_queue(
         ontology["id"],

@@ -112,6 +112,61 @@ def adjudicate_label(label_id: int, payload: AdjudicateIn, db: Session = Depends
     )
 
 
+class PendingOut(BaseModel):
+    id: int
+    document_id: int
+    concept_id: int
+    document_url: str
+    document_title: str | None = None
+    concept_name: str
+    proposed_matched: bool
+    proposed_by: str | None = None
+    note: str | None = None
+    ontology_version: str | None = None
+    stale: bool = False
+
+
+def _pending_rows(db: Session, rows, stale_ids: set[int]) -> list[PendingOut]:
+    from hontology.db.models import Concept, Document
+
+    out: list[PendingOut] = []
+    for label in rows:
+        document = db.get(Document, label.document_id)
+        concept = db.get(Concept, label.concept_id)
+        if document is None or concept is None:
+            continue
+        out.append(
+            PendingOut(
+                id=label.id,
+                document_id=label.document_id,
+                concept_id=label.concept_id,
+                document_url=document.url,
+                document_title=document.title,
+                concept_name=concept.name,
+                proposed_matched=label.matched,
+                proposed_by=label.proposed_by,
+                note=label.note,
+                ontology_version=label.ontology_version,
+                stale=label.id in stale_ids,
+            )
+        )
+    return out
+
+
+@router.get("/pending", response_model=list[PendingOut])
+def pending_adjudication(ontology_id: int, limit: int = 50, db: Session = Depends(get_db)):
+    """Machine proposals that do not count until a human confirms or flips them."""
+    rows = label_service.pending_adjudication(db, ontology_id, limit=limit)
+    return _pending_rows(db, rows, set())
+
+
+@router.get("/stale/detail", response_model=list[PendingOut])
+def stale_detail(ontology_id: int, limit: int = 50, db: Session = Depends(get_db)):
+    """Stale labels, ready to be re-adjudicated against the current wording."""
+    rows = label_service.stale_labels(db, ontology_id, limit=limit)
+    return _pending_rows(db, rows, {row.id for row in rows})
+
+
 @router.get("/stale")
 def stale_labels(ontology_id: int, db: Session = Depends(get_db)):
     """Labels whose concept has been reworded since they were made."""

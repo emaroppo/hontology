@@ -217,6 +217,18 @@ hontology run resume <run-id>      # continues, skipping pairs already judged
 hontology run list
 ```
 
+Or from the API, where a run is an async job — `POST /runs` returns an id
+immediately and the work continues in the background:
+
+```bash
+curl -X POST localhost:8100/runs -H 'Content-Type: application/json' \
+  -d '{"ontology_id": 1, "document_limit": 50, "config": {}}'
+curl localhost:8100/runs/1     # status, stage, progress_done/progress_total
+```
+
+The **Runs** page in the UI wraps both, and previews the stage keys as you edit
+the config so you can see whether a change will reuse retrieval before starting.
+
 **Resume is per pair.** Each verdict commits as it completes, so a run killed two
 thirds through restarts from where it stopped. With a local model that is
 wall-clock time; with a hosted one it is money.

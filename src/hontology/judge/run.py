@@ -270,12 +270,16 @@ def judge_run(
             stats.errors += 1
 
         processed += 1
+        # Update progress BEFORE committing, so the new value is part of the same
+        # transaction as the verdict. Setting it afterwards leaves it uncommitted
+        # until the next pair, and the final value is lost entirely — which makes
+        # a poller watching this run appear to stall one pair short of done.
+        if callable(progress):
+            progress(processed, len(candidates))
+
         # Commit as we go: this is what makes a killed run resumable rather than
         # a total loss.
         session.commit()
-
-        if callable(progress):
-            progress(processed, len(candidates))
 
     log.info("judge: %s", stats.as_dict())
     return stats.as_dict()

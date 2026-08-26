@@ -268,6 +268,40 @@ def trusted_labels(
     return [label for label in labels if label.id not in stale]
 
 
+def pending_adjudication(
+    session: Session, ontology_id: int, *, limit: int = 50
+) -> list[PairLabel]:
+    """Machine proposals awaiting a human.
+
+    These are the labels that do not yet count. Surfacing them is the difference
+    between a design that gates on adjudication and one that merely says it does.
+    """
+    return list(
+        session.scalars(
+            select(PairLabel)
+            .join(Concept, Concept.id == PairLabel.concept_id)
+            .where(Concept.ontology_id == ontology_id, PairLabel.source == MACHINE)
+            .order_by(PairLabel.id)
+            .limit(limit)
+        )
+    )
+
+
+def stale_labels(session: Session, ontology_id: int, *, limit: int = 50) -> list[PairLabel]:
+    """Labels whose concept was reworded after they were made.
+
+    Re-adjudicating one against the current wording makes it count again.
+    """
+    stale = stale_label_ids(session, ontology_id)
+    if not stale:
+        return []
+    return list(
+        session.scalars(
+            select(PairLabel).where(PairLabel.id.in_(stale)).order_by(PairLabel.id).limit(limit)
+        )
+    )
+
+
 def stats(session: Session, ontology_id: int) -> dict:
     """A summary an operator can act on."""
     rows = session.execute(
