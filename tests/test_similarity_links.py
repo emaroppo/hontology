@@ -9,7 +9,7 @@ correction, which is the kind of damage nobody notices until the work is gone.
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from hontology.db.models import Code, ConceptCode, EmbeddingModel, SimilarityRun
 from hontology.db.session import session_scope
@@ -26,12 +26,6 @@ SAMPLE = "14\tPROTEST\n145\tProtest violently, riot\n1451\tEngage in political d
 def fixture_ids():
     """An ontology with two concepts, and the CAMEO sample loaded."""
 
-    def _purge():
-        with session_scope() as session:
-            session.execute(text("DELETE FROM ontologies WHERE slug = 'test-sim'"))
-            session.execute(text("DELETE FROM code_systems WHERE slug = 'cameo'"))
-
-    _purge()
     with session_scope() as session:
         ontology = service.create_ontology(session, slug="test-sim", name="Sim")
         riot = service.create_concept(session, ontology.id, name="Riot", definition="A riot.")
@@ -51,7 +45,6 @@ def fixture_ids():
             "codes": codes,
         }
     yield ids
-    _purge()
 
 
 def make_run(session, level: str = "root") -> int:

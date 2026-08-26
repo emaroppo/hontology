@@ -7,7 +7,6 @@ machine label looks wrong at the point of use — so each rule is pinned explici
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import text
 
 from hontology.db.models import Document, PairLabel
 from hontology.db.session import session_scope
@@ -21,12 +20,6 @@ pytestmark = pytest.mark.requires_db
 def bank():
     """An ontology with two concepts and two documents."""
 
-    def _purge():
-        with session_scope() as session:
-            session.execute(text("DELETE FROM ontologies WHERE slug = 'test-labels'"))
-            session.execute(text("DELETE FROM documents WHERE url LIKE 'https://lbl.test/%'"))
-
-    _purge()
     with session_scope() as session:
         ontology = service.create_ontology(session, slug="test-labels", name="Labels")
         riot = service.create_concept(
@@ -49,7 +42,6 @@ def bank():
             "docs": docs,
         }
     yield ids
-    _purge()
 
 
 class TestProvenance:

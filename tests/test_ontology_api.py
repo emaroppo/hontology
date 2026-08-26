@@ -9,10 +9,8 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
 
 from hontology.api.main import app
-from hontology.db.session import session_scope
 
 pytestmark = pytest.mark.requires_db
 
@@ -20,19 +18,6 @@ pytestmark = pytest.mark.requires_db
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def clean_ontologies():
-    """Remove test ontologies before and after; cascades clear their children."""
-
-    def _purge() -> None:
-        with session_scope() as session:
-            session.execute(text("DELETE FROM ontologies WHERE slug LIKE 'test-%'"))
-
-    _purge()
-    yield
-    _purge()
 
 
 def make_ontology(client: TestClient, slug: str = "test-supply") -> int:

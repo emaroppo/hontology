@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from hontology.db.models import Code, CodeSystem
 from hontology.db.session import session_scope
@@ -45,16 +45,6 @@ def test_resolve_chain_is_most_specific_first():
 
 @pytest.mark.requires_db
 class TestLoad:
-    @pytest.fixture(autouse=True)
-    def clean(self):
-        def _purge():
-            with session_scope() as session:
-                session.execute(text("DELETE FROM code_systems WHERE slug = 'cameo'"))
-
-        _purge()
-        yield
-        _purge()
-
     def test_load_assigns_levels_by_width(self):
         with session_scope() as session:
             cameo.load_codes(session, cameo.parse_lookup(SAMPLE))

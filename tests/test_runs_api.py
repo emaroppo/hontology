@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
 
 from hontology.api.main import app
 from hontology.db.models import Document, PairLabel
@@ -34,12 +33,6 @@ def fixture(monkeypatch):
 
     monkeypatch.setattr("hontology.api.routers.runs._execute_in_background", fake_background)
 
-    def _purge():
-        with session_scope() as session:
-            session.execute(text("DELETE FROM ontologies WHERE slug = 'test-runsapi'"))
-            session.execute(text("DELETE FROM documents WHERE url LIKE 'https://ra.test/%'"))
-
-    _purge()
     with session_scope() as session:
         ontology = service.create_ontology(session, slug="test-runsapi", name="Runs API")
         concept = service.create_concept(
@@ -55,7 +48,6 @@ def fixture(monkeypatch):
             "scheduled": scheduled,
         }
     yield ids
-    _purge()
 
 
 class TestStartRun:

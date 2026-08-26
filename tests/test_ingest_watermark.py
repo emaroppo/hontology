@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy.pool import NullPool
 
 from hontology.db.session import session_scope
 from hontology.ingest import gdelt, service
@@ -18,18 +18,6 @@ from hontology.ingest.scheduler import try_lock, unlock
 pytestmark = pytest.mark.requires_db
 
 FEED = "test_feed"
-
-
-@pytest.fixture(autouse=True)
-def clean():
-    def _purge():
-        with session_scope() as session:
-            session.execute(text("DELETE FROM feed_slices WHERE feed = :f"), {"f": FEED})
-            session.execute(text("DELETE FROM ingest_watermarks WHERE feed = :f"), {"f": FEED})
-
-    _purge()
-    yield
-    _purge()
 
 
 def set_slice_status(session, key: str, status: str) -> None:
@@ -129,20 +117,45 @@ class TestLag:
 
 
 class TestAdvisoryLock:
-    def test_lock_is_exclusive_across_sessions(self):
+    """Advisory locks are scoped to a *connection*, so these need real ones.
+
+    The per-test rollback fixture binds every session to one shared connection,
+    which would let the same connection take the lock twice and make the test
+    pass for the wrong reason. These open their own engines instead.
+    """
+
+    @staticmethod
+    def _sessions(url: str):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine(url, poolclass=NullPool, future=True)
+        return engine, sessionmaker(bind=engine, future=True)
+
+    def test_lock_is_exclusive_across_connections(self, test_database):
         """Two watchers, or a watcher racing a manual run, must not both fetch."""
         key = 0x484F4E55  # a test-only key, distinct from the real one
-        with session_scope() as first:
-            assert try_lock(first, key) is True
-            with session_scope() as second:
-                assert try_lock(second, key) is False
-            unlock(first, key)
+        engine_a, factory_a = self._sessions(test_database)
+        engine_b, factory_b = self._sessions(test_database)
+        try:
+            with factory_a() as first:
+                assert try_lock(first, key) is True
+                with factory_b() as second:
+                    assert try_lock(second, key) is False
+                unlock(first, key)
+        finally:
+            engine_a.dispose()
+            engine_b.dispose()
 
-    def test_lock_is_reacquirable_after_release(self):
+    def test_lock_is_reacquirable_after_release(self, test_database):
         key = 0x484F4E56
-        with session_scope() as session:
-            assert try_lock(session, key) is True
-            unlock(session, key)
-        with session_scope() as session:
-            assert try_lock(session, key) is True
-            unlock(session, key)
+        engine, factory = self._sessions(test_database)
+        try:
+            with factory() as session:
+                assert try_lock(session, key) is True
+                unlock(session, key)
+            with factory() as session:
+                assert try_lock(session, key) is True
+                unlock(session, key)
+        finally:
+            engine.dispose()

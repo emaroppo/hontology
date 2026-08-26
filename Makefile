@@ -49,6 +49,11 @@ test: ## Run the test suite
 test-fast: ## Run only tests that need no services
 	$(PY) -m pytest -q -m "not requires_db and not requires_llm"
 
+.PHONY: test-db-reset
+test-db-reset: ## Drop the test database so the next run recreates it
+	docker compose exec -T db psql -U $${POSTGRES_USER:-hontology} -d postgres \
+		-c 'DROP DATABASE IF EXISTS $${POSTGRES_DB:-hontology}_test;'
+
 .PHONY: lint
 lint: ## Lint and type-check
 	$(VENV)/bin/ruff check src tests

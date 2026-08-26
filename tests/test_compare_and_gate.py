@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from hontology.db.models import Document, Run, Verdict
 from hontology.db.session import session_scope
@@ -15,12 +15,7 @@ pytestmark = pytest.mark.requires_db
 
 @pytest.fixture
 def two_runs(tmp_path):
-    def _purge():
-        with session_scope() as session:
-            session.execute(text("DELETE FROM ontologies WHERE slug = 'test-cmp'"))
-            session.execute(text("DELETE FROM documents WHERE url LIKE 'https://cmp.test/%'"))
 
-    _purge()
     with session_scope() as session:
         ontology = service.create_ontology(session, slug="test-cmp", name="Compare")
         concept = service.create_concept(
@@ -55,7 +50,6 @@ def two_runs(tmp_path):
             "runs": runs,
         }
     yield ids
-    _purge()
 
 
 def label_all(ids, truths: list[bool]) -> None:

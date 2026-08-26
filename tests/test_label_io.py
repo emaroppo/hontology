@@ -10,7 +10,7 @@ import csv
 import io
 
 import pytest
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select
 
 from hontology.db.models import Document, Observation, PairLabel
 from hontology.db.session import session_scope
@@ -22,12 +22,7 @@ pytestmark = pytest.mark.requires_db
 
 @pytest.fixture
 def bank():
-    def _purge():
-        with session_scope() as session:
-            session.execute(text("DELETE FROM ontologies WHERE slug LIKE 'test-io%'"))
-            session.execute(text("DELETE FROM documents WHERE url LIKE 'https://io.test/%'"))
 
-    _purge()
     with session_scope() as session:
         ontology = service.create_ontology(session, slug="test-io", name="IO")
         riot = service.create_concept(
@@ -55,7 +50,6 @@ def bank():
             "docs": docs,
         }
     yield ids
-    _purge()
 
 
 def rows_of(csv_text: str) -> list[dict]:

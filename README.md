@@ -298,6 +298,34 @@ rejected, and a single F1 hides which you have.
 
 ---
 
+## Testing
+
+```bash
+make test        # everything
+make test-fast   # only what needs no services
+```
+
+Tests **never touch the development database.** They run against a separate
+`<database>_test`, created and migrated on first use, and a guard refuses to
+start if the target database name does not end in `_test`. Each test then runs
+inside a transaction that is rolled back afterwards — bound with
+`join_transaction_mode="create_savepoint"`, so the `commit()` calls inside
+application code (the judge loop commits per pair on purpose) become savepoint
+releases rather than real writes.
+
+The combination means a test can be arbitrarily destructive and still leave
+nothing behind: after the full suite the test database contains zero ontologies,
+concepts or labels.
+
+This exists because it was needed. Two tests once contained an unqualified
+`DELETE FROM pair_labels`, which emptied the table for the whole database rather
+than the fixture and destroyed a session's worth of labelling. Six more asserted
+against a bare `select(PairLabel)`, reading whichever row came back first rather
+than their own. Both classes of bug are now structurally impossible rather than
+individually fixed.
+
+---
+
 ## Design notes
 
 A few decisions that are load-bearing and non-obvious:

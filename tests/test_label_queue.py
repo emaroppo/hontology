@@ -9,7 +9,6 @@ from __future__ import annotations
 import random
 
 import pytest
-from sqlalchemy import text
 
 from hontology.db.models import Document, Run, Verdict
 from hontology.db.session import session_scope
@@ -28,12 +27,6 @@ pytestmark = pytest.mark.requires_db
 def scenario():
     """Two runs judging the same pairs, so disagreement is expressible."""
 
-    def _purge():
-        with session_scope() as session:
-            session.execute(text("DELETE FROM ontologies WHERE slug = 'test-queue'"))
-            session.execute(text("DELETE FROM documents WHERE url LIKE 'https://q.test/%'"))
-
-    _purge()
     with session_scope() as session:
         ontology = service.create_ontology(session, slug="test-queue", name="Queue")
         concepts = [
@@ -64,7 +57,6 @@ def scenario():
 
         ids = {"ontology": ontology.id, "concepts": concepts, "docs": docs, "runs": runs}
     yield ids
-    _purge()
 
 
 def add_verdict(session, run_id, document_id, concept_id, matched, confidence):
