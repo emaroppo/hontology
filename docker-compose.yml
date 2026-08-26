@@ -17,5 +17,31 @@ services:
       timeout: 5s
       retries: 20
 
+  # Continuous ingest is OPTIONAL and off by default. `docker compose up` starts
+  # only the database; this service exists solely for people who want the feed
+  # followed unattended, and is started explicitly:
+  #
+  #     docker compose --profile watch up -d
+  #
+  # A clone of this repo must never begin crawling on its own, and one-shot
+  # `hontology ingest once` covers everything this does apart from the schedule.
+  watcher:
+    profiles: ["watch"]
+    build: .
+    container_name: hontology-watcher
+    command: ["hontology", "ingest", "watch"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      HONTOLOGY_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hontology}:${POSTGRES_PASSWORD:-hontology}@db:5432/${POSTGRES_DB:-hontology}
+      HONTOLOGY_DATA_DIR: /data
+    volumes:
+      - ingest-data:/data
+    restart: unless-stopped
+    # SIGTERM lets the slice in flight finish and commit before exit.
+    stop_grace_period: 120s
+
 volumes:
   pgdata:
+  ingest-data:

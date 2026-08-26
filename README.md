@@ -9,9 +9,9 @@ pipeline finds evidence of them in the [GDELT](https://www.gdeltproject.org/)
 global news feed, then scores itself against ground truth you accumulate as you
 go.
 
-> **Status: in development.** You can define, version, import and export an
-> ontology today. Ingest, detection and evaluation are next — see
-> [Roadmap](#roadmap).
+> **Status: in development.** You can define an ontology and pull the live
+> GDELT feed into a corpus today. Scraping, detection and evaluation are next
+> — see [Roadmap](#roadmap).
 
 ---
 
@@ -119,6 +119,54 @@ available for precision.
 
 ---
 
+## Keeping up with the feed
+
+GDELT publishes an export slice every 15 minutes, stamped on the quarter hour in
+UTC. Ingest is one-shot by default:
+
+```bash
+make ingest          # catch up to the newest published slice, then exit
+make ingest-status   # watermark, lag, slice outcomes, document counts
+hontology ingest backfill 20260801000000 20260801234500
+```
+
+**Continuous ingest is opt-in.** Nothing starts it for you — the API never
+launches a scheduler, and a plain `docker compose up` brings up only the
+database. A clone of this repo does not begin crawling on its own.
+
+```bash
+make watch           # follow the feed in the foreground, Ctrl-C to stop
+make watch-docker    # or as a container: docker compose --profile watch up -d
+```
+
+What the watcher does that a `while true; sleep 900` loop does not:
+
+- **Polls in phase with the feed.** A fixed interval drifts out of alignment with
+  a quarter-hour publish schedule and ends up asking at the least useful moment.
+  Each wake-up targets the next boundary plus a grace period, because publication
+  lags the stamp — asking for the current wall-clock quarter hour reliably 404s.
+- **Catches up after downtime.** The watermark records the last completed slice.
+  On restart the ingester walks the gap in order, bounded per pass so a long
+  outage becomes several ordered passes rather than one unbounded crawl.
+- **Advances the watermark contiguously.** It moves only to the immediate
+  successor of the current mark, so a slice that failed transport is retried
+  rather than stepped over by a later success. A slice the feed never published
+  is terminal after a few hours — otherwise one permanent gap stalls ingest
+  forever.
+- **Refuses to double-ingest.** A Postgres advisory lock means a second watcher,
+  or a manual catch-up racing the scheduled one, is a no-op rather than a
+  duplicate download.
+- **Records every attempt.** Per-slice status (`ok` / `empty` / `missing` /
+  `failed` / `pending`) with row counts, so a gap in the corpus is *visible*
+  rather than indistinguishable from a quiet news period.
+- **Shuts down gracefully.** SIGTERM finishes and commits the slice in flight
+  instead of losing it, and the sleep is interruptible so stopping is immediate.
+
+`lag_slices` is the number to watch. It is `null` before the first ingest rather
+than `0`, because a fresh install that has never run is idle, not current.
+
+---
+
 ## Design notes
 
 A few decisions that are load-bearing and non-obvious:
@@ -159,7 +207,8 @@ A few decisions that are load-bearing and non-obvious:
 - [x] Pluggable LLM provider layer (Ollama; Anthropic behind the same protocol)
 - [x] Ontology service, import/export, snapshots, API and editor UI
 - [x] CAMEO ingest, embeddings, similarity review
-- [ ] GDELT ingest with watermarking, backfill and a polite bounded scraper
+- [x] GDELT ingest: watermarking, catch-up, backfill, optional continuous watcher
+- [ ] Article scraping with a polite bounded fetcher and content-addressed cache
 - [ ] Run configuration, both retrieval sources, judge loop with resume
 - [ ] Ground-truth bank, labeling queue, staleness handling
 - [ ] Metrics, A/B comparison, consistency checks, regression gate, leaderboard

@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     default_embed_model: str = "nomic-embed-text"
 
     # --- Ingest --------------------------------------------------------------
-    gdelt_base_url: str = "http://data.gdeltproject.org/gdeltv2"
+    gdelt_base_url: str = "https://data.gdeltproject.org/gdeltv2"
     scrape_user_agent: str = "hontology/0.1 (+https://github.com/emaroppo/hontology)"
     scrape_max_concurrency: int = 8
     scrape_per_host_delay_s: float = 1.0

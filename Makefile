@@ -62,3 +62,19 @@ fmt: ## Autoformat
 .PHONY: doctor
 doctor: ## Check that the database and the LLM provider are reachable
 	$(PY) -m hontology.cli doctor
+
+.PHONY: ingest
+ingest: ## Catch up to the newest published feed slice, then exit
+	$(PY) -m hontology.cli ingest once
+
+.PHONY: ingest-status
+ingest-status: ## Show the ingest watermark and how far behind it is
+	$(PY) -m hontology.cli ingest status
+
+.PHONY: watch
+watch: ## OPTIONAL: follow the feed continuously (Ctrl-C to stop)
+	$(PY) -m hontology.cli ingest watch
+
+.PHONY: watch-docker
+watch-docker: ## OPTIONAL: run the watcher as a container
+	docker compose --profile watch up -d --build watcher

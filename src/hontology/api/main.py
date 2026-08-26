@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from hontology.api.routers import ontology, taxonomy
+from hontology.api.routers import ingest, ontology, taxonomy
 from hontology.config import get_settings
 from hontology.db.session import session_scope
 from hontology.ingest.loci import seed_loci
@@ -38,6 +38,7 @@ app = FastAPI(
 
 app.include_router(ontology.router)
 app.include_router(taxonomy.router)
+app.include_router(ingest.router)
 
 
 @app.get("/health", tags=["meta"])
