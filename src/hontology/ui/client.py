@@ -134,3 +134,35 @@ class Api:
 
     def run_similarity(self, **payload: Any) -> dict:
         return self._request("POST", "/taxonomy/similarity", json=payload)
+
+    # --- labels -------------------------------------------------------------
+
+    def labelling_queue(
+        self,
+        ontology_id: int,
+        *,
+        limit: int = 50,
+        per_concept_cap: int | None = None,
+        include_unjudged: bool = True,
+    ) -> list[dict]:
+        params: dict[str, Any] = {
+            "ontology_id": ontology_id,
+            "limit": limit,
+            "include_unjudged": include_unjudged,
+        }
+        if per_concept_cap:
+            params["per_concept_cap"] = per_concept_cap
+        return self._request("GET", "/labels/queue", params=params)
+
+    def label_stats(self, ontology_id: int) -> dict:
+        return self._request("GET", "/labels/stats", params={"ontology_id": ontology_id})
+
+    def create_label(self, **payload: Any) -> dict:
+        return self._request("POST", "/labels", json=payload)
+
+    def adjudicate_label(
+        self, label_id: int, *, matched: bool, note: str | None = None
+    ) -> dict:
+        return self._request(
+            "POST", f"/labels/{label_id}/adjudicate", json={"matched": matched, "note": note}
+        )

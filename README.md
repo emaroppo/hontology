@@ -257,6 +257,16 @@ A few decisions that are load-bearing and non-obvious:
 - **Scrape failures are cached as rows.** A dead or paywalled URL with no row
   gets re-fetched on every run forever; the row makes a permanent failure cost
   one request, with an explicit opt-in to retry.
+- **A model's self-reported confidence is not trusted until it earns it.** The
+  queue ranks partly by model uncertainty, so a run that reports 0.5 on
+  everything would look maximally uncertain on every pair and flood it. Each
+  run's confidence distribution is therefore checked before being used as
+  signal. On this project's own local 9B judge it fails: one run emitted three
+  distinct values (0.90/0.95/1.00, σ=0.033), another emitted **0.85 for every
+  single verdict** (σ=0.000) — and mean confidence when it said *matched* (0.900)
+  was lower than when it said *not matched* (0.950). That number carries no
+  information about correctness, which is exactly why repeated sampling's vote
+  fraction replaces it and why the queue ignores it.
 - **ALL-CAPS text is lowercased before embedding.** This one was found by
   debugging, not design. CAMEO's root labels are all upper case, and feeding
   seven of them to `nomic-embed-text` returns only **three** distinct vectors —
@@ -276,5 +286,5 @@ A few decisions that are load-bearing and non-obvious:
 - [x] GDELT ingest: watermarking, catch-up, backfill, optional continuous watcher
 - [x] Article scraping: extractor chain, quality gate, robots and rate limiting
 - [x] Run configuration, both retrieval sources, judge loop with resume
-- [ ] Ground-truth bank, labeling queue, staleness handling
+- [x] Ground-truth bank, labelling queue, staleness handling
 - [ ] Metrics, A/B comparison, consistency checks, regression gate, leaderboard
