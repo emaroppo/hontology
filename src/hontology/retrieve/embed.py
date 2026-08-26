@@ -261,6 +261,35 @@ def ensure_embeddings(
     return model_row.id, keys
 
 
+def embed_documents(
+    session: Session,
+    provider: EmbeddingProvider,
+    model: str,
+    items: dict[int, str],
+    *,
+    body_limit: int,
+) -> tuple[int, dict[int, str]]:
+    """Ensure a cached embedding exists for each ``{document_id: body}``.
+
+    Document bodies were previously embedded fresh on every run and thrown away.
+    That is pure waste when iterating on *selection* parameters — min_score,
+    max_k, pool_size change nothing about the text, yet each sweep cell re-embedded
+    an identical corpus.
+
+    The key includes ``body_limit`` because truncating at a different length
+    produces genuinely different text, so a changed limit must miss the cache
+    rather than silently reuse a vector built from more or less of the article.
+    """
+    return ensure_embeddings(
+        session,
+        provider,
+        model,
+        object_type="document",
+        items=items,
+        fields=f"body@{body_limit}",
+    )
+
+
 def embed_concepts(
     session: Session,
     provider: EmbeddingProvider,

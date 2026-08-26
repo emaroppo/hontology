@@ -283,7 +283,32 @@ hontology eval consistency 1 --against 2
 hontology eval baseline 1 --out baseline.json
 hontology eval gate 1                   # liveness, then metric floors
 hontology eval leaderboard
+
+hontology eval breakdown 1 --dimension concept   # sliced metrics
+hontology eval errors 1                          # every mistake, with reasoning
+hontology eval sweep 1 examples/sweep.json       # plan; --execute to run
+hontology eval filter-report 1                   # per-code cost and benefit
+hontology ontology lint 1                        # ontology health
 ```
+
+**Slice before you conclude.** A pooled F1 cannot distinguish "uniformly
+mediocre" from "excellent on nine concepts and hopeless on the tenth", and those
+need different work. `eval breakdown` slices by concept, category or locus with a
+Wilson interval per row.
+
+**Read the errors, not just the count.** `eval errors` joins every
+misclassification to the model's own evidence quote and reasoning trace — both
+recorded on every verdict — so failure patterns can be read in bulk.
+
+**Lint the ontology before labelling against it.** `ontology lint` catches
+strength drift (a concept named "*Successful* negotiation" whose definition only
+requires "a concrete commitment" will match a mere promise, and the judge is
+*right* to — the bug is in the ontology) and near-duplicate concepts that
+retrieval cannot separate.
+
+**Sweeps are resumable and share retrieval.** A 3-prompt × 2-cutoff sweep is six
+runs but only **two** distinct retrieval keys, so embedding happens twice, not
+six times; cells already run are skipped entirely.
 
 The bank itself travels as CSV:
 
@@ -408,6 +433,8 @@ A few decisions that are load-bearing and non-obvious:
   per-concept payoff weights and a per-locus activation state, neither of which
   is defined yet. Sequenced after the ontology is refined.
 - Concept groups have no API or UI; they are reachable only through import.
+- The judge's `samples > 1` majority-vote path is unit-tested but has never run
+  against a real model.
 - No machine pre-labelling pass, though the schema and adjudication flow support one.
 
 ## Roadmap

@@ -25,18 +25,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from hontology.config import get_settings
-from hontology.db.models import Candidate, Document
+from hontology.db.models import Candidate, Document, Embedding
 from hontology.retrieve import embed
 
 log = logging.getLogger(__name__)
-
-# Most specific first. The first tier that maps to any concept wins; we do not
-# fall back to a broader tier once a finer one has matched, because a broader
-# match would drag in far more concepts than the event actually supports.
 
 
 @dataclass
@@ -44,13 +40,28 @@ class CandidateStats:
     documents: int = 0
     pool_rows: int = 0
     selected_rows: int = 0
+    embedded: int = 0
+    embeddings_reused: int = 0
 
     def as_dict(self) -> dict:
         return {
             "documents": self.documents,
             "pool_rows": self.pool_rows,
             "selected_rows": self.selected_rows,
+            "embedded": self.embedded,
+            "embeddings_reused": self.embeddings_reused,
         }
+
+
+def _embedding_count(session: Session, model_id: int, object_type: str) -> int:
+    return (
+        session.scalar(
+            select(func.count(Embedding.id)).where(
+                Embedding.model_id == model_id, Embedding.object_type == object_type
+            )
+        )
+        or 0
+    )
 
 
 def select_adaptive(
@@ -88,15 +99,26 @@ def _clear_run(session: Session, run_id: int) -> None:
 # Semantic
 # ---------------------------------------------------------------------------
 
+# The document vector is looked up rather than passed in, so a cached embedding
+# never has to make the round trip back into Python.
 _NEAREST_CONCEPTS = text(
     """
-    SELECT object_id AS concept_id,
-           1 - (embedding <=> CAST(:vec AS vector)) AS score
-    FROM embeddings
-    WHERE model_id = :model_id
-      AND object_type = 'concept'
-      AND text_key = ANY(:text_keys)
-    ORDER BY embedding <=> CAST(:vec AS vector)
+    WITH doc AS (
+        SELECT embedding
+        FROM embeddings
+        WHERE model_id = :model_id
+          AND object_type = 'document'
+          AND object_id = :document_id
+          AND text_key = :document_key
+        LIMIT 1
+    )
+    SELECT c.object_id AS concept_id,
+           1 - (c.embedding <=> doc.embedding) AS score
+    FROM embeddings c, doc
+    WHERE c.model_id = :model_id
+      AND c.object_type = 'concept'
+      AND c.text_key = ANY(:text_keys)
+    ORDER BY c.embedding <=> doc.embedding
     LIMIT :pool_size
     """
 )
@@ -124,25 +146,36 @@ def build_semantic(
     text_keys = list(set(concept_keys.values()))
 
     stats = CandidateStats()
-    query_prefix = embed.query_prefix(model)
 
+    # Embed every body once, reusing anything already cached. Only the missing
+    # ones cost a provider call.
+    bodies: dict[int, str] = {}
     for document in documents:
         body = _document_body(document, embed_body_limit)
-        if not body:
-            continue
+        if body:
+            bodies[document.id] = body
+    if not bodies:
+        return stats
 
-        vector = provider.embed(
-            [query_prefix + embed.normalize_for_embedding(body)], model=model
-        )[0]
-        literal = "[" + ",".join(str(v) for v in vector) + "]"
+    before = _embedding_count(session, model_id, "document")
+    _, document_keys = embed.embed_documents(
+        session, provider, model, bodies, body_limit=embed_body_limit
+    )
+    stats.embedded = _embedding_count(session, model_id, "document") - before
+    stats.embeddings_reused = len(bodies) - stats.embedded
+
+    for document in documents:
+        if document.id not in document_keys:
+            continue
 
         pool = [
             (int(row[0]), float(row[1]))
             for row in session.execute(
                 _NEAREST_CONCEPTS,
                 {
-                    "vec": literal,
                     "model_id": model_id,
+                    "document_id": document.id,
+                    "document_key": document_keys[document.id],
                     "text_keys": text_keys,
                     "pool_size": config["pool_size"],
                 },

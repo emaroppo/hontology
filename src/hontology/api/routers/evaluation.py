@@ -77,3 +77,54 @@ def consistency(run_id: int, against: int | None = None, db: Session = Depends(g
 @router.get("/leaderboard")
 def leaderboard(limit: int = 50):
     return warehouse.leaderboard(limit=limit)
+
+
+@router.get("/runs/{run_id}/breakdown")
+def run_breakdown(
+    run_id: int,
+    dimension: str = "concept",
+    include_machine: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Metrics sliced by concept, category or locus, each with its own interval."""
+    from hontology.evalkit import breakdown
+
+    try:
+        return breakdown.breakdown(
+            db, run_id, dimension=dimension, include_machine=include_machine
+        )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/runs/{run_id}/errors")
+def run_errors(
+    run_id: int,
+    kind: str | None = None,
+    include_machine: bool = False,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    """Misclassified pairs with the model's evidence and reasoning attached."""
+    from hontology.evalkit import errors
+
+    try:
+        rows = errors.triage(
+            db, run_id, kind=kind, include_machine=include_machine, limit=limit
+        )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    return {
+        "rows": [r.as_dict() for r in rows],
+        "summary": errors.summary(db, run_id, include_machine=include_machine),
+    }
+
+
+@router.get("/filter-report")
+def filter_report_endpoint(ontology_id: int, db: Session = Depends(get_db)):
+    """Per-code cost and benefit of the pre-scrape filter mapping."""
+    from hontology.evalkit import filter_report
+
+    return filter_report.report(db, ontology_id)

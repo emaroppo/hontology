@@ -1,0 +1,19 @@
+{
+  "name": "prompt-vs-cutoff",
+  "base": {
+    "common": { "ontology_version": "latest", "body_limit": 2500 },
+    "candidates": { "source": "semantic", "selection": "adaptive", "min_score": 0.5, "pool_size": 8 },
+    "judge": { "provider": "ollama", "model": "huihui_ai/qwen3.5-abliterated:9b" }
+  },
+  "axes": {
+    "prompt": [
+      { "judge": { "prompt_id": "strict_v1" }, "_label": "strict" },
+      { "judge": { "prompt_id": "lenient_v1" }, "_label": "lenient" },
+      { "judge": { "prompt_id": "concept_first_v1" }, "_label": "conceptfirst" }
+    ],
+    "cutoff": [
+      { "candidates": { "max_k": 2 }, "_label": "k2" },
+      { "candidates": { "max_k": 5 }, "_label": "k5" }
+    ]
+  }
+}

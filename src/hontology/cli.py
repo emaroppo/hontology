@@ -91,6 +91,27 @@ def ontology_export(ontology_id: int, out: Path | None = None) -> None:
         typer.echo(f"wrote {out}")
 
 
+@ontology_app.command("lint")
+def ontology_lint_command(ontology_id: int) -> None:
+    """Health checks: strength drift, near-duplicates, thin definitions."""
+    from hontology.ontology import lint as lint_module
+
+    with session_scope() as session:
+        result = lint_module.lint(session, ontology_id)
+
+    typer.echo(
+        f"{result['concepts']} concept(s): {result['warnings']} warning(s), "
+        f"{result['info']} note(s)"
+    )
+    for finding in result["findings"]:
+        colour = typer.colors.YELLOW if finding["severity"] == "warning" else None
+        typer.secho(
+            f"  [{finding['severity']}] {finding['check']}: {finding['concept_name']}",
+            fg=colour,
+        )
+        typer.echo(f"      {finding['message']}")
+
+
 @ontology_app.command("version")
 def ontology_version(ontology_id: int) -> None:
     """Resolve the current version, minting one only if the wording changed."""
@@ -451,6 +472,108 @@ def eval_run(
                 judge_key=run.judge_key,
             )
             typer.secho("recorded to the leaderboard", fg=typer.colors.GREEN)
+
+
+@eval_app.command("breakdown")
+def eval_breakdown(
+    run_id: int,
+    dimension: str = typer.Option("concept", help="concept | category | locus"),
+    include_machine: bool = typer.Option(False, help="Count machine labels."),
+) -> None:
+    """Metrics sliced, so a systematic failure is visible rather than pooled away."""
+    from hontology.evalkit import breakdown
+
+    with session_scope() as session:
+        rows = breakdown.breakdown(
+            session, run_id, dimension=dimension, include_machine=include_machine
+        )
+    typer.echo(breakdown.format_breakdown(rows, dimension))
+
+
+@eval_app.command("errors")
+def eval_errors(
+    run_id: int,
+    kind: str | None = typer.Option(None, help="false_positive | false_negative"),
+    include_machine: bool = typer.Option(False, help="Count machine labels."),
+    limit: int = typer.Option(20, help="How many to show."),
+) -> None:
+    """Every misclassified pair, with the model's evidence and reasoning."""
+    from hontology.evalkit import errors
+
+    with session_scope() as session:
+        rows = errors.triage(
+            session, run_id, kind=kind, include_machine=include_machine, limit=limit
+        )
+        stats = errors.summary(session, run_id, include_machine=include_machine)
+    typer.echo(errors.format_triage(rows))
+    typer.echo(
+        f"{stats['total']} error(s): {stats['false_positives']} FP, "
+        f"{stats['false_negatives']} FN"
+    )
+    for concept, counts in list(stats["by_concept"].items())[:5]:
+        typer.echo(
+            f"  {concept:<30} FP={counts['false_positive']} FN={counts['false_negative']}"
+        )
+
+
+@eval_app.command("filter-report")
+def eval_filter_report(ontology_id: int) -> None:
+    """Per-code cost and benefit of the pre-scrape filter mapping."""
+    from hontology.evalkit import filter_report
+
+    with session_scope() as session:
+        typer.echo(filter_report.format_report(filter_report.report(session, ontology_id)))
+
+
+@eval_app.command("sweep")
+def eval_sweep(
+    ontology_id: int,
+    sweep_path: Path,
+    execute: bool = typer.Option(False, help="Run the plan, not just print it."),
+    documents: int = typer.Option(50, help="Documents per cell."),
+    judge_limit: int | None = typer.Option(None, help="Cap pairs judged per cell."),
+) -> None:
+    """Plan or run a parameter sweep. Cells already run are skipped."""
+    from hontology.evalkit import sweep as sweep_module
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(message)s")
+    spec = json.loads(sweep_path.read_text(encoding="utf-8"))
+
+    with session_scope() as session:
+        plan = sweep_module.plan(
+            session,
+            ontology_id,
+            base=spec.get("base", {}),
+            axes=spec.get("axes", {}),
+            name_prefix=spec.get("name", "sweep"),
+        )
+        summary = plan.as_dict()
+
+    typer.echo(
+        f"{summary['total']} cell(s): {summary['done']} already run, "
+        f"{summary['todo']} to do, {summary['distinct_candidate_keys']} distinct "
+        f"retrieval key(s)"
+    )
+    for cell in summary["cells"]:
+        mark = "done" if cell["done"] else "todo"
+        typer.echo(f"  [{mark}] {cell['name']}  cand={cell['candidates_key']}")
+
+    if not execute:
+        typer.secho("\nplan only — pass --execute to run", fg=typer.colors.YELLOW)
+        raise typer.Exit(0)
+
+    with session_scope() as session:
+        plan = sweep_module.plan(
+            session,
+            ontology_id,
+            base=spec.get("base", {}),
+            axes=spec.get("axes", {}),
+            name_prefix=spec.get("name", "sweep"),
+        )
+        results = sweep_module.execute(
+            session, ontology_id, plan, document_limit=documents, judge_limit=judge_limit
+        )
+    typer.secho(f"\nran {len(results)} cell(s)", fg=typer.colors.GREEN)
 
 
 @eval_app.command("compare")

@@ -99,7 +99,32 @@ st.caption(
 # Concepts
 # ---------------------------------------------------------------------------
 
-edit_tab, add_tab, export_tab = st.tabs(["Edit concepts", "Add concept", "Export"])
+edit_tab, add_tab, lint_tab, export_tab = st.tabs(
+    ["Edit concepts", "Add concept", "Health", "Export"]
+)
+
+with lint_tab:
+    st.caption(
+        "Checks that catch ontology bugs before they cost labelling hours. "
+        "Advisory only — this is your ontology to author."
+    )
+    try:
+        report = api.lint_ontology(ontology_id)
+        cols = st.columns(3)
+        cols[0].metric("Concepts", report["concepts"])
+        cols[1].metric("Warnings", report["warnings"])
+        cols[2].metric("Notes", report["info"])
+
+        if not report["findings"]:
+            st.success("Nothing flagged.")
+        for finding in report["findings"]:
+            renderer = st.warning if finding["severity"] == "warning" else st.info
+            renderer(
+                f"**{finding['concept_name']}** — {finding['check'].replace('_', ' ')}\n\n"
+                f"{finding['message']}"
+            )
+    except ApiError as exc:
+        st.error(exc.detail)
 
 with edit_tab:
     if not concepts:

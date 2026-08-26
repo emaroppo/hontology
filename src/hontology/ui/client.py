@@ -237,3 +237,26 @@ class Api:
             "/labels/import",
             json={"ontology_id": ontology_id, "csv": csv_text, "overwrite": overwrite},
         )
+
+    def run_breakdown(
+        self, run_id: int, *, dimension: str = "concept", include_machine: bool = False
+    ) -> list[dict]:
+        return self._request(
+            "GET",
+            f"/eval/runs/{run_id}/breakdown",
+            params={"dimension": dimension, "include_machine": include_machine},
+        )
+
+    def run_errors(
+        self, run_id: int, *, kind: str | None = None, include_machine: bool = False
+    ) -> dict:
+        params: dict[str, Any] = {"include_machine": include_machine}
+        if kind:
+            params["kind"] = kind
+        return self._request("GET", f"/eval/runs/{run_id}/errors", params=params)
+
+    def lint_ontology(self, ontology_id: int) -> dict:
+        return self._request("GET", f"/ontologies/{ontology_id}/lint")
+
+    def filter_report(self, ontology_id: int) -> dict:
+        return self._request("GET", "/eval/filter-report", params={"ontology_id": ontology_id})

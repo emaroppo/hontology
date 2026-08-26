@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import streamlit as st
 
+from hontology.ui import charts
 from hontology.ui.client import Api, ApiError
+from hontology.ui.glossary import describe
 
 st.set_page_config(page_title="Evaluation", page_icon="📊", layout="wide")
 
@@ -78,10 +80,17 @@ for col, name, ci_key in (
 ):
     value = judge[name]
     low, high = judge[ci_key]
-    col.metric(name.title(), f"{value:.3f}" if value is not None else "—")
+    col.metric(name.title(), f"{value:.3f}" if value is not None else "—", help=describe(name))
     col.caption(f"[{low:.3f}, {high:.3f}]" if low is not None else "not measured")
-cols[3].metric("Confusion", f"{judge['tp']}/{judge['fp']}/{judge['tn']}/{judge['fn']}")
+cols[3].metric(
+    "Confusion",
+    f"{judge['tp']}/{judge['fp']}/{judge['tn']}/{judge['fn']}",
+    help=describe("confusion"),
+)
 cols[3].caption("tp / fp / tn / fn")
+
+if judge["n"]:
+    st.altair_chart(charts.confusion_bar(judge), use_container_width=True)
 
 st.divider()
 st.subheader("Retrieval")
@@ -99,24 +108,19 @@ cols[1].metric(
     "Coverage",
     f"{retrieval['coverage']:.3f}" if retrieval["coverage"] is not None else "—",
 )
-cols[1].caption("Share of candidates carrying a label — precision's denominator.")
+cols[1].caption(describe("coverage"))
 cols[2].metric("MRR", f"{retrieval['mrr']:.3f}" if retrieval["mrr"] is not None else "—")
 cols[3].metric(
     "Cutoff recall",
     f"{retrieval['cutoff_recall']:.3f}" if retrieval["cutoff_recall"] is not None else "—",
 )
-cols[3].caption("Of positives that WERE ranked, how many survived the cutoff.")
+cols[3].caption(describe("cutoff_recall"))
 
-recall_at_k = {k: v for k, v in retrieval["recall_at_k"].items() if v is not None}
-if recall_at_k:
-    st.bar_chart(recall_at_k, x_label="k", y_label="recall@k")
+st.altair_chart(charts.recall_at_k(retrieval["recall_at_k"]), use_container_width=True)
 
 with st.expander("Calibration — is the confidence number worth anything?"):
-    st.caption(
-        "A calibrated model is right about 70% of the time when it says 0.7. Where "
-        "the bins are flat or empty, its confidence carries no information and the "
-        "labelling queue ignores it."
-    )
+    st.caption(describe("calibration"))
+    st.altair_chart(charts.calibration(evaluation["calibration"]), use_container_width=True)
     st.dataframe(
         [
             {
@@ -128,6 +132,79 @@ with st.expander("Calibration — is the confidence number worth anything?"):
         ],
         use_container_width=True,
     )
+
+st.divider()
+st.subheader("Breakdown")
+st.caption(
+    "Systematic failures only show up sliced: a pooled F1 cannot tell "
+    '"uniformly mediocre" from "excellent except on one concept".'
+)
+dimension = st.radio("Slice by", ["concept", "category", "locus"], horizontal=True)
+try:
+    rows = api.run_breakdown(
+        selected["id"], dimension=dimension, include_machine=include_machine
+    )
+    if rows:
+        st.altair_chart(
+            charts.metric_with_interval(rows, metric="f1", title=f"F1 by {dimension}"),
+            use_container_width=True,
+        )
+        st.dataframe(
+            [
+                {
+                    dimension: r["label"],
+                    "n": r["n"],
+                    "tp": r["tp"],
+                    "fp": r["fp"],
+                    "fn": r["fn"],
+                    "precision": r["precision"],
+                    "recall": r["recall"],
+                    "f1": r["f1"],
+                }
+                for r in rows
+            ],
+            use_container_width=True,
+        )
+    else:
+        st.caption("No labelled pairs to slice yet.")
+except ApiError as exc:
+    st.error(exc.detail)
+
+st.divider()
+st.subheader("Errors")
+st.caption(
+    "Every mistake with the model's own evidence attached. A confusion matrix "
+    "says how many went wrong; this says why, which is where fixable patterns are."
+)
+try:
+    result = api.run_errors(selected["id"], include_machine=include_machine)
+    summary = result["summary"]
+    error_cols = st.columns(3)
+    error_cols[0].metric("Errors", summary["total"])
+    error_cols[1].metric("False positives", summary["false_positives"])
+    error_cols[2].metric("False negatives", summary["false_negatives"])
+
+    for row in result["rows"][:25]:
+        marker = "🔴 FP" if row["kind"] == "false_positive" else "🔵 FN"
+        confidence = f"{row['confidence']:.2f}" if row["confidence"] is not None else "—"
+        with st.expander(
+            f"{marker}  {row['concept_name']}  ·  conf {confidence}  ·  "
+            f"{(row['document_title'] or row['document_url'])[:60]}"
+        ):
+            if row["evidence"]:
+                st.markdown(f"**Model quoted:** “{row['evidence']}”")
+            if row["label_note"]:
+                st.caption(f"Label note: {row['label_note']}")
+            if row["reasoning"]:
+                st.text_area(
+                    "Reasoning trace",
+                    row["reasoning"],
+                    height=140,
+                    key=f"reason_{row['document_id']}_{row['concept_id']}",
+                )
+            st.caption(f"[open article]({row['document_url']})")
+except ApiError as exc:
+    st.error(exc.detail)
 
 st.divider()
 st.subheader("Compare two runs")
@@ -159,6 +236,7 @@ st.subheader("Leaderboard")
 try:
     board = api.leaderboard()
     if board:
+        st.altair_chart(charts.leaderboard_scatter(board), use_container_width=True)
         st.dataframe(board, use_container_width=True)
     else:
         st.caption("Nothing recorded yet — run `hontology eval run <id> --record`.")

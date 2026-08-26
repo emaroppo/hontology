@@ -147,3 +147,19 @@ def resolve_snapshot(ontology_id: int, db: Session = Depends(get_db)):
         n_concepts=ref.n_concepts,
         created=ref.created,
     )
+
+
+@router.get("/{ontology_id}/lint")
+def lint_ontology(ontology_id: int, db: Session = Depends(get_db)):
+    """Health checks: strength drift, near-duplicates, thin definitions.
+
+    Advisory only — an ontology is the user's to author, and a lint that blocks
+    is a lint that gets ignored.
+    """
+    from hontology.ontology import lint as lint_module
+
+    try:
+        service.get_ontology(db, ontology_id)
+    except service.NotFound as exc:
+        raise _handle(exc) from exc
+    return lint_module.lint(db, ontology_id)
