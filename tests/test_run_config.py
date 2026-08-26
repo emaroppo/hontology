@@ -84,11 +84,11 @@ class TestReuse:
         composed = keys({})
         assert composed["judge"].endswith(f"_{composed['candidates']}")
 
-    def test_switching_retrieval_source_forks_the_tree(self):
-        assert (
-            keys({"candidates": {"source": "code"}})["candidates"]
-            != keys({"candidates": {"source": "semantic"}})["candidates"]
-        )
+    def test_an_unknown_retrieval_source_is_rejected(self):
+        """`code` was removed as a retrieval source; the signal moved to the
+        ingest filter, where it can decide what to fetch at all."""
+        with pytest.raises(ConfigError):
+            normalize({"candidates": {"source": "code"}})
 
 
 class TestBehaviourVersusInfrastructure:

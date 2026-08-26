@@ -1,8 +1,13 @@
-"""Candidate selection: two strategies, one contract.
+"""Candidate selection.
 
-Both sources emit the same `(document, concept, score, rank, selected)` rows, so
-nothing downstream can tell which produced its input and the two can be A/B'd
-directly on the same ground truth.
+Concepts are ranked against each document body by embedding similarity.
+
+An earlier design also offered a *code* source, reaching concepts through the
+feed's own CAMEO codes. It was removed: as a retrieval strategy it competed with
+semantic similarity and lost, and it only worked for ontologies that map onto
+CAMEO at all. That same signal is genuinely valuable one stage earlier, though —
+see `ingest.filter`, where codes decide which documents are worth fetching, a
+question semantic similarity cannot answer because it needs the body first.
 
 **The full pre-cutoff pool is stored**, with ``selected`` marking what survived.
 That extra column separates two questions a single number conflates:
@@ -24,7 +29,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from hontology.config import get_settings
-from hontology.db.models import Candidate, Code, Concept, ConceptCode, Document, FeedEvent
+from hontology.db.models import Candidate, Document
 from hontology.retrieve import embed
 
 log = logging.getLogger(__name__)
@@ -32,7 +37,6 @@ log = logging.getLogger(__name__)
 # Most specific first. The first tier that maps to any concept wins; we do not
 # fall back to a broader tier once a finer one has matched, because a broader
 # match would drag in far more concepts than the event actually supports.
-CODE_TIERS = ("event_code", "base_code", "root_code")
 
 
 @dataclass
@@ -179,91 +183,6 @@ def build_semantic(
     return stats
 
 
-# ---------------------------------------------------------------------------
-# Code
-# ---------------------------------------------------------------------------
-
-
-def build_code(
-    session: Session,
-    run_id: int,
-    *,
-    ontology_id: int,
-    documents: list[Document],
-) -> CandidateStats:
-    """Reach concepts through the feed's own event codes.
-
-    Cheap — no model involved — but only meaningful for an ontology whose
-    concepts have been mapped onto the code system.
-    """
-    concept_ids = {
-        c.id for c in session.scalars(select(Concept).where(Concept.ontology_id == ontology_id))
-    }
-    if not concept_ids:
-        return CandidateStats()
-
-    # code string -> concepts linked to it
-    links: dict[str, set[int]] = {}
-    for link, code in session.execute(
-        select(ConceptCode, Code)
-        .join(Code, Code.id == ConceptCode.code_id)
-        .where(ConceptCode.concept_id.in_(concept_ids))
-    ).all():
-        links.setdefault(code.code, set()).add(link.concept_id)
-
-    if not links:
-        return CandidateStats()
-
-    document_ids = [d.id for d in documents]
-    events = session.scalars(
-        select(FeedEvent).where(FeedEvent.document_id.in_(document_ids))
-    ).all()
-
-    # document -> {concept: matched code and tier}
-    matched: dict[int, dict[int, tuple[str, str]]] = {}
-    for event in events:
-        if event.document_id is None:
-            # The feed row lost its document (deleted, or never resolved).
-            continue
-        for tier in CODE_TIERS:
-            code_value = getattr(event, tier)
-            if not code_value:
-                continue
-            hits = links.get(code_value)
-            if not hits:
-                continue
-            bucket = matched.setdefault(event.document_id, {})
-            for concept_id in hits:
-                bucket.setdefault(concept_id, (code_value, tier.replace("_code", "")))
-            # First tier that matched anything wins for this event.
-            break
-
-    stats = CandidateStats()
-    for document_id, concepts in matched.items():
-        for rank, (concept_id, (code_value, tier)) in enumerate(concepts.items(), start=1):
-            session.add(
-                Candidate(
-                    run_id=run_id,
-                    document_id=document_id,
-                    concept_id=concept_id,
-                    source="code",
-                    # A code match is a set membership, not a ranking, so there is
-                    # no meaningful score to report here.
-                    score=None,
-                    rank=rank,
-                    selected=True,
-                    matched_code=code_value,
-                    matched_level=tier,
-                )
-            )
-        stats.documents += 1
-        stats.pool_rows += len(concepts)
-        stats.selected_rows += len(concepts)
-
-    session.flush()
-    return stats
-
-
 def build_candidates(
     session: Session,
     run_id: int,
@@ -273,20 +192,17 @@ def build_candidates(
     config: dict,
     embed_body_limit: int,
 ) -> dict:
-    """Dispatch to the configured source, replacing any previous rows for the run."""
+    """Build candidates for the run, replacing any previous rows."""
     _clear_run(session, run_id)
 
-    if config["source"] == "code":
-        stats = build_code(session, run_id, ontology_id=ontology_id, documents=documents)
-    else:
-        stats = build_semantic(
-            session,
-            run_id,
-            ontology_id=ontology_id,
-            documents=documents,
-            config=config,
-            embed_body_limit=embed_body_limit,
-        )
+    stats = build_semantic(
+        session,
+        run_id,
+        ontology_id=ontology_id,
+        documents=documents,
+        config=config,
+        embed_body_limit=embed_body_limit,
+    )
 
     log.info("candidates (%s): %s", config["source"], stats.as_dict())
     return stats.as_dict() | {"source": config["source"]}

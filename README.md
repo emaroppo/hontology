@@ -163,6 +163,33 @@ What the watcher does that a `while true; sleep 900` loop does not:
 - **Shuts down gracefully.** SIGTERM finishes and commits the slice in flight
   instead of losing it, and the sleep is interruptible so stopping is immediate.
 
+### Filtering before you fetch
+
+The feed tags every event with a CAMEO code *before* anything is downloaded. That
+is the only signal available pre-scrape — semantic similarity needs the article
+body, so it cannot tell you whether the body was worth fetching. With ~260 new
+URLs every fifteen minutes (~25k/day), spending the scrape budget on documents an
+ontology could plausibly match is worth more than any downstream tuning.
+
+```bash
+hontology ingest filter-preview <ontology-id>   # what it would keep
+hontology ingest scrape --ontology-id <id>      # apply it
+```
+
+**Opt-in, and off by default.** It only means anything for an ontology whose
+concepts are mapped onto the code system; for one that isn't, applying it would
+silently fetch nothing. When no document matches, the scraper says so rather than
+returning a quiet zero.
+
+**Everything is still ingested** — only fetching is gated. Feed rows are cheap and
+the corpus is shared between ontologies, so discarding a document because *this*
+ontology can't use it would corrupt the corpus for the next one.
+
+The tier fallback walks event → base → root and stops at the **first tier that
+carries a code**, matched or not. Falling through after a specific code failed
+would let an unmatched `1451` ("riot") be retried as `14` ("PROTEST") and match
+everything protest-shaped — far more than the event supports.
+
 ### Fetching article text
 
 The feed gives URLs, not article bodies. Fetching them is a separate, bounded step:
@@ -369,6 +396,19 @@ A few decisions that are load-bearing and non-obvious:
   and "Riot" starts matching `ASSAULT` / `PROTEST` / `FIGHT` instead of
   `MAKE PUBLIC STATEMENT`. The failure mode is bad ranking with healthy numbers,
   which is why it is now a regression test.
+
+## Future work
+
+- **Rank by information gain, not just relevance.** The filter currently answers
+  "could this article match?" but not "is it worth reading?". The intended
+  ranking is `Σ |weight| × (1 − activation)` over an article's matched concepts,
+  where activation is how much that concept is *already known* to be firing in
+  that place — so an article about something already well-established scores low
+  and a first signal scores high. This needs the ontology to carry meaningful
+  per-concept payoff weights and a per-locus activation state, neither of which
+  is defined yet. Sequenced after the ontology is refined.
+- Concept groups have no API or UI; they are reachable only through import.
+- No machine pre-labelling pass, though the schema and adjudication flow support one.
 
 ## Roadmap
 

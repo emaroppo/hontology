@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 from hontology.config import get_settings
 from hontology.db.models import Document
 from hontology.ingest import extract
+from hontology.ingest import filter as filter_module
 
 log = logging.getLogger(__name__)
 
@@ -263,20 +264,54 @@ def scrape_pending(
     retry_failed: bool = False,
     use_reader_proxy: bool = False,
     document_ids: list[int] | None = None,
+    ontology_id: int | None = None,
 ) -> dict:
     """Fetch and extract bodies for pending documents.
 
     Work is grouped by host and hosts run in parallel, so the per-host spacing is
     preserved while the long tail still finishes quickly.
+
+    Passing *ontology_id* applies the code filter (see `ingest.filter`): only
+    documents whose feed events reach one of that ontology's concepts are
+    fetched. It is opt-in because it is meaningless for an ontology with no
+    curated code links, where applying it would silently fetch nothing.
     """
     settings = get_settings()
     settings.ensure_dirs()
     body_dir = settings.scrape_cache_dir
     budget = limit if limit is not None else settings.scrape_budget
 
-    documents = pending_documents(
-        session, budget, retry_failed=retry_failed, document_ids=document_ids
-    )
+    filtered_out = 0
+    if ontology_id is not None:
+        matches = filter_module.matching_documents(session, ontology_id)
+        if not matches:
+            # No links, or nothing matched. Either way, fetching zero documents
+            # silently would look like the feed had gone quiet.
+            return ScrapeStats().as_dict() | {
+                "pending_remaining": len(
+                    pending_documents(session, 10_000, retry_failed=retry_failed)
+                ),
+                "filter": {
+                    "ontology_id": ontology_id,
+                    "matched_documents": 0,
+                    "note": "no documents matched this ontology's code links; "
+                    "nothing was fetched",
+                },
+            }
+        # Intersect the filter with any explicit id list.
+        allowed = set(matches)
+        if document_ids is not None:
+            allowed &= set(document_ids)
+        # Take a wider slice before filtering so the budget is spent on matches
+        # rather than consumed by non-matching rows that happen to sort first.
+        wide = pending_documents(session, budget * 20, retry_failed=retry_failed)
+        documents = [d for d in wide if d.id in allowed][:budget]
+        filtered_out = len(wide) - len([d for d in wide if d.id in allowed])
+    else:
+        documents = pending_documents(
+            session, budget, retry_failed=retry_failed, document_ids=document_ids
+        )
+
     if not documents:
         return ScrapeStats().as_dict() | {"pending_remaining": 0}
 
@@ -338,5 +373,13 @@ def scrape_pending(
     remaining = len(
         pending_documents(session, 10_000, retry_failed=retry_failed, document_ids=document_ids)
     )
-    log.info("scrape: %s", stats.as_dict())
-    return stats.as_dict() | {"pending_remaining": remaining}
+    result = stats.as_dict() | {"pending_remaining": remaining}
+    if ontology_id is not None:
+        # Reported so a small `attempted` reads as "the filter did its job"
+        # rather than "the scraper is broken".
+        result["filter"] = {
+            "ontology_id": ontology_id,
+            "skipped_no_code_match": filtered_out,
+        }
+    log.info("scrape: %s", result)
+    return result

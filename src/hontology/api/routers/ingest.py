@@ -70,6 +70,9 @@ def backfill(payload: BackfillIn, db: Session = Depends(get_db)):
 class ScrapeIn(BaseModel):
     limit: int | None = None
     retry_failed: bool = False
+    # Opt-in pre-scrape code filter. Meaningless without curated code links, so
+    # never applied unless an ontology is named.
+    ontology_id: int | None = None
     # The third-party reader service sends target URLs to an external host, so it
     # stays opt-in per request rather than becoming a silent fallback.
     reader_proxy: bool = False
@@ -84,4 +87,13 @@ def scrape(payload: ScrapeIn | None = None, db: Session = Depends(get_db)):
         limit=body.limit,
         retry_failed=body.retry_failed,
         use_reader_proxy=body.reader_proxy,
+        ontology_id=body.ontology_id,
     )
+
+
+@router.get("/filter-preview")
+def filter_preview(ontology_id: int, db: Session = Depends(get_db)):
+    """What the pre-scrape code filter would keep, without fetching anything."""
+    from hontology.ingest import filter as ingest_filter
+
+    return ingest_filter.preview(db, ontology_id)

@@ -161,12 +161,21 @@ def ingest_scrape(
     reader_proxy: bool = typer.Option(
         False, help="Allow the third-party reader service as a last resort."
     ),
+    ontology_id: int | None = typer.Option(
+        None,
+        help="Only fetch documents whose feed codes reach this ontology's concepts. "
+        "Off by default; meaningless for an ontology with no code links.",
+    ),
 ) -> None:
     """Fetch article text for documents that do not have it yet."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(message)s")
     with session_scope() as session:
         result = scrape.scrape_pending(
-            session, limit=limit, retry_failed=retry_failed, use_reader_proxy=reader_proxy
+            session,
+            limit=limit,
+            retry_failed=retry_failed,
+            use_reader_proxy=reader_proxy,
+            ontology_id=ontology_id,
         )
 
     typer.echo(
@@ -175,7 +184,32 @@ def ingest_scrape(
     )
     if result["methods"]:
         typer.echo(f"extractors   {result['methods']}")
+    if result.get("filter"):
+        typer.echo(f"filter       {result['filter']}")
     typer.echo(f"remaining    {result['pending_remaining']}")
+
+
+@ingest_app.command("filter-preview")
+def ingest_filter_preview(ontology_id: int) -> None:
+    """Show what the pre-scrape code filter would keep, without fetching."""
+    from hontology.ingest import filter as ingest_filter
+
+    with session_scope() as session:
+        report = ingest_filter.preview(session, ontology_id)
+
+    if not report["usable"]:
+        typer.secho(report["reason"], fg=typer.colors.YELLOW)
+        raise typer.Exit(0)
+
+    typer.echo(f"linked codes        {report['linked_codes']}")
+    typer.echo(f"documents total     {report['documents_total']}")
+    typer.echo(f"  matching          {report['documents_matching']}")
+    typer.echo(f"unfetched           {report['documents_unfetched']}")
+    typer.echo(f"  would fetch       {report['unfetched_matching']}")
+    typer.echo(f"  would skip        {report['unfetched_skipped']}")
+    share = report["share_kept"]
+    if share is not None:
+        typer.secho(f"share kept          {share:.1%}", fg=typer.colors.GREEN)
 
 
 @ingest_app.command("watch")

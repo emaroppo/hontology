@@ -42,7 +42,7 @@ COMMON_DEFAULTS: dict[str, Any] = {
 }
 
 CANDIDATES_DEFAULTS: dict[str, Any] = {
-    "source": "semantic",  # "semantic" | "code"
+    "source": "semantic",
     "embed_provider": "ollama",
     "embed_model": "nomic-embed-text",
     "concept_fields": "name+definition",
@@ -100,7 +100,7 @@ def normalize(config: dict) -> dict:
     candidates = _merge(CANDIDATES_DEFAULTS, config.get("candidates"))
     judge = _merge(JUDGE_DEFAULTS, config.get("judge"))
 
-    if candidates["source"] not in ("semantic", "code"):
+    if candidates["source"] not in ("semantic",):
         raise ConfigError(f"unknown candidates.source {candidates['source']!r}")
     if candidates["selection"] not in ("top-k", "adaptive"):
         raise ConfigError(f"unknown candidates.selection {candidates['selection']!r}")
