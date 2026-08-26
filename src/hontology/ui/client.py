@@ -103,3 +103,34 @@ class Api:
 
     def snapshot(self, ontology_id: int) -> dict:
         return self._request("POST", f"/ontologies/{ontology_id}/snapshot")
+
+    # --- taxonomy -----------------------------------------------------------
+
+    def ingest_cameo(self) -> dict:
+        return self._request("POST", "/taxonomy/cameo/ingest")
+
+    def list_codes(self, level: str | None = None, limit: int = 500) -> list[dict]:
+        params: dict[str, Any] = {"limit": limit}
+        if level:
+            params["level"] = level
+        return self._request("GET", "/taxonomy/codes", params=params)
+
+    def concept_links(self, concept_id: int) -> list[dict]:
+        return self._request("GET", f"/taxonomy/concepts/{concept_id}/links")
+
+    def concept_candidates(self, concept_id: int, run_id: int, limit: int = 20) -> list[dict]:
+        return self._request(
+            "GET",
+            f"/taxonomy/concepts/{concept_id}/candidates",
+            params={"run_id": run_id, "limit": limit},
+        )
+
+    def set_link(self, concept_id: int, code_id: int, *, linked: bool) -> None:
+        self._request(
+            "POST",
+            "/taxonomy/links",
+            json={"concept_id": concept_id, "code_id": code_id, "linked": linked},
+        )
+
+    def run_similarity(self, **payload: Any) -> dict:
+        return self._request("POST", "/taxonomy/similarity", json=payload)

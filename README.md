@@ -143,13 +143,22 @@ A few decisions that are load-bearing and non-obvious:
 - **Scrape failures are cached as rows.** A dead or paywalled URL with no row
   gets re-fetched on every run forever; the row makes a permanent failure cost
   one request, with an explicit opt-in to retry.
+- **ALL-CAPS text is lowercased before embedding.** This one was found by
+  debugging, not design. CAMEO's root labels are all upper case, and feeding
+  seven of them to `nomic-embed-text` returns only **three** distinct vectors —
+  several bit-for-bit identical, mean pairwise cosine 0.97. Every concept then
+  matched the same handful of codes with entirely plausible-looking scores.
+  Lowercasing the same labels gives seven distinct vectors at mean cosine 0.65,
+  and "Riot" starts matching `ASSAULT` / `PROTEST` / `FIGHT` instead of
+  `MAKE PUBLIC STATEMENT`. The failure mode is bad ranking with healthy numbers,
+  which is why it is now a regression test.
 
 ## Roadmap
 
 - [x] Schema: ontology, taxonomy, vectors, corpus, runs, labels, snapshots
 - [x] Pluggable LLM provider layer (Ollama; Anthropic behind the same protocol)
 - [x] Ontology service, import/export, snapshots, API and editor UI
-- [ ] CAMEO ingest, embeddings, similarity review
+- [x] CAMEO ingest, embeddings, similarity review
 - [ ] GDELT ingest with watermarking, backfill and a polite bounded scraper
 - [ ] Run configuration, both retrieval sources, judge loop with resume
 - [ ] Ground-truth bank, labeling queue, staleness handling

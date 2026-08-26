@@ -12,13 +12,20 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from hontology.api.routers import ontology
+from hontology.api.routers import ontology, taxonomy
 from hontology.config import get_settings
+from hontology.db.session import session_scope
+from hontology.ingest.loci import seed_loci
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     get_settings().ensure_dirs()
+    # Country codes are reference data, not user content: seeding them keeps the
+    # "empty on first run" promise about the ontology while making sure the
+    # FIPS↔ISO authority exists before any feed row needs resolving.
+    with session_scope() as session:
+        seed_loci(session)
     yield
 
 
@@ -30,6 +37,7 @@ app = FastAPI(
 )
 
 app.include_router(ontology.router)
+app.include_router(taxonomy.router)
 
 
 @app.get("/health", tags=["meta"])

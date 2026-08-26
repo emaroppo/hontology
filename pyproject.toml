@@ -24,6 +24,7 @@ dependencies = [
     "httpx>=0.28",
     "trafilatura>=2.0",
     "tenacity>=9.0",
+    "pycountry>=24.6",
     # CLI
     "typer>=0.15",
 ]
