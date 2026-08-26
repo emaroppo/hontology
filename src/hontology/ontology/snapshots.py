@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,15 +45,14 @@ class SnapshotRef:
 
 
 def _normalize(concept: Concept | dict) -> dict[str, Any]:
-    get = concept.get if isinstance(concept, dict) else lambda k: getattr(concept, k)
-    row: dict[str, Any] = {}
-    for field in HASHED_FIELDS:
-        value = get(field)
-        if field == "id":
-            row[field] = int(value)
-        else:
-            # Normalize whitespace so a trailing newline is not a new version.
-            row[field] = (value or "").strip()
+    get: Callable[[str], Any] = (
+        concept.get if isinstance(concept, dict) else lambda k: getattr(concept, k)
+    )
+    # Normalize whitespace so a trailing newline is not a new version, and treat
+    # a cleared field as equivalent whether it arrives as None or "".
+    row: dict[str, Any] = {"id": int(get("id"))}
+    for field in HASHED_FIELDS[1:]:
+        row[field] = (get(field) or "").strip()
     return row
 
 
@@ -79,9 +78,7 @@ def content_hash(concepts: Sequence[Concept | dict]) -> str:
 
 def resolve_current(session: Session, ontology_id: int) -> SnapshotRef:
     """Resolve the live concept set to a snapshot, minting one only if changed."""
-    concepts = list(
-        session.scalars(select(Concept).where(Concept.ontology_id == ontology_id))
-    )
+    concepts = list(session.scalars(select(Concept).where(Concept.ontology_id == ontology_id)))
     digest = content_hash(concepts)
 
     existing = session.scalar(
@@ -161,9 +158,7 @@ def resolve(session: Session, ontology_id: int, spec: str | None) -> SnapshotRef
     )
 
 
-def stale_concept_ids(
-    session: Session, ontology_id: int, labeled_version: str
-) -> set[int]:
+def stale_concept_ids(session: Session, ontology_id: int, labeled_version: str) -> set[int]:
     """Concepts whose wording changed since *labeled_version*.
 
     A label stamped with that version is stale for exactly these concepts — it

@@ -9,8 +9,9 @@ pipeline finds evidence of them in the [GDELT](https://www.gdeltproject.org/)
 global news feed, then scores itself against ground truth you accumulate as you
 go.
 
-> **Status: in development.** The schema and provider layer are in place. See
-> [Roadmap](#roadmap) for what works today.
+> **Status: in development.** You can define, version, import and export an
+> ontology today. Ingest, detection and evaluation are next — see
+> [Roadmap](#roadmap).
 
 ---
 
@@ -89,7 +90,7 @@ cp .env.example .env
 make install      # create the venv, install dependencies
 make up           # start Postgres with pgvector
 make migrate      # apply the schema
-make api          # http://127.0.0.1:8000/docs
+make api          # http://127.0.0.1:8100/docs
 make ui           # http://localhost:8501   (in a second terminal)
 ```
 
@@ -98,7 +99,7 @@ whole premise is that the ontology is yours. Create one in the UI, or import a
 JSON file:
 
 ```bash
-curl -X POST localhost:8000/ontologies/import -H 'Content-Type: application/json' -d '{
+curl -X POST localhost:8100/ontologies/import -H 'Content-Type: application/json' -d '{
   "slug": "supply-chain",
   "name": "Supply chain disruption",
   "concepts": [
@@ -147,7 +148,7 @@ A few decisions that are load-bearing and non-obvious:
 
 - [x] Schema: ontology, taxonomy, vectors, corpus, runs, labels, snapshots
 - [x] Pluggable LLM provider layer (Ollama; Anthropic behind the same protocol)
-- [ ] Ontology service, import/export, snapshots, API and editor UI
+- [x] Ontology service, import/export, snapshots, API and editor UI
 - [ ] CAMEO ingest, embeddings, similarity review
 - [ ] GDELT ingest with watermarking, backfill and a polite bounded scraper
 - [ ] Run configuration, both retrieval sources, judge loop with resume

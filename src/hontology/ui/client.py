@@ -1,0 +1,105 @@
+"""Thin HTTP client for the API.
+
+The UI has no database access at all. Everything it shows or changes goes through
+here, which is why the Streamlit layer can be replaced without moving any logic
+out of it.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+
+from hontology.config import get_settings
+
+
+class ApiError(RuntimeError):
+    """A non-2xx response, carrying the API's own message where it gave one."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+class Api:
+    def __init__(self, base_url: str | None = None, timeout: float = 30.0) -> None:
+        self.base_url = (base_url or get_settings().api_base_url).rstrip("/")
+        self.timeout = timeout
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        try:
+            response = httpx.request(
+                method, f"{self.base_url}{path}", timeout=self.timeout, **kwargs
+            )
+        except httpx.HTTPError as exc:
+            raise ApiError(0, f"cannot reach the API at {self.base_url}: {exc}") from exc
+
+        if response.status_code >= 400:
+            detail = response.text
+            try:
+                payload = response.json()
+                detail = payload.get("detail", detail)
+                if isinstance(detail, list):  # pydantic validation errors
+                    detail = "; ".join(
+                        f"{'.'.join(str(p) for p in e.get('loc', []))}: {e.get('msg')}"
+                        for e in detail
+                    )
+            except ValueError:
+                pass
+            raise ApiError(response.status_code, str(detail))
+
+        if response.status_code == 204 or not response.content:
+            return None
+        return response.json()
+
+    # --- meta ---------------------------------------------------------------
+
+    def healthy(self) -> bool:
+        try:
+            return self._request("GET", "/health").get("status") == "ok"
+        except ApiError:
+            return False
+
+    # --- ontologies ---------------------------------------------------------
+
+    def list_ontologies(self) -> list[dict]:
+        return self._request("GET", "/ontologies")
+
+    def create_ontology(self, *, slug: str, name: str, description: str | None) -> dict:
+        return self._request(
+            "POST",
+            "/ontologies",
+            json={"slug": slug, "name": name, "description": description},
+        )
+
+    def delete_ontology(self, ontology_id: int) -> None:
+        self._request("DELETE", f"/ontologies/{ontology_id}")
+
+    # --- concepts -----------------------------------------------------------
+
+    def list_concepts(self, ontology_id: int) -> list[dict]:
+        return self._request("GET", f"/ontologies/{ontology_id}/concepts")
+
+    def create_concept(self, ontology_id: int, **fields: Any) -> dict:
+        return self._request("POST", f"/ontologies/{ontology_id}/concepts", json=fields)
+
+    def update_concept(self, ontology_id: int, concept_id: int, **fields: Any) -> dict:
+        return self._request(
+            "PATCH", f"/ontologies/{ontology_id}/concepts/{concept_id}", json=fields
+        )
+
+    def delete_concept(self, ontology_id: int, concept_id: int) -> None:
+        self._request("DELETE", f"/ontologies/{ontology_id}/concepts/{concept_id}")
+
+    # --- portability & versioning -------------------------------------------
+
+    def export_ontology(self, ontology_id: int) -> dict:
+        return self._request("GET", f"/ontologies/{ontology_id}/export")
+
+    def import_ontology(self, payload: dict) -> dict:
+        return self._request("POST", "/ontologies/import", json=payload)
+
+    def snapshot(self, ontology_id: int) -> dict:
+        return self._request("POST", f"/ontologies/{ontology_id}/snapshot")

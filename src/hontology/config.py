@@ -36,8 +36,8 @@ class Settings(BaseSettings):
 
     # --- API (infrastructure) -----------------------------------------------
     api_host: str = "127.0.0.1"
-    api_port: int = 8000
-    api_base_url: str = "http://127.0.0.1:8000"
+    api_port: int = 8100
+    api_base_url: str = "http://127.0.0.1:8100"
 
     # --- Provider transports (infrastructure) -------------------------------
     ollama_host: str = "http://localhost:11434"

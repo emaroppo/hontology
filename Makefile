@@ -35,7 +35,7 @@ revision: ## Autogenerate a migration: make revision m="message"
 
 .PHONY: api
 api: ## Run the API with reload
-	$(PY) -m uvicorn hontology.api.main:app --reload --port 8000
+	$(PY) -m uvicorn hontology.api.main:app --reload --port 8100
 
 .PHONY: ui
 ui: ## Run the Streamlit UI (needs the API running)
@@ -59,6 +59,6 @@ fmt: ## Autoformat
 	$(VENV)/bin/ruff check --fix src tests
 	$(VENV)/bin/ruff format src tests
 
-.PHONY: smoke
-smoke: ## End-to-end check against a live feed and a local model
-	$(PY) -m hontology.cli smoke
+.PHONY: doctor
+doctor: ## Check that the database and the LLM provider are reachable
+	$(PY) -m hontology.cli doctor
