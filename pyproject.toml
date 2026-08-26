@@ -70,6 +70,9 @@ extend-immutable-calls = [
     "fastapi.Header",
     "fastapi.Path",
     "fastapi.Query",
+    # Same story for Typer: a call in the default is the framework's idiom.
+    "typer.Argument",
+    "typer.Option",
 ]
 
 [tool.pytest.ini_options]

@@ -219,3 +219,21 @@ class Api:
             "/runs/keys",
             json={"config": config, "ontology_version": ontology_version},
         )
+
+    def export_labels(self, ontology_id: int) -> str:
+        response = httpx.get(
+            f"{self.base_url}/labels/export",
+            params={"ontology_id": ontology_id},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.text
+
+    def import_labels(
+        self, ontology_id: int, csv_text: str, *, overwrite: bool = False
+    ) -> dict:
+        return self._request(
+            "POST",
+            "/labels/import",
+            json={"ontology_id": ontology_id, "csv": csv_text, "overwrite": overwrite},
+        )

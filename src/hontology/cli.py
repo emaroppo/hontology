@@ -25,7 +25,9 @@ run_app = typer.Typer(help="Configure and execute detection runs.")
 app.add_typer(ingest_app, name="ingest")
 eval_app = typer.Typer(help="Score runs against the ground-truth bank.")
 app.add_typer(run_app, name="run")
+labels_app = typer.Typer(help="Move the ground-truth bank in and out.")
 app.add_typer(eval_app, name="eval")
+app.add_typer(labels_app, name="labels")
 
 
 @app.command()
@@ -313,6 +315,73 @@ def run_resume(
     with session_scope() as session:
         result = runner.execute(session, _load_run(session, run_id), judge_limit=judge_limit)
     typer.echo(f"judge  {result['judge']}")
+
+
+# ---------------------------------------------------------------------------
+# Ground-truth bank portability
+# ---------------------------------------------------------------------------
+
+
+@labels_app.command("export")
+def labels_export(
+    ontology_id: int,
+    out: Path | None = typer.Option(None, help="Write to a file instead of stdout."),
+    observations: bool = typer.Option(False, help="Export observations instead of labels."),
+) -> None:
+    """Export the bank as CSV, keyed by document URL and concept name."""
+    from hontology.evalkit import label_io
+
+    with session_scope() as session:
+        text_out = (
+            label_io.export_observations(session, ontology_id)
+            if observations
+            else label_io.export_labels(session, ontology_id)
+        )
+
+    if out is None:
+        typer.echo(text_out)
+    else:
+        out.write_text(text_out, encoding="utf-8")
+        typer.echo(f"wrote {out} ({len(text_out.splitlines()) - 1} row(s))")
+
+
+@labels_app.command("import")
+def labels_import(
+    ontology_id: int,
+    path: Path,
+    overwrite: bool = typer.Option(
+        False,
+        help="Replace labels that already exist. Off by default so an "
+        "import cannot silently destroy adjudicated work.",
+    ),
+    observations: bool = typer.Option(False, help="Import observations instead of labels."),
+) -> None:
+    """Import a CSV bank, matching on document URL and concept name."""
+    from hontology.evalkit import label_io
+
+    csv_text = path.read_text(encoding="utf-8")
+    with session_scope() as session:
+        report = (
+            label_io.import_observations(session, ontology_id, csv_text)
+            if observations
+            else label_io.import_labels(session, ontology_id, csv_text, overwrite=overwrite)
+        )
+
+    typer.echo(
+        f"created {report['created']}, updated {report['updated']}, "
+        f"skipped {report['skipped_existing']} existing"
+    )
+    if report.get("documents_created"):
+        typer.echo(f"created {report['documents_created']} stub document(s)")
+    if report["unknown_concepts"]:
+        typer.secho(
+            f"skipped unknown concept(s): {', '.join(report['unknown_concepts'])}",
+            fg=typer.colors.YELLOW,
+        )
+    if report["bad_row_count"]:
+        typer.secho(f"{report['bad_row_count']} unreadable row(s):", fg=typer.colors.YELLOW)
+        for line in report["bad_rows"]:
+            typer.echo(f"  {line}")
 
 
 # ---------------------------------------------------------------------------

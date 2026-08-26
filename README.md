@@ -258,7 +258,22 @@ hontology eval gate 1                   # liveness, then metric floors
 hontology eval leaderboard
 ```
 
-Three things this layer refuses to do:
+The bank itself travels as CSV:
+
+```bash
+hontology labels export <ontology-id> --out bank.csv
+hontology labels import <ontology-id> bank.csv        # skips existing by default
+hontology labels export <ontology-id> --observations
+```
+
+Rows are keyed by **document URL and concept name**, never by database ids, so a
+bank exported here imports cleanly elsewhere. Three rules keep an import from
+damaging one: existing labels are not overwritten unless you ask, unknown
+documents become stubs the scraper fills in later, and the `ontology_version`
+stamp is preserved rather than re-stamped — re-stamping would claim a human read
+today's wording when they did not, which quietly defeats staleness detection.
+
+Three things the evaluation layer refuses to do:
 
 **Report a rate without its denominator.** Every metric is printed with the
 label count it was computed over, and precision and recall carry Wilson
