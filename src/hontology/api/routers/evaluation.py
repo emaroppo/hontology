@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -128,3 +129,72 @@ def filter_report_endpoint(ontology_id: int, db: Session = Depends(get_db)):
     from hontology.evalkit import filter_report
 
     return filter_report.report(db, ontology_id)
+
+
+@router.get("/runs/{run_id}/funnel")
+def run_funnel(run_id: int, db: Session = Depends(get_db)):
+    """Stage-by-stage attrition. Works with no ground truth at all."""
+    from hontology.evalkit import funnel
+
+    try:
+        return funnel.funnel(db, run_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
+
+@router.get("/runs/{run_id}/detections")
+def run_detections(
+    run_id: int,
+    events: bool = False,
+    min_confidence: float | None = None,
+    verified_only: bool = False,
+    db: Session = Depends(get_db),
+):
+    """What the pipeline found, as JSON."""
+    from hontology.evalkit import detections as detections_module
+
+    try:
+        if events:
+            rows = [
+                e.as_row()
+                for e in detections_module.events(
+                    db, run_id, min_confidence=min_confidence, verified_only=verified_only
+                )
+            ]
+        else:
+            rows = [
+                d.as_row()
+                for d in detections_module.detections(
+                    db, run_id, min_confidence=min_confidence, verified_only=verified_only
+                )
+            ]
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    return {"rows": rows, "summary": detections_module.summary(db, run_id)}
+
+
+@router.get("/runs/{run_id}/detections.csv", response_class=PlainTextResponse)
+def run_detections_csv(
+    run_id: int,
+    events: bool = False,
+    min_confidence: float | None = None,
+    verified_only: bool = False,
+    db: Session = Depends(get_db),
+):
+    """The same, as CSV, for a downstream consumer."""
+    from hontology.evalkit import detections as detections_module
+
+    exporter = (
+        detections_module.export_events if events else detections_module.export_detections
+    )
+    try:
+        body = exporter(db, run_id, min_confidence=min_confidence, verified_only=verified_only)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
+    kind = "events" if events else "detections"
+    return PlainTextResponse(
+        body,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{kind}-run{run_id}.csv"'},
+    )

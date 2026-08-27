@@ -260,3 +260,20 @@ class Api:
 
     def filter_report(self, ontology_id: int) -> dict:
         return self._request("GET", "/eval/filter-report", params={"ontology_id": ontology_id})
+
+    def run_funnel(self, run_id: int) -> dict:
+        return self._request("GET", f"/eval/runs/{run_id}/funnel")
+
+    def run_detections(self, run_id: int, *, events: bool = False) -> dict:
+        return self._request(
+            "GET", f"/eval/runs/{run_id}/detections", params={"events": events}
+        )
+
+    def detections_csv(self, run_id: int, *, events: bool = False) -> str:
+        response = httpx.get(
+            f"{self.base_url}/eval/runs/{run_id}/detections.csv",
+            params={"events": events},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.text

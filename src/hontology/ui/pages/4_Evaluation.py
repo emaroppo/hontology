@@ -69,6 +69,80 @@ if judge["n"] == 0:
         "Nothing below is measured — label some pairs on the **Labelling** page."
     )
 
+st.subheader("Funnel")
+st.caption(
+    "Where the volume went. Needs no labels — this is the first thing to read "
+    "when a run produces less than expected."
+)
+try:
+    flow = api.run_funnel(selected["id"])
+    fcols = st.columns(2)
+    for col, key, heading in (
+        (fcols[0], "documents", "Documents"),
+        (fcols[1], "pairs", "Pairs"),
+    ):
+        col.markdown(f"**{heading}**")
+        for step in flow[key]:
+            share = (
+                f"{step['of_previous']:.1%} of previous"
+                if step["of_previous"] is not None
+                else "start"
+            )
+            col.markdown(f"`{step['count']:>7}`  {step['name']} — {share}")
+            col.caption(step["note"])
+    if flow["errored_verdicts"]:
+        st.warning(
+            f"{flow['errored_verdicts']} verdict(s) errored — they leave the "
+            "denominator without moving any rate."
+        )
+    if flow["unjudged_selected"]:
+        st.warning(
+            f"{flow['unjudged_selected']} selected pair(s) were never judged — the "
+            "run stopped early rather than the model failing."
+        )
+except ApiError as exc:
+    st.error(exc.detail)
+
+st.divider()
+st.subheader("Detections")
+st.caption(
+    "What the pipeline found. Also needs no labels — but an unverified detection "
+    "is a model's claim, not a fact."
+)
+try:
+    found = api.run_detections(selected["id"])
+    stats = found["summary"]
+    dcols = st.columns(4)
+    dcols[0].metric("Detections", stats["detections"])
+    dcols[1].metric("Events", stats["events"], help="Distinct (concept, place, date).")
+    dcols[2].metric("Confirmed", stats["by_verification"].get("confirmed", 0))
+    dcols[3].metric(
+        "Unverified",
+        stats["by_verification"].get("unverified", 0),
+        help="Nobody has reviewed these yet.",
+    )
+
+    if found["rows"]:
+        st.dataframe(found["rows"], use_container_width=True)
+        export_cols = st.columns(2)
+        export_cols[0].download_button(
+            "Download detections (CSV)",
+            data=api.detections_csv(selected["id"]),
+            file_name=f"detections-run{selected['id']}.csv",
+            mime="text/csv",
+        )
+        export_cols[1].download_button(
+            "Download events (CSV)",
+            data=api.detections_csv(selected["id"], events=True),
+            file_name=f"events-run{selected['id']}.csv",
+            mime="text/csv",
+        )
+    else:
+        st.caption("This run matched nothing.")
+except ApiError as exc:
+    st.error(exc.detail)
+
+st.divider()
 st.subheader("Judge")
 st.caption(f"n = {judge['n']} labelled pairs")
 

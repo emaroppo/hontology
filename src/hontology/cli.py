@@ -576,6 +576,53 @@ def eval_sweep(
     typer.secho(f"\nran {len(results)} cell(s)", fg=typer.colors.GREEN)
 
 
+@eval_app.command("funnel")
+def eval_funnel(run_id: int) -> None:
+    """Where the volume went, stage by stage. Needs no labels."""
+    from hontology.evalkit import funnel
+
+    with session_scope() as session:
+        typer.echo(funnel.format_funnel(funnel.funnel(session, run_id)))
+
+
+@eval_app.command("detections")
+def eval_detections(
+    run_id: int,
+    out: Path | None = typer.Option(None, help="Write CSV to a file instead of stdout."),
+    events: bool = typer.Option(False, help="Aggregate to one row per (concept, locus, date)."),
+    min_confidence: float | None = typer.Option(None, help="Drop weaker detections."),
+    verified_only: bool = typer.Option(False, help="Only detections a human has confirmed."),
+) -> None:
+    """Export what the pipeline found. Every row carries its verification status."""
+    from hontology.evalkit import detections as detections_module
+
+    with session_scope() as session:
+        exporter = (
+            detections_module.export_events if events else detections_module.export_detections
+        )
+        text_out = exporter(
+            session, run_id, min_confidence=min_confidence, verified_only=verified_only
+        )
+        stats = detections_module.summary(session, run_id)
+
+    if out is None:
+        typer.echo(text_out)
+    else:
+        out.write_text(text_out, encoding="utf-8")
+        typer.echo(f"wrote {out} ({len(text_out.splitlines()) - 1} row(s))")
+
+    typer.echo(
+        f"{stats['detections']} detection(s) over {stats['events']} event(s); "
+        f"{stats['by_verification']}"
+    )
+    if stats["by_verification"].get("unverified"):
+        typer.secho(
+            "unverified detections are model claims, not facts — adjudicate before "
+            "treating them as findings",
+            fg=typer.colors.YELLOW,
+        )
+
+
 @eval_app.command("compare")
 def eval_compare(
     run_a: int,

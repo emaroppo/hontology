@@ -289,7 +289,27 @@ hontology eval errors 1                          # every mistake, with reasoning
 hontology eval sweep 1 examples/sweep.json       # plan; --execute to run
 hontology eval filter-report 1                   # per-code cost and benefit
 hontology ontology lint 1                        # ontology health
+
+hontology eval funnel 1                          # where the volume went
+hontology eval detections 1 --out found.csv      # what the pipeline found
+hontology eval detections 1 --events             # one row per (concept, place, date)
 ```
+
+**Getting the findings out.** Everything else exports the machinery's inputs or
+its scores; `eval detections` exports its *output*. Two shapes: one row per
+matched `(document, concept)` pair with the evidence quote — the audit trail —
+or aggregated to one row per `(concept, locus, date)`, since one riot reported by
+four outlets is one fact. Every row carries a **verification** status, because a
+detection is a model's claim rather than a fact, and exporting confirmed and
+unreviewed ones indistinguishably would launder model output into apparent
+ground truth.
+
+**Funnel before metrics.** `eval funnel` shows attrition stage by stage and needs
+no ground truth at all, which makes it the first thing to read when a run
+produces less than expected — precision cannot tell a precise pipeline from a
+broken scraper. Each step reports its share of the *previous* step, because that
+is what localises a problem, and carries a note saying what a healthy drop looks
+like there. Most attrition is the pipeline working.
 
 **Slice before you conclude.** A pooled F1 cannot distinguish "uniformly
 mediocre" from "excellent on nine concepts and hopeless on the tenth", and those
