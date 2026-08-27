@@ -91,9 +91,24 @@ cp .env.example .env
 make install      # create the venv, install dependencies
 make up           # start Postgres with pgvector
 make migrate      # apply the schema
+make doctor       # check Postgres and the LLM provider are reachable
 make api          # http://127.0.0.1:8100/docs
 make ui           # http://localhost:8501   (in a second terminal)
 ```
+
+The UI is six pages, each a pure HTTP client of the API:
+
+| Page | What it is for |
+|---|---|
+| **Ontology** | Author concepts, import/export, resolve versions, health checks |
+| **Code Links** | Curate concept↔CAMEO associations from similarity proposals |
+| **Labelling** | The queue, adjudication of machine proposals, bank import/export |
+| **Evaluation** | Funnel, detections, per-stage metrics, breakdowns, errors, leaderboard |
+| **Runs** | Start and watch runs; preview stage keys before paying for them |
+
+`make doctor` is the first thing to run if something is not working: it reports
+the database and the model provider separately, and degrades gracefully when
+only one is up — the ontology layer works fine with no model at all.
 
 **The app starts empty, by design** — there is no bundled ontology, because the
 whole premise is that the ontology is yours. Create one in the UI, or import a
@@ -267,9 +282,37 @@ malformed-output bug does not move precision or recall, it silently removes pair
 from the denominator.
 
 **Repeated sampling beats self-reported confidence.** Set `judge.samples` above 1
-and the majority vote's fraction replaces the model's own number. A model asked
-five times and answering yes three times is uncertain in a way its stated 0.95
-does not capture.
+and the vote's fraction replaces the model's own number. A model asked five times
+and answering yes three times is uncertain in a way its stated 0.95 does not
+capture. `judge.aggregation` chooses how those votes resolve, as an explicit
+precision/recall trade:
+
+| `aggregation` | Matches when | Use when |
+|---|---|---|
+| `majority` | the plurality says so | balanced; the default |
+| `unanimous` | *every* sample says so | a false positive is expensive |
+| `any` | *any* sample says so | catching what the model only sometimes notices |
+
+**One call per document, or one per pair.** `judge.prompt_id` carries the
+construction mode. `strict_v1` asks about one concept at a time; `strict_batch_v1`
+judges every candidate concept for an article in a single call, sending the body
+once instead of N times. Same guidance, so the two are directly comparable — they
+share a candidates key and fork only the judge key, because batching changes how
+the model is asked, not what is retrieved.
+
+Batching trades isolation for cost: a malformed response costs every pair for
+that document rather than one, so failures are recorded against each of them and
+the omission count is reported. A model that quietly drops concepts from its
+array is visible rather than silently shrinking the denominator. Sampling does
+not apply to batched runs — repeating the call re-rolls every verdict together,
+so the votes are not independent.
+
+**Document embeddings are cached.** Bodies are embedded once and stored
+content-addressed, so a sweep over selection parameters — which change nothing
+about the text — costs no embedding calls at all. `--refresh-embeddings` forces a
+clean recompute for when the cache itself is the suspect; it is a runtime flag
+rather than a config field, because recomputing an identical vector gives an
+identical result and must not fork the artifact tree.
 
 ---
 
@@ -444,18 +487,28 @@ A few decisions that are load-bearing and non-obvious:
 
 ## Future work
 
-- **Rank by information gain, not just relevance.** The filter currently answers
+Deferred deliberately, with the reason.
+
+- **Rank by information gain, not just relevance.** The ingest filter answers
   "could this article match?" but not "is it worth reading?". The intended
   ranking is `Σ |weight| × (1 − activation)` over an article's matched concepts,
   where activation is how much that concept is *already known* to be firing in
-  that place — so an article about something already well-established scores low
-  and a first signal scores high. This needs the ontology to carry meaningful
-  per-concept payoff weights and a per-locus activation state, neither of which
-  is defined yet. Sequenced after the ontology is refined.
-- Concept groups have no API or UI; they are reachable only through import.
-- The judge's `samples > 1` majority-vote path is unit-tested but has never run
-  against a real model.
-- No machine pre-labelling pass, though the schema and adjudication flow support one.
+  that place — so a first signal scores high and more of something established
+  scores low. Needs meaningful per-concept payoff weights and a per-locus
+  activation state, neither of which is defined yet. **Sequenced after the
+  ontology is refined.**
+- **Locus-scoped tracking, a per-place UI, and a one-command bootstrap.** All
+  three assume a country-scoped domain, which cuts against a domain-agnostic
+  engine. **Pinned until the domain direction is settled.**
+- **Concept groups have no API or UI.** The service layer supports forking a
+  group and retuning its edge weights, but it is reachable only through import.
+- **No machine pre-labelling pass**, though the schema and the adjudication flow
+  were built for one.
+- **Descriptive per-stage drill-down.** The funnel and detection export both work
+  with no labels; score distributions and per-stage inspection do not exist yet.
+- **Batched judging has not run against a live model.** The path, the parsing
+  contract and all three aggregation rules are covered by tests with a mocked
+  provider.
 
 ## Roadmap
 
