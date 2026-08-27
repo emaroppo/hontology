@@ -132,6 +132,7 @@ def build_semantic(
     documents: list[Document],
     config: dict,
     embed_body_limit: int,
+    refresh_embeddings: bool = False,
 ) -> CandidateStats:
     """Rank concepts against each document body by cosine similarity."""
     settings = get_settings()
@@ -159,7 +160,12 @@ def build_semantic(
 
     before = _embedding_count(session, model_id, "document")
     _, document_keys = embed.embed_documents(
-        session, provider, model, bodies, body_limit=embed_body_limit
+        session,
+        provider,
+        model,
+        bodies,
+        body_limit=embed_body_limit,
+        refresh=refresh_embeddings,
     )
     stats.embedded = _embedding_count(session, model_id, "document") - before
     stats.embeddings_reused = len(bodies) - stats.embedded
@@ -224,6 +230,7 @@ def build_candidates(
     documents: list[Document],
     config: dict,
     embed_body_limit: int,
+    refresh_embeddings: bool = False,
 ) -> dict:
     """Build candidates for the run, replacing any previous rows."""
     _clear_run(session, run_id)
@@ -235,6 +242,7 @@ def build_candidates(
         documents=documents,
         config=config,
         embed_body_limit=embed_body_limit,
+        refresh_embeddings=refresh_embeddings,
     )
 
     log.info("candidates (%s): %s", config["source"], stats.as_dict())

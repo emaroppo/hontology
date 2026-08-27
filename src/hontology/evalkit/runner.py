@@ -130,6 +130,7 @@ def execute(
     document_limit: int = 200,
     judge_limit: int | None = None,
     skip_judge: bool = False,
+    refresh_embeddings: bool = False,
 ) -> dict:
     """Run the pipeline for *run*, reusing retrieval where the key allows."""
     run.status = "running"
@@ -160,6 +161,7 @@ def execute(
                 documents=documents,
                 config=run.config["candidates"],
                 embed_body_limit=run.config["common"]["embed_body_limit"],
+                refresh_embeddings=refresh_embeddings,
             )
 
     run.stage = "judge"

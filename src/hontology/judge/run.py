@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import Counter
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -78,38 +77,116 @@ def parse_verdict(raw: str) -> dict:
             raise
         payload = json.loads(raw[start : end + 1])
 
-    try:
-        confidence = float(payload.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        confidence = 0.0
-
-    return {
-        "matched": bool(payload.get("matched", False)),
-        "confidence": max(0.0, min(1.0, confidence)),
-        "country": str(payload.get("country") or "").strip().upper(),
-        "evidence": str(payload.get("evidence") or "").strip(),
-    }
+    return _coerce(payload)
 
 
-def aggregate(samples: list[dict]) -> dict:
-    """Majority vote over repeated samples.
+AGGREGATIONS = ("majority", "unanimous", "any")
+
+
+def aggregate(samples: list[dict], how: str = "majority") -> dict:
+    """Combine repeated samples into one verdict.
 
     The vote fraction replaces the model's self-reported confidence, because it
     is the more honest signal: a model asked five times and answering yes three
     times is genuinely uncertain in a way its own stated 0.9 does not capture.
+
+    The three rules trade precision against recall explicitly:
+
+    - ``majority`` — the plurality answer. Balanced, and the default.
+    - ``unanimous`` — matched only if *every* sample says so. Fewer, surer
+      matches; the choice when a false positive is expensive.
+    - ``any`` — matched if *any* sample says so. Catches concepts the model
+      only occasionally notices, at the cost of precision.
+
+    The vote fraction is reported unchanged under all three, so a verdict's
+    uncertainty stays visible however the rule resolved it.
     """
+    if how not in AGGREGATIONS:
+        raise ValueError(f"unknown aggregation {how!r}; expected one of {AGGREGATIONS}")
+
     if len(samples) == 1:
         return samples[0] | {"vote_fraction": 1.0}
 
-    votes = Counter(bool(s["matched"]) for s in samples)
-    winner, count = votes.most_common(1)[0]
-    fraction = count / len(samples)
-    representative = next(s for s in samples if bool(s["matched"]) == winner)
+    positives = sum(1 for s in samples if bool(s["matched"]))
+    if how == "unanimous":
+        winner = positives == len(samples)
+    elif how == "any":
+        winner = positives > 0
+    else:
+        winner = positives * 2 > len(samples)
+
+    # Always the share that agreed with the *reported* verdict.
+    agreeing = positives if winner else len(samples) - positives
+    fraction = agreeing / len(samples)
+    representative = next((s for s in samples if bool(s["matched"]) == winner), samples[0])
 
     return representative | {
         "matched": winner,
         "confidence": fraction,
         "vote_fraction": fraction,
+    }
+
+
+def parse_batch(raw: str, expected_concept_ids: list[int]) -> dict[int, dict]:
+    """Parse one batched response into ``{concept_id: verdict}``.
+
+    Every requested concept gets an entry. A model that omits one would
+    otherwise silently shrink the denominator — the pair would simply vanish
+    rather than count as a miss — so anything absent is filled with a
+    zero-confidence non-match and the omission is visible in the counts.
+    """
+    payload = json.loads(raw) if raw.strip().startswith("{") else None
+    if payload is None:
+        start, end = raw.find("{"), raw.rfind("}")
+        if start == -1 or end <= start:
+            raise json.JSONDecodeError("no JSON object found", raw, 0)
+        payload = json.loads(raw[start : end + 1])
+
+    entries = payload.get("verdicts")
+    if not isinstance(entries, list):
+        raise json.JSONDecodeError("no 'verdicts' array in response", raw, 0)
+
+    by_concept: dict[int, dict] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        raw_id = entry.get("concept_id")
+        if raw_id is None:
+            continue
+        try:
+            concept_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if concept_id not in expected_concept_ids:
+            # The model invented a concept; ignore rather than store a row that
+            # references nothing.
+            continue
+        by_concept[concept_id] = _coerce(entry) | {"omitted": False}
+
+    for concept_id in expected_concept_ids:
+        by_concept.setdefault(
+            concept_id,
+            {
+                "matched": False,
+                "confidence": 0.0,
+                "country": "",
+                "evidence": "",
+                "omitted": True,
+            },
+        )
+    return by_concept
+
+
+def _coerce(payload: dict) -> dict:
+    try:
+        confidence = float(payload.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return {
+        "matched": bool(payload.get("matched", False)),
+        "confidence": max(0.0, min(1.0, confidence)),
+        "country": str(payload.get("country") or "").strip().upper(),
+        "evidence": str(payload.get("evidence") or "").strip(),
     }
 
 
@@ -163,10 +240,28 @@ def judge_run(
     done = _already_judged(session, run_id)
 
     stats = JudgeStats(total=len(candidates))
-    iso2_to_locus = {
+    iso2_to_locus: dict[str, int] = {
         locus.iso2: locus.id
         for locus in session.scalars(select(Locus).where(Locus.iso2.is_not(None)))
+        if locus.iso2
     }
+
+    if template.mode == prompts.PER_DOCUMENT:
+        return _judge_batched(
+            session,
+            run_id,
+            candidates=candidates,
+            done=done,
+            stats=stats,
+            template=template,
+            provider=provider,
+            judge_config=judge_config,
+            generation=generation,
+            judge_body_limit=judge_body_limit,
+            iso2_to_locus=iso2_to_locus,
+            limit=limit,
+            progress=progress,
+        )
 
     processed = 0
     for candidate in candidates:
@@ -230,7 +325,7 @@ def judge_run(
                 break
 
         if parsed_samples and not error:
-            result = aggregate(parsed_samples)
+            result = aggregate(parsed_samples, judge_config.get("aggregation", "majority"))
             session.add(
                 Verdict(
                     run_id=run_id,
@@ -304,3 +399,153 @@ def liveness(session: Session, run_id: int) -> dict:
         "ok": not errored and not unparsed,
         "sample_errors": [str(v.error)[:120] for v in errored[:5]],
     }
+
+
+def _judge_batched(
+    session: Session,
+    run_id: int,
+    *,
+    candidates: list[Candidate],
+    done: set[tuple[int, int]],
+    stats: JudgeStats,
+    template: prompts.PromptTemplate,
+    provider,
+    judge_config: dict,
+    generation: GenerationConfig,
+    judge_body_limit: int,
+    iso2_to_locus: dict[str, int],
+    limit: int | None,
+    progress: object | None,
+) -> dict:
+    """One call per document, judging every candidate concept at once.
+
+    The cost profile is the point: N concepts for one article cost one call and
+    one copy of the body, rather than N calls each re-sending it. What is traded
+    away is isolation — a single malformed response costs every pair for that
+    document, not one — so a failure is recorded against each of them rather than
+    losing them silently.
+
+    Sampling does not apply. Repeating a batch call re-rolls every verdict
+    together, so the votes are not independent and a vote fraction across them
+    would overstate agreement. Batch runs are a single greedy call.
+    """
+    by_document: dict[int, list[Candidate]] = {}
+    for candidate in candidates:
+        if (candidate.document_id, candidate.concept_id) in done:
+            stats.skipped += 1
+            continue
+        by_document.setdefault(candidate.document_id, []).append(candidate)
+
+    processed = 0
+    omitted_total = 0
+
+    for document_id, group in by_document.items():
+        if limit is not None and processed >= limit:
+            break
+
+        document = session.get(Document, document_id)
+        if document is None:
+            continue
+        concepts: list[Concept] = [
+            found
+            for found in (session.get(Concept, c.concept_id) for c in group)
+            if found is not None
+        ]
+        if not concepts:
+            continue
+
+        body = _body(document, judge_body_limit)
+        common = {
+            "run_id": run_id,
+            "provider": judge_config["provider"],
+            "model": judge_config["model"],
+            "prompt_id": template.prompt_id,
+            "mode": template.mode,
+            "samples": 1,
+        }
+
+        if not body:
+            for concept in concepts:
+                session.add(
+                    Verdict(
+                        document_id=document_id,
+                        concept_id=concept.id,
+                        error="no article body available",
+                        **common,
+                    )
+                )
+                stats.errors += 1
+            processed += len(concepts)
+            session.commit()
+            continue
+
+        assert template.build_batch is not None  # guaranteed by PromptTemplate
+        prompt = template.build_batch(document, concepts, body, judge_body_limit)
+
+        try:
+            completion = provider.complete(
+                system=template.system,
+                prompt=prompt,
+                config=generation,
+                want_json=True,
+                want_reasoning=judge_config["think"],
+                model=judge_config["model"],
+            )
+            parsed = parse_batch(completion.text, [c.id for c in concepts])
+            stats.input_tokens += completion.input_tokens or 0
+            stats.output_tokens += completion.output_tokens or 0
+        except (ProviderError, json.JSONDecodeError) as exc:
+            # One bad response costs the whole document — recorded per pair so
+            # the denominator stays honest and liveness catches it.
+            for concept in concepts:
+                session.add(
+                    Verdict(
+                        document_id=document_id,
+                        concept_id=concept.id,
+                        error=f"{type(exc).__name__}: {exc}",
+                        **common,
+                    )
+                )
+                stats.errors += 1
+            processed += len(concepts)
+            session.commit()
+            continue
+
+        for concept in concepts:
+            result = parsed[concept.id]
+            if result.get("omitted"):
+                omitted_total += 1
+            session.add(
+                Verdict(
+                    document_id=document_id,
+                    concept_id=concept.id,
+                    matched=result["matched"],
+                    confidence=result["confidence"],
+                    vote_fraction=1.0,
+                    locus_id=iso2_to_locus.get(result["country"]),
+                    evidence=result["evidence"] or None,
+                    reasoning=completion.reasoning or None,
+                    # One call served the whole group, so attributing its full
+                    # latency to each pair would multiply the real cost.
+                    latency_s=completion.latency_s / len(concepts),
+                    **common,
+                )
+            )
+            stats.judged += 1
+            stats.matched += int(result["matched"])
+
+        processed += len(concepts)
+        if callable(progress):
+            progress(processed, len(candidates))
+        session.commit()
+
+    result = stats.as_dict() | {
+        "mode": template.mode,
+        "documents": len(by_document),
+        # Concepts the model left out of its array. They count as non-matches so
+        # the denominator holds, but a high number means the batch prompt is
+        # overloaded and the model is dropping items.
+        "omitted_by_model": omitted_total,
+    }
+    log.info("judge (batched): %s", result)
+    return result

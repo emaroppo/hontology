@@ -23,7 +23,7 @@ import hashlib
 from typing import Protocol, runtime_checkable
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from hontology.db.models import Concept, Embedding, EmbeddingModel
@@ -227,22 +227,45 @@ def ensure_embeddings(
     object_type: str,
     items: dict[int, str],
     fields: str,
+    refresh: bool = False,
 ) -> tuple[int, dict[int, str]]:
     """Ensure a content-addressed embedding exists for each ``{id: text}`` item.
 
     Only missing vectors are computed, so re-running after editing one concept
     embeds one concept. Returns ``(model_id, {id: text_key})``.
+
+    ``refresh`` bypasses the cache and recomputes everything. It exists for when
+    the cache itself is the suspect — without it the only way to force a clean
+    re-embed is deleting rows from the database by hand. It deliberately does
+    *not* belong in the run config: recomputing an identical vector produces an
+    identical result, so it must not fork the artifact tree.
     """
     model_row = get_or_create_model(session, provider, model)
     keys = {oid: content_key(fields, text) for oid, text in items.items()}
 
-    present = _existing_pairs(session, model_row.id, object_type, list(set(keys.values())))
+    present = (
+        set()
+        if refresh
+        else _existing_pairs(session, model_row.id, object_type, list(set(keys.values())))
+    )
     missing = sorted(oid for oid, key in keys.items() if (oid, key) not in present)
 
     if missing:
         prefix = document_prefix(model)
         texts = [prefix + normalize_for_embedding(items[oid]) for oid in missing]
         vectors = provider.embed(texts, model=model)
+        if refresh:
+            # Replace rather than duplicate: the unique constraint is on
+            # (model, object_type, object_id, text_key).
+            session.execute(
+                delete(Embedding).where(
+                    Embedding.model_id == model_row.id,
+                    Embedding.object_type == object_type,
+                    Embedding.object_id.in_(missing),
+                )
+            )
+            session.flush()
+
         for oid, source_text, vector in zip(missing, texts, vectors, strict=True):
             session.add(
                 Embedding(
@@ -268,6 +291,7 @@ def embed_documents(
     items: dict[int, str],
     *,
     body_limit: int,
+    refresh: bool = False,
 ) -> tuple[int, dict[int, str]]:
     """Ensure a cached embedding exists for each ``{document_id: body}``.
 
@@ -287,6 +311,7 @@ def embed_documents(
         object_type="document",
         items=items,
         fields=f"body@{body_limit}",
+        refresh=refresh,
     )
 
 

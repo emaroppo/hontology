@@ -77,6 +77,10 @@ JUDGE_DEFAULTS: dict[str, Any] = {
 
 SECTIONS = ("common", "candidates", "judge")
 
+# How repeated samples resolve to one verdict. Kept here so the config layer can
+# reject an unknown value without importing the judge.
+AGGREGATIONS = ("majority", "unanimous", "any")
+
 
 class ConfigError(ValueError):
     pass
@@ -106,6 +110,13 @@ def normalize(config: dict) -> dict:
         raise ConfigError(f"unknown candidates.selection {candidates['selection']!r}")
     if judge["samples"] < 1:
         raise ConfigError("judge.samples must be at least 1")
+    # Validated here rather than at use, so a value that would do nothing is
+    # rejected when the config is written instead of being silently ignored.
+    if judge["aggregation"] not in AGGREGATIONS:
+        raise ConfigError(
+            f"unknown judge.aggregation {judge['aggregation']!r}; "
+            f"expected one of {AGGREGATIONS}"
+        )
 
     # A single body_limit is the usual knob; the per-stage ones override it.
     base = common["body_limit"]

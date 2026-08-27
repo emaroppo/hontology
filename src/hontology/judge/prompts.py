@@ -21,6 +21,9 @@ from hontology.db.models import Concept, Document
 
 DEFAULT_PROMPT_ID = "strict_v1"
 
+PER_PAIR = "per-pair"
+PER_DOCUMENT = "per-document"
+
 RESPONSE_SHAPE = (
     "Output format, a single JSON object:\n"
     '{"matched": <true|false>, "confidence": <0..1>, '
@@ -33,10 +36,28 @@ RESPONSE_SHAPE = (
 
 @dataclass(frozen=True)
 class PromptTemplate:
+    """How the model is asked, including how many pairs per call.
+
+    ``mode`` is not decoration: a per-document template judges every candidate
+    concept for one article in a single call, which is a different experiment
+    from N separate calls and must be comparable as one. Templates declaring
+    ``per-document`` must supply ``build_batch``.
+    """
+
     prompt_id: str
     mode: str  # "per-pair" | "per-document"
     system: str
     build_pair: Callable[[Document, Concept, str, int], str]
+    build_batch: Callable[[Document, list[Concept], str, int], str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.mode == PER_DOCUMENT and self.build_batch is None:
+            raise ValueError(
+                f"prompt {self.prompt_id!r} declares mode {PER_DOCUMENT!r} but "
+                "supplies no build_batch"
+            )
+        if self.mode not in (PER_PAIR, PER_DOCUMENT):
+            raise ValueError(f"prompt {self.prompt_id!r} has unknown mode {self.mode!r}")
 
 
 _REGISTRY: dict[str, PromptTemplate] = {}
@@ -184,5 +205,63 @@ register(
         mode="per-pair",
         system=_LENIENT_SYSTEM,
         build_pair=_build_strict,
+    )
+)
+
+
+# ===========================================================================
+# strict_batch_v1 — one call per document, judging every candidate at once.
+#
+# Same guidance as strict_v1, so the two are comparable and the only difference
+# is construction. The trade is real in both directions: far fewer calls and one
+# shared copy of the article body instead of N, against a longer single prompt
+# and a response the model can get partially wrong.
+#
+# A model that omits a concept from its array would silently shrink the
+# denominator, so every requested concept is filled in — see `parse_batch` in
+# `judge.run`, which supplies a zero-confidence non-match for anything missing.
+#
+# Self-consistency sampling does not apply here: repeating a batch call re-rolls
+# every verdict together, so the votes are not independent. Batch runs are a
+# single greedy call regardless of `judge.samples`.
+# ===========================================================================
+
+BATCH_RESPONSE_SHAPE = (
+    "Output format, a single JSON object:\n"
+    '{"verdicts": [\n'
+    '  {"concept_id": <int>, "matched": <true|false>, "confidence": <0..1>, '
+    '"country": "<two-letter ISO country code, or empty>", '
+    '"evidence": "<the exact passage from the article, or empty>"},\n'
+    "  ... one entry for EVERY concept listed above ...\n"
+    "]}"
+)
+
+
+def _build_batch_strict(
+    document: Document, concepts: list[Concept], body: str, body_limit: int
+) -> str:
+    blocks = "\n\n".join(
+        f"[concept_id {concept.id}]\n{_concept_block(concept)}" for concept in concepts
+    )
+    return (
+        f"=== Article ===\n"
+        f"url: {document.url}\n"
+        f"title: {document.title or ''}\n"
+        f"body: {_trim(body, body_limit)}\n\n"
+        f"You will judge EACH of the following {len(concepts)} concepts "
+        f"independently against the article above. A concept matching does not "
+        f"make another more or less likely.\n\n"
+        f"=== Concepts ===\n{blocks}\n\n"
+        f"{BATCH_RESPONSE_SHAPE}\n"
+    )
+
+
+register(
+    PromptTemplate(
+        prompt_id="strict_batch_v1",
+        mode=PER_DOCUMENT,
+        system=_STRICT_SYSTEM,
+        build_pair=_build_strict,
+        build_batch=_build_batch_strict,
     )
 )

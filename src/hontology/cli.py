@@ -322,6 +322,11 @@ def run_start(
     documents: int = typer.Option(100, help="How many documents to consider."),
     judge_limit: int | None = typer.Option(None, help="Cap pairs judged this pass."),
     skip_judge: bool = typer.Option(False, help="Build candidates only."),
+    refresh_embeddings: bool = typer.Option(
+        False,
+        help="Recompute document embeddings instead of reusing cached ones. For "
+        "when the cache itself is the suspect; results are unaffected.",
+    ),
 ) -> None:
     """Execute a run from a JSON config."""
     from hontology.evalkit import runner
@@ -341,6 +346,7 @@ def run_start(
             document_limit=documents,
             judge_limit=judge_limit,
             skip_judge=skip_judge,
+            refresh_embeddings=refresh_embeddings,
         )
 
     typer.echo(f"candidates  {result['candidates']}")
