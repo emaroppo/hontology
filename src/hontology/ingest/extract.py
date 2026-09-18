@@ -16,6 +16,13 @@ chain worth having, because extractors fail on different pages in different ways
 The thin-content check requires *both* few sentences and few words, which
 deliberately spares short wire briefs: agency copy is often a single dense
 paragraph, and rejecting it would bias the corpus toward long-form reporting.
+
+The floors were checked against 416 pages sampled from the ingested feed in
+September 2026. Every genuine short brief in it had at least three sentences and
+62 words; everything under both floors was a stub, a maintenance notice or a
+geo-block page. At these values the gate rejected 12 pages (2.9%). The sample
+says nothing about the link-density ceiling: the HTML extractors emit plain text,
+so that check only ever sees the reader proxy's markdown.
 """
 
 from __future__ import annotations
@@ -46,7 +53,7 @@ _DEAD_PAGE_MARKERS: dict[str, tuple[str, ...]] = {
         r"(?:enable|turn on) javascript",
     ),
     "paywall": (r"subscribe (?:now )?to (?:read|continue)",),
-    "geo_block": (r"not available in your (?:country|region|location)",),
+    "geo_block": (r"(?:not available|unavailable) in your (?:country|region|location)",),
 }
 _DEAD_PAGE = re.compile(
     "|".join(p for group in _DEAD_PAGE_MARKERS.values() for p in group), re.I

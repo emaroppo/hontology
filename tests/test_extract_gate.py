@@ -81,6 +81,7 @@ class TestRejects:
             "Are you a robot? Please complete the challenge.",
             "Please enable JavaScript to continue.",
             "Subscribe to read the full story.",
+            "This website is unavailable in your location. Error 451.",
         ],
     )
     def test_dead_and_wall_pages(self, phrase):
