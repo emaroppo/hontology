@@ -28,6 +28,7 @@ so that check only ever sees the reader proxy's markdown.
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -154,6 +155,15 @@ HTML_EXTRACTORS: list[tuple[str, Callable[[str, str], str]]] = [
     ("readability", _extract_readability),
 ]
 
+# The HTML extractors must never run concurrently. trafilatura parses every page
+# with one module-level lxml parser and prunes it with module-level compiled
+# XPath expressions, so two threads extracting at once share native state; under
+# the scraper's thread pool that intermittently kills the whole process with a
+# segfault or a heap-corruption abort, not an exception. Extraction is cheap
+# next to fetching and per-host politeness delays, so serializing it costs
+# little: the network work stays concurrent.
+_HTML_EXTRACTION_LOCK = threading.Lock()
+
 READER_PROXY_ENDPOINT = "https://r.jina.ai/"
 
 
@@ -191,7 +201,8 @@ def extract(
     if html:
         for name, extractor in HTML_EXTRACTORS:
             try:
-                text = extractor(url, html)
+                with _HTML_EXTRACTION_LOCK:
+                    text = extractor(url, html)
             except ImportError as exc:
                 errors.append(f"{name}: not installed ({exc.name})")
                 continue

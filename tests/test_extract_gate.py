@@ -7,6 +7,10 @@ so the thresholds are pinned here, including the cases where it must *not* fire.
 
 from __future__ import annotations
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from hontology.ingest.extract import Extraction, extract, junk_reason, looks_like_article
@@ -155,6 +159,33 @@ class TestChain:
         assert not result.ok
         assert "dead: rejected (dead_page)" in result.error
         assert "boom: ValueError" in result.error
+
+    def test_extractors_never_run_concurrently(self, monkeypatch):
+        """The scraper calls extract() from a thread pool, and trafilatura's
+        parser state is shared native memory: overlapping calls crash the
+        process rather than raising. At most one extractor may be inside at once.
+        """
+        inside = 0
+        peak = 0
+        counter = threading.Lock()
+
+        def slow(url: str, html: str) -> str:
+            nonlocal inside, peak
+            with counter:
+                inside += 1
+                peak = max(peak, inside)
+            time.sleep(0.01)
+            with counter:
+                inside -= 1
+            return ARTICLE
+
+        monkeypatch.setattr("hontology.ingest.extract.HTML_EXTRACTORS", [("slow", slow)])
+        urls = [f"https://example.test/{i}" for i in range(32)]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda url: extract(url, "<html></html>"), urls))
+
+        assert all(r.method == "slow" for r in results)
+        assert peak == 1
 
     def test_no_html_and_no_proxy_is_a_clean_failure(self):
         result = extract("https://example.test/a", None)
