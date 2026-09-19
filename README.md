@@ -420,6 +420,12 @@ make test        # everything
 make test-fast   # only what needs no services
 ```
 
+A missing service skips the tests that need it rather than failing them: without
+Postgres the database tests are skipped with a note to run `make up`, and without
+a reachable model provider the one live-model test is skipped. Set
+`HONTOLOGY_TEST_REQUIRE_SERVICES=1` in CI so an unreachable service fails the
+run instead of quietly shrinking it.
+
 Tests **never touch the development database.** They run against a separate
 `<database>_test`, created and migrated on first use, and a guard refuses to
 start if the target database name does not end in `_test`. Each test then runs
@@ -506,9 +512,10 @@ Deferred deliberately, with the reason.
   were built for one.
 - **Descriptive per-stage drill-down.** The funnel and detection export both work
   with no labels; score distributions and per-stage inspection do not exist yet.
-- **Batched judging has not run against a live model.** The path, the parsing
-  contract and all three aggregation rules are covered by tests with a mocked
-  provider.
+- **Batched judging is unmeasured.** It has run against the local 9B model only
+  as a smoke test, which confirmed the response parses into one verdict per
+  concept. Its accuracy relative to per-pair judging is untested, and all three
+  aggregation rules are covered only by tests with a mocked provider.
 
 ## Roadmap
 
