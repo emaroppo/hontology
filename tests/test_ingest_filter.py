@@ -11,9 +11,9 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
-from hontology.db.models import Code, Document, FeedEvent, FeedSlice
+from hontology.db.models import Code, Document, FeedArticle, FeedEvent, FeedSlice
 from hontology.db.session import session_scope
-from hontology.ingest import cameo
+from hontology.ingest import cameo, themes
 from hontology.ingest import filter as ingest_filter
 from hontology.ontology import service
 from hontology.retrieve import similarity
@@ -230,3 +230,97 @@ class TestScrapeIntegration:
 
         assert result["attempted"] == 0
         assert "note" in result["filter"]
+
+
+class TestThemes:
+    """The knowledge-graph half of the filter: articles with no coded event."""
+
+    @pytest.fixture
+    def themed(self, setup):
+        with session_scope() as session:
+            result = themes.load_themes(
+                session,
+                [("CYBER_ATTACK", 10), ("SHORTAGE", 5), ("SPORTS", 99)],
+                source_url="test",
+            )
+            codes = {
+                c.code: c.id
+                for c in session.scalars(
+                    select(Code).where(Code.system_id == result["system_id"])
+                )
+            }
+            similarity.set_link(session, setup["unlinked"], codes["SHORTAGE"], linked=True)
+        return setup
+
+    def add_article(self, session, ids, document_id: int, article_themes: list[str]) -> None:
+        session.add(
+            FeedArticle(
+                slice_id=ids["slice"],
+                record_id=f"g{document_id}",
+                document_id=document_id,
+                themes=article_themes,
+                locus_ids=[],
+            )
+        )
+        session.flush()
+
+    def test_a_linked_theme_admits_a_document_cameo_never_saw(self, themed):
+        with session_scope() as session:
+            doc = add_document(session, "t1")
+            self.add_article(session, themed, doc, ["SHORTAGE", "SPORTS"])
+
+        with session_scope() as session:
+            matches = ingest_filter.matching_documents(session, themed["ontology"])
+            assert matches[doc].code == "SHORTAGE"
+            assert matches[doc].level == "theme"
+            assert matches[doc].concept_ids == {themed["unlinked"]}
+
+    def test_unlinked_themes_admit_nothing(self, themed):
+        with session_scope() as session:
+            doc = add_document(session, "t2")
+            self.add_article(session, themed, doc, ["SPORTS", "CYBER_ATTACK"])
+
+        with session_scope() as session:
+            assert doc not in ingest_filter.matching_documents(session, themed["ontology"])
+
+    def test_a_cameo_match_is_reported_first(self, themed):
+        with session_scope() as session:
+            doc = add_document(session, "t3")
+            add_event(session, themed, doc, base="145", root="14")
+            self.add_article(session, themed, doc, ["SHORTAGE"])
+
+        with session_scope() as session:
+            assert (
+                ingest_filter.matching_documents(session, themed["ontology"])[doc].code == "145"
+            )
+
+    def test_theme_links_do_not_leak_into_the_cameo_map(self, themed):
+        with session_scope() as session:
+            assert "SHORTAGE" not in ingest_filter.concept_code_map(session, themed["ontology"])
+            assert "SHORTAGE" in ingest_filter.concept_theme_map(session, themed["ontology"])
+
+
+class TestLinkImport:
+    def test_links_import_by_name_and_count_as_hand_made(self, setup):
+        with session_scope() as session:
+            result = similarity.import_links(
+                session,
+                setup["ontology"],
+                [{"concept": "Flood", "system": "cameo", "code": "1451"}],
+            )
+            assert result == {"links": 1, "concepts": 1}
+            links = ingest_filter.concept_code_map(session, setup["ontology"])
+            assert links["1451"] == {setup["unlinked"]}
+
+    def test_one_bad_row_applies_nothing(self, setup):
+        with session_scope() as session, pytest.raises(LookupError, match="9999"):
+            similarity.import_links(
+                session,
+                setup["ontology"],
+                [
+                    {"concept": "Flood", "system": "cameo", "code": "1451"},
+                    {"concept": "Flood", "system": "cameo", "code": "9999"},
+                ],
+            )
+        with session_scope() as session:
+            assert "1451" not in ingest_filter.concept_code_map(session, setup["ontology"])

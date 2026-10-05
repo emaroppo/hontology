@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from hontology.config import get_settings
@@ -257,6 +257,17 @@ def pending_documents(
     return list(session.scalars(query.order_by(Document.id).limit(limit)))
 
 
+def _count_pending(
+    session: Session, *, retry_failed: bool, document_ids: list[int] | None
+) -> int:
+    query = select(func.count(Document.id)).where(
+        Document.body_path.is_(None) if retry_failed else Document.fetched_at.is_(None)
+    )
+    if document_ids is not None:
+        query = query.where(Document.id.in_(document_ids))
+    return session.scalar(query) or 0
+
+
 def scrape_pending(
     session: Session,
     *,
@@ -302,11 +313,15 @@ def scrape_pending(
         allowed = set(matches)
         if document_ids is not None:
             allowed &= set(document_ids)
-        # Take a wider slice before filtering so the budget is spent on matches
-        # rather than consumed by non-matching rows that happen to sort first.
-        wide = pending_documents(session, budget * 20, retry_failed=retry_failed)
-        documents = [d for d in wide if d.id in allowed][:budget]
-        filtered_out = len(wide) - len([d for d in wide if d.id in allowed])
+        # Select among the allowed ids directly. Taking the oldest pending rows
+        # first and intersecting afterwards starves the budget whenever the
+        # backlog is larger than the window it happens to read.
+        documents = pending_documents(
+            session, budget, retry_failed=retry_failed, document_ids=sorted(allowed)
+        )
+        filtered_out = _count_pending(
+            session, retry_failed=retry_failed, document_ids=document_ids
+        ) - _count_pending(session, retry_failed=retry_failed, document_ids=sorted(allowed))
     else:
         documents = pending_documents(
             session, budget, retry_failed=retry_failed, document_ids=document_ids

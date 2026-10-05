@@ -25,11 +25,13 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from hontology.db.base import Base, TimestampMixin
@@ -64,6 +66,10 @@ class FeedSlice(Base, TimestampMixin):
     documents_cached: Mapped[int] = mapped_column(Integer, default=0)
     documents_failed: Mapped[int] = mapped_column(Integer, default=0)
     duration_s: Mapped[float | None] = mapped_column()
+    # Locus ids the slice was restricted to, sorted; NULL means everything was
+    # kept. A scoped backfill keeps only some records, so "ok" alone would let a
+    # later request for another locus skip a slice it never actually saw.
+    scope: Mapped[list[int] | None] = mapped_column(ARRAY(Integer))
 
 
 class IngestWatermark(Base, TimestampMixin):
@@ -139,5 +145,41 @@ class FeedEvent(Base):
     root_code: Mapped[str | None] = mapped_column(String, index=True)
     locus_id: Mapped[int | None] = mapped_column(ForeignKey("loci.id", ondelete="SET NULL"))
     occurred_on: Mapped[str | None] = mapped_column(String(10), index=True)
+
+    document: Mapped[Document | None] = relationship()
+
+
+class FeedArticle(Base):
+    """One article as the GDELT Global Knowledge Graph describes it.
+
+    The event export lists only articles from which a political event could be
+    coded, which is under a fifth of what GDELT reads: a factory fire or a
+    cyberattack with no state actor never appears there. The GKG lists every
+    article, tagged with themes and every place it mentions, so it is what lets
+    the pre-scrape filter see the families CAMEO has no code for.
+
+    Themes and places are arrays rather than child rows: a record carries dozens
+    of each, and the only questions asked of them are "does it carry any of
+    these", which a GIN index answers directly.
+    """
+
+    __tablename__ = "feed_articles"
+    __table_args__ = (
+        UniqueConstraint("slice_id", "record_id"),
+        Index("ix_feed_articles_themes", "themes", postgresql_using="gin"),
+        Index("ix_feed_articles_locus_ids", "locus_ids", postgresql_using="gin"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    slice_id: Mapped[int] = mapped_column(
+        ForeignKey("feed_slices.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    record_id: Mapped[str] = mapped_column(String, nullable=False)
+    document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="SET NULL"), index=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    themes: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    locus_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer), nullable=False, default=list)
 
     document: Mapped[Document | None] = relationship()

@@ -11,7 +11,7 @@ from sqlalchemy import select, text
 
 from hontology.config import get_settings
 from hontology.db.session import session_scope
-from hontology.ingest import scrape, service
+from hontology.ingest import gdelt, scrape, service
 from hontology.judge import run as judge_run
 from hontology.judge.providers.base import ProviderError
 from hontology.ontology import service as ontology_service
@@ -90,6 +90,23 @@ def ontology_export(ontology_id: int, out: Path | None = None) -> None:
     else:
         out.write_text(text, encoding="utf-8")
         typer.echo(f"wrote {out}")
+
+
+@ontology_app.command("links-import")
+def ontology_links_import(ontology_id: int, path: Path) -> None:
+    """Apply hand-curated concept↔code links from a CSV (concept,system,code)."""
+    import csv
+
+    from hontology.retrieve import similarity
+
+    with path.open(encoding="utf-8", newline="") as handle:
+        rows = [
+            {key: (value or "").strip() for key, value in row.items()}
+            for row in csv.DictReader(handle)
+        ]
+    with session_scope() as session:
+        result = similarity.import_links(session, ontology_id, rows)
+    typer.echo(f"linked {result['links']} code(s) across {result['concepts']} concept(s)")
 
 
 @ontology_app.command("lint")
@@ -174,6 +191,95 @@ def ingest_backfill(start: str, end: str) -> None:
     typer.echo(f"processed {result['processed']} slice(s) from {start} to {end}")
 
 
+@ingest_app.command("themes")
+def ingest_themes() -> None:
+    """Load the GKG theme vocabulary as a code system, for theme links."""
+    from hontology.ingest import themes
+
+    with session_scope() as session:
+        result = themes.ingest(session)
+    typer.echo(f"gkg themes: {result['inserted']} new, {result['total']} total")
+
+
+@ingest_app.command("calendar")
+def ingest_calendar(
+    calendar_path: Path,
+    before: int = typer.Option(1, help="Days of feed before each entry's date."),
+    after: int = typer.Option(2, help="Days of feed after each entry's date."),
+) -> None:
+    """Backfill both feeds for every window an event calendar needs.
+
+    The event export is kept whole; the knowledge graph, roughly seventy times
+    larger, keeps only articles mentioning a country the calendar names on that
+    day. Each slice commits on its own, so an interrupted backfill resumes where
+    it stopped.
+    """
+    from hontology.evalkit import calendar
+
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)-5s %(message)s")
+    entries = calendar.load(calendar_path)
+    with session_scope() as session:
+        loci = calendar.loci_for(session, entries)
+    days = calendar.days_to_ingest(entries, loci, before=before, after=after)
+    typer.echo(f"{len(days)} day(s), {len(days) * 96} slice(s) per feed")
+
+    totals: dict[str, int] = {}
+    for index, (day, places) in enumerate(days.items(), start=1):
+        start = day.strftime("%Y%m%d") + "000000"
+        for key in [start, *gdelt.keys_between(start, day.strftime("%Y%m%d") + "234500")]:
+            for feed, scope in ((service.FEED, None), (service.FEED_GKG, places)):
+                with session_scope() as session:
+                    result = service.ingest_slice(session, key, feed=feed, loci=scope)
+                status_key = "skipped" if result.get("skipped") else result["status"]
+                totals[status_key] = totals.get(status_key, 0) + 1
+        typer.echo(f"[{index}/{len(days)}] {day}  {totals}")
+
+
+@ingest_app.command("calendar-preview")
+def ingest_calendar_preview(
+    calendar_path: Path,
+    ontology_id: int | None = typer.Option(None, help="Also count what the filter keeps."),
+    before: int = typer.Option(1),
+    after: int = typer.Option(2),
+) -> None:
+    """How many documents each calendar window holds, before fetching any."""
+    from hontology.db.models import Document
+    from hontology.evalkit import calendar
+    from hontology.ingest import filter as ingest_filter
+
+    entries = calendar.load(calendar_path)
+    with session_scope() as session:
+        loci = calendar.loci_for(session, entries)
+        passed = (
+            set(ingest_filter.matching_documents(session, ontology_id)) if ontology_id else None
+        )
+        everything: set[int] = set()
+        kept: set[int] = set()
+        typer.echo(f"{'entry':40} {'in feed':>8} {'filter':>8}")
+        for entry in entries:
+            docs = set(
+                calendar.window_documents(session, entry, loci, before=before, after=after)
+            )
+            everything |= docs
+            hit = docs & passed if passed is not None else docs
+            kept |= hit
+            shown = len(hit) if passed is not None else "-"
+            typer.echo(f"{entry.id:40} {len(docs):>8} {shown:>8}")
+        unfetched = len(
+            list(
+                session.scalars(
+                    select(Document.id).where(
+                        Document.id.in_(kept), Document.fetched_at.is_(None)
+                    )
+                )
+            )
+        )
+    typer.echo(
+        f"distinct documents: {len(everything)} in windows, {len(kept)} kept, "
+        f"{unfetched} still to fetch"
+    )
+
+
 @ingest_app.command("scrape")
 def ingest_scrape(
     limit: int | None = typer.Option(None, help="Max documents this run (default: budget)."),
@@ -188,16 +294,31 @@ def ingest_scrape(
         help="Only fetch documents whose feed codes reach this ontology's concepts. "
         "Off by default; meaningless for an ontology with no code links.",
     ),
+    calendar_path: Path | None = typer.Option(
+        None, "--calendar", help="Only fetch documents inside this calendar's windows."
+    ),
+    before: int = typer.Option(1, help="Calendar window: days before each date."),
+    after: int = typer.Option(2, help="Calendar window: days after each date."),
 ) -> None:
     """Fetch article text for documents that do not have it yet."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(message)s")
     with session_scope() as session:
+        document_ids = None
+        if calendar_path is not None:
+            from hontology.evalkit import calendar
+
+            document_ids = sorted(
+                calendar.all_window_documents(
+                    session, calendar.load(calendar_path), before=before, after=after
+                )
+            )
         result = scrape.scrape_pending(
             session,
             limit=limit,
             retry_failed=retry_failed,
             use_reader_proxy=reader_proxy,
             ontology_id=ontology_id,
+            document_ids=document_ids,
         )
 
     typer.echo(
@@ -328,6 +449,14 @@ def run_start(
         help="Recompute document embeddings instead of reusing cached ones. For "
         "when the cache itself is the suspect; results are unaffected.",
     ),
+    calendar_path: Path | None = typer.Option(
+        None,
+        "--calendar",
+        help="Consider only fetched documents inside this calendar's windows, "
+        "instead of the newest --documents.",
+    ),
+    before: int = typer.Option(1, help="Calendar window: days before each date."),
+    after: int = typer.Option(2, help="Calendar window: days after each date."),
 ) -> None:
     """Execute a run from a JSON config."""
     from hontology.evalkit import runner
@@ -340,14 +469,37 @@ def run_start(
         run_id = run.id
         typer.echo(f"run {run_id}: candidates={run.candidates_key} judge={run.judge_key}")
 
+    document_ids = None
+    if calendar_path is not None:
+        from hontology.evalkit import calendar
+
+        with session_scope() as session:
+            document_ids = sorted(
+                calendar.all_window_documents(
+                    session, calendar.load(calendar_path), before=before, after=after
+                )
+            )
+            # Which documents a run considered is provenance, not behaviour: it
+            # is recorded, never hashed, like the --documents limit.
+            run = _load_run(session, run_id)
+            run.manifest = (run.manifest or {}) | {
+                "documents": {
+                    "calendar": str(calendar_path),
+                    "window_days": [before, after],
+                    "in_windows": len(document_ids),
+                }
+            }
+        typer.echo(f"calendar: {len(document_ids)} document(s) in its windows")
+
     with session_scope() as session:
         result = runner.execute(
             session,
             _load_run(session, run_id),
-            document_limit=documents,
+            document_limit=documents if document_ids is None else len(document_ids),
             judge_limit=judge_limit,
             skip_judge=skip_judge,
             refresh_embeddings=refresh_embeddings,
+            document_ids=document_ids,
         )
 
     typer.echo(f"candidates  {result['candidates']}")
@@ -590,6 +742,58 @@ def eval_funnel(run_id: int) -> None:
 
     with session_scope() as session:
         typer.echo(funnel.format_funnel(funnel.funnel(session, run_id)))
+
+
+@eval_app.command("calendar")
+def eval_calendar(
+    run_id: int,
+    calendar_path: Path,
+    before: int = typer.Option(1, help="Days of feed before each entry's date."),
+    after: int = typer.Option(2, help="Days of feed after each entry's date."),
+    out: Path | None = typer.Option(None, help="Also write the full result as JSON."),
+) -> None:
+    """Event-level results against a calendar of known events. Needs no labels."""
+    from hontology.evalkit import calendar
+    from hontology.evalkit.metrics import format_ci
+
+    with session_scope() as session:
+        result = calendar.evaluate(
+            session, run_id, calendar.load(calendar_path), before=before, after=after
+        )
+    if out is not None:
+        out.write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+    stages = calendar.STAGES
+    typer.echo(
+        f"{'entry':34} {'kind':9} " + " ".join(f"{s[:8]:>8}" for s in stages) + "  result"
+    )
+    for row in result["entries"]:
+        verdict = (
+            ("FALSE ALARM" if row["kind"] == calendar.CONTROL else "detected")
+            if row["detected"]
+            else ("quiet" if row["kind"] == calendar.CONTROL else f"lost at {row['lost_at']}")
+        )
+        typer.echo(
+            f"{row['id'][:34]:34} {row['kind']:9} "
+            + " ".join(f"{row[s]:>8}" for s in stages)
+            + f"  {verdict}"
+        )
+
+    typer.echo("")
+    for label, key in (
+        ("event recall", "event_recall"),
+        ("precursor recall", "precursor_recall"),
+        ("false alarm rate", "false_alarm_rate"),
+    ):
+        stat = result["summary"][key]
+        rate = "-" if stat["rate"] is None else f"{stat['rate']:.2f}"
+        typer.echo(f"{label:18} {stat['hits']}/{stat['n']}  {rate}  {format_ci(*stat['ci'])}")
+    typer.echo(f"positives lost at  {result['summary']['positives_lost_at']}")
+    for lead in result["lead_times"]:
+        typer.echo(
+            f"lead  {lead['precursor']} -> {lead['disruption']}: {lead['lead_days']} day(s)"
+            f"{'' if lead['disruption_detected'] else '  (disruption itself missed)'}"
+        )
 
 
 @eval_app.command("detections")

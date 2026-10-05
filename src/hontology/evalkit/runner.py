@@ -113,16 +113,14 @@ def copy_candidates(session: Session, source_run_id: int, target_run_id: int) ->
     return len(rows)
 
 
-def pending_documents(session: Session, limit: int) -> list[Document]:
-    """Documents with usable text, newest first."""
-    return list(
-        session.scalars(
-            select(Document)
-            .where(Document.body_path.is_not(None), Document.is_junk.is_(False))
-            .order_by(Document.id.desc())
-            .limit(limit)
-        )
-    )
+def pending_documents(
+    session: Session, limit: int, *, document_ids: list[int] | None = None
+) -> list[Document]:
+    """Documents with usable text, newest first, optionally within a given set."""
+    query = select(Document).where(Document.body_path.is_not(None), Document.is_junk.is_(False))
+    if document_ids is not None:
+        query = query.where(Document.id.in_(document_ids))
+    return list(session.scalars(query.order_by(Document.id.desc()).limit(limit)))
 
 
 def execute(
@@ -133,6 +131,7 @@ def execute(
     judge_limit: int | None = None,
     skip_judge: bool = False,
     refresh_embeddings: bool = False,
+    document_ids: list[int] | None = None,
 ) -> dict:
     """Run the pipeline for *run*, reusing retrieval where the key allows.
 
@@ -154,6 +153,7 @@ def execute(
             judge_limit=judge_limit,
             skip_judge=skip_judge,
             refresh_embeddings=refresh_embeddings,
+            document_ids=document_ids,
         )
     except BaseException as exc:
         # The failed statement may have left the transaction unusable; the
@@ -182,8 +182,9 @@ def _execute_stages(
     judge_limit: int | None,
     skip_judge: bool,
     refresh_embeddings: bool,
+    document_ids: list[int] | None,
 ) -> dict:
-    documents = pending_documents(session, document_limit)
+    documents = pending_documents(session, document_limit, document_ids=document_ids)
     reused_from = None
 
     existing = session.scalar(

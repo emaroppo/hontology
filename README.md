@@ -221,6 +221,30 @@ carries a code**, matched or not. Falling through after a specific code failed
 would let an unmatched `1451` ("riot") be retried as `14` ("PROTEST") and match
 everything protest-shaped — far more than the event supports.
 
+### The knowledge graph: articles with no political event
+
+The event export only lists articles from which GDELT could code a political
+event. A factory fire, a ransomware attack or a drug shortage has no state actor,
+so its articles never appear there. Measured on one 15-minute slice, the export
+listed 225 article URLs and GDELT's Global Knowledge Graph (GKG) listed 1,337:
+**five in six articles GDELT reads are invisible to the event export.**
+
+The GKG is ingested as a second feed beside the export, with its own watermark,
+and tags each article with themes (`CYBER_ATTACK`, `SHORTAGE`, `WB_167_PORTS`…)
+and every country it mentions. Themes are a second code system beside CAMEO, so
+the same curated links drive the filter for both feeds, and a document passes
+if either matches it.
+
+```bash
+hontology ingest themes                                # load the theme vocabulary
+hontology ontology links-import <id> links.csv         # concept,system,code rows
+```
+
+A GKG slice is about seventy times the size of an export slice, so a historical
+backfill can keep only articles mentioning given countries. A slice records the
+scope it was kept for, and is reprocessed rather than skipped when a later request
+asks for a place outside it: "ok for Hong Kong" is not "ok for the Netherlands".
+
 ### Fetching article text
 
 The feed gives URLs, not article bodies. Fetching them is a separate, bounded step:
@@ -362,6 +386,28 @@ four outlets is one fact. Every row carries a **verification** status, because a
 detection is a model's claim rather than a fact, and exporting confirmed and
 unreviewed ones indistinguishably would launder model output into apparent
 ground truth.
+
+**Event calendars give a first number with no labels.** A calendar is a reviewed
+CSV of events known from outside the pipeline to have happened (a port strike in
+the Netherlands on 2025-10-08), their precursors (the strike notice the day
+before), and quiet control days. Each entry is a country, or several written
+`HUN|SVK` when the place is genuinely ambiguous, plus a window of days around its
+date.
+
+```bash
+hontology ingest calendar calendar.csv                 # backfill both feeds for its windows
+hontology ingest calendar-preview calendar.csv --ontology-id <id>
+hontology ingest scrape --calendar calendar.csv --ontology-id <id>
+hontology run start <id> run.json --calendar calendar.csv
+hontology eval calendar <run-id> calendar.csv
+```
+
+Scoring reports event recall over the positives, precursor recall, a false-alarm
+rate over the controls, and lead time where a precursor was matched before its
+disruption's day. Every entry is scored through the stages its documents pass,
+`in_feed → passed_filter → fetched → retrieved → matched`, so a miss says where it
+happened: an event whose articles never reached the feed needs a different fix
+from one the judge rejected.
 
 **Funnel before metrics.** `eval funnel` shows attrition stage by stage and needs
 no ground truth at all, which makes it the first thing to read when a run

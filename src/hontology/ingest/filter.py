@@ -16,6 +16,12 @@ anything for an ontology whose concepts have been mapped onto the code system; a
 supply-chain or corporate-events ontology maps onto nothing, and silently
 applying the filter would starve its corpus to zero.
 
+**Two feeds, one set of links.** CAMEO links match the event export's coded
+events; GKG theme links match the knowledge graph's article themes. CAMEO only
+sees articles from which a political event could be coded, so families with no
+actors (fires, cyberattacks, shortages) reach the filter through themes. A
+document passes if either feed matches it.
+
 **Everything is still ingested.** Only fetching is gated. Feed rows are cheap and
 the corpus is shared between ontologies, so discarding a document because *this*
 ontology cannot use it would corrupt the corpus for the next one.
@@ -28,7 +34,17 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hontology.db.models import Code, Concept, ConceptCode, Document, FeedEvent
+from hontology.db.models import (
+    Code,
+    CodeSystem,
+    Concept,
+    ConceptCode,
+    Document,
+    FeedArticle,
+    FeedEvent,
+)
+from hontology.ingest.cameo import CAMEO_SLUG
+from hontology.ingest.themes import THEMES_LEVEL, THEMES_SLUG
 
 # Most specific first.
 CODE_TIERS = ("event_code", "base_code", "root_code")
@@ -44,8 +60,10 @@ class Match:
     concept_ids: frozenset[int]
 
 
-def concept_code_map(session: Session, ontology_id: int) -> dict[str, set[int]]:
-    """``{code string: concepts linked to it}`` for one ontology.
+def concept_code_map(
+    session: Session, ontology_id: int, *, system: str = CAMEO_SLUG
+) -> dict[str, set[int]]:
+    """``{code string: concepts linked to it}`` for one ontology and code system.
 
     Empty when the ontology has no curated links, which callers must treat as
     "cannot filter" rather than "nothing matches".
@@ -60,10 +78,16 @@ def concept_code_map(session: Session, ontology_id: int) -> dict[str, set[int]]:
     for link, code in session.execute(
         select(ConceptCode, Code)
         .join(Code, Code.id == ConceptCode.code_id)
-        .where(ConceptCode.concept_id.in_(concept_ids))
+        .join(CodeSystem, CodeSystem.id == Code.system_id)
+        .where(ConceptCode.concept_id.in_(concept_ids), CodeSystem.slug == system)
     ).all():
         links.setdefault(code.code, set()).add(link.concept_id)
     return links
+
+
+def concept_theme_map(session: Session, ontology_id: int) -> dict[str, set[int]]:
+    """``{GKG theme: concepts linked to it}`` for one ontology."""
+    return concept_code_map(session, ontology_id, system=THEMES_SLUG)
 
 
 def resolve_event(
@@ -94,9 +118,14 @@ def matching_documents(
     *,
     document_ids: list[int] | None = None,
 ) -> dict[int, Match]:
-    """Documents whose feed events reach at least one concept in this ontology."""
+    """Documents whose feed records reach at least one concept in this ontology.
+
+    CAMEO matches come first, so a document both feeds reach reports its event
+    code; the theme pass adds documents only the knowledge graph saw.
+    """
     links = concept_code_map(session, ontology_id)
-    if not links:
+    themes = concept_theme_map(session, ontology_id)
+    if not links and not themes:
         return {}
 
     query = select(FeedEvent).where(FeedEvent.document_id.is_not(None))
@@ -117,6 +146,24 @@ def matching_documents(
             level=level,
             concept_ids=frozenset(concept_ids),
         )
+
+    if themes:
+        query = select(FeedArticle.document_id, FeedArticle.themes).where(
+            FeedArticle.document_id.is_not(None),
+            FeedArticle.themes.overlap(sorted(themes)),
+        )
+        if document_ids is not None:
+            query = query.where(FeedArticle.document_id.in_(document_ids))
+        for document_id, article_themes in session.execute(query):
+            if document_id in matches:
+                continue
+            hit = sorted(t for t in article_themes if t in themes)
+            matches[document_id] = Match(
+                document_id=document_id,
+                code=hit[0],
+                level=THEMES_LEVEL,
+                concept_ids=frozenset().union(*(themes[t] for t in hit)),
+            )
     return matches
 
 
@@ -126,7 +173,7 @@ def preview(session: Session, ontology_id: int) -> dict:
     Reports the unfetched share separately because that is the number the scrape
     budget is actually spent against.
     """
-    links = concept_code_map(session, ontology_id)
+    links = concept_code_map(session, ontology_id) | concept_theme_map(session, ontology_id)
     total = len(list(session.scalars(select(Document.id))))
     unfetched = [
         row for row in session.scalars(select(Document.id).where(Document.fetched_at.is_(None)))

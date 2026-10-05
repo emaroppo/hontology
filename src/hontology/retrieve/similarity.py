@@ -19,7 +19,14 @@ from dataclasses import dataclass
 from sqlalchemy import delete, insert, select, text
 from sqlalchemy.orm import Session
 
-from hontology.db.models import Code, Concept, ConceptCode, SimilarityRun, SimilarityScore
+from hontology.db.models import (
+    Code,
+    CodeSystem,
+    Concept,
+    ConceptCode,
+    SimilarityRun,
+    SimilarityScore,
+)
 from hontology.retrieve.embed import (
     EmbeddingProvider,
     embed_concepts,
@@ -282,3 +289,37 @@ def set_link(session: Session, concept_id: int, code_id: int, *, linked: bool) -
         # Confirming a proposal makes it manual, so a recompute cannot drop it.
         existing.similarity_run_id = None
     session.flush()
+
+
+def import_links(session: Session, ontology_id: int, rows: list[dict]) -> dict:
+    """Apply hand-curated links from ``{concept, system, code}`` rows.
+
+    Keyed by concept name, system slug and code string, never ids, so a
+    curation file moves between databases. Every row is resolved before any is
+    written: a typo in one code must not leave half a mapping applied.
+    """
+    concepts = {
+        c.name: c.id
+        for c in session.scalars(select(Concept).where(Concept.ontology_id == ontology_id))
+    }
+    codes = {
+        (system, code): code_id
+        for system, code, code_id in session.execute(
+            select(CodeSystem.slug, Code.code, Code.id).join(
+                CodeSystem, CodeSystem.id == Code.system_id
+            )
+        )
+    }
+    problems = [
+        f"{row['concept']} -> {row['system']}:{row['code']}"
+        for row in rows
+        if row["concept"] not in concepts or (row["system"], row["code"]) not in codes
+    ]
+    if problems:
+        raise LookupError("unresolved links: " + "; ".join(problems))
+
+    for row in rows:
+        set_link(
+            session, concepts[row["concept"]], codes[(row["system"], row["code"])], linked=True
+        )
+    return {"links": len(rows), "concepts": len({row["concept"] for row in rows})}

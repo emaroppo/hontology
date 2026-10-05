@@ -7,6 +7,7 @@ autogenerates, and so cross-module relationship strings resolve.
 from hontology.db.base import Base
 from hontology.db.models.corpus import (
     Document,
+    FeedArticle,
     FeedEvent,
     FeedSlice,
     IngestWatermark,
@@ -49,6 +50,7 @@ __all__ = [
     "ConceptGroup",
     "ConceptGroupMember",
     "Document",
+    "FeedArticle",
     "Embedding",
     "EmbeddingModel",
     "FeedEvent",
