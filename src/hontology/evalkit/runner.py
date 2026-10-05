@@ -134,12 +134,55 @@ def execute(
     skip_judge: bool = False,
     refresh_embeddings: bool = False,
 ) -> dict:
-    """Run the pipeline for *run*, reusing retrieval where the key allows."""
+    """Run the pipeline for *run*, reusing retrieval where the key allows.
+
+    Any failure — in either stage, including Ctrl-C — is recorded on the row
+    before it propagates, with ``stage`` left on the stage that failed. A run
+    left ``running`` by a crash is indistinguishable from one still in progress,
+    and nothing would ever clear it.
+    """
     run.status = "running"
     run.started_at = datetime.now(UTC)
     run.stage = "candidates"
     session.commit()
 
+    try:
+        result = _execute_stages(
+            session,
+            run,
+            document_limit=document_limit,
+            judge_limit=judge_limit,
+            skip_judge=skip_judge,
+            refresh_embeddings=refresh_embeddings,
+        )
+    except BaseException as exc:
+        # The failed statement may have left the transaction unusable; the
+        # stage's partial work is discarded, per-pair verdicts already
+        # committed are kept for resume.
+        session.rollback()
+        run.status = "failed"
+        run.error = (
+            "interrupted" if isinstance(exc, KeyboardInterrupt) else str(exc)[:1000]
+        ) or type(exc).__name__
+        run.finished_at = datetime.now(UTC)
+        session.commit()
+        raise
+
+    run.stage = None
+    run.finished_at = datetime.now(UTC)
+    session.commit()
+    return result
+
+
+def _execute_stages(
+    session: Session,
+    run: Run,
+    *,
+    document_limit: int,
+    judge_limit: int | None,
+    skip_judge: bool,
+    refresh_embeddings: bool,
+) -> dict:
     documents = pending_documents(session, document_limit)
     reused_from = None
 
@@ -170,9 +213,9 @@ def execute(
     session.commit()
 
     if skip_judge:
+        # Terminal: retrieval only. The judge stage never started, so it must
+        # not be left showing as the current stage.
         run.status = "candidates"
-        run.finished_at = datetime.now(UTC)
-        session.commit()
         return {
             "run_id": run.id,
             "candidates": candidate_stats,
@@ -184,26 +227,15 @@ def execute(
         run.progress_done = done
         run.progress_total = total
 
-    try:
-        judge_stats = judge_run_module.judge_run(
-            session,
-            run.id,
-            config=run.config,
-            judge_body_limit=run.config["common"]["judge_body_limit"],
-            limit=judge_limit,
-            progress=progress,
-        )
-    except Exception as exc:  # noqa: BLE001 - recorded on the run, not swallowed
-        run.status = "failed"
-        run.error = str(exc)[:1000]
-        run.finished_at = datetime.now(UTC)
-        session.commit()
-        raise
-
+    judge_stats = judge_run_module.judge_run(
+        session,
+        run.id,
+        config=run.config,
+        judge_body_limit=run.config["common"]["judge_body_limit"],
+        limit=judge_limit,
+        progress=progress,
+    )
     run.status = "done"
-    run.stage = None
-    run.finished_at = datetime.now(UTC)
-    session.commit()
 
     return {
         "run_id": run.id,
