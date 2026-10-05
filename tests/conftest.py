@@ -34,12 +34,13 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import psycopg
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
 from hontology import config as config_module
@@ -77,6 +78,33 @@ def _ensure_database(url: str) -> None:
             # Identifier cannot be parameterised; the name is derived from our own
             # settings and validated by the _test suffix guard below.
             connection.execute(f'CREATE DATABASE "{name}"')
+
+
+# The first migration, which a database built by the old create_all setup
+# matches exactly. Such a database has no version table, so it is stamped here
+# once and then upgraded like any other.
+_INITIAL_REVISION = "28bf03246c75"
+
+
+def _migrate(engine) -> None:
+    """Bring the test database to the latest migration.
+
+    Migrations rather than ``create_all``: create_all adds missing tables but
+    never a column to an existing one, so a test database made before a schema
+    change would fail every test that touched the new column.
+    """
+    from alembic.config import Config
+
+    from alembic import command
+
+    root = Path(__file__).resolve().parent.parent
+    alembic_config = Config(str(root / "alembic.ini"))
+    alembic_config.set_main_option("script_location", str(root / "alembic"))
+
+    tables = set(inspect(engine).get_table_names())
+    if "alembic_version" not in tables and "documents" in tables:
+        command.stamp(alembic_config, _INITIAL_REVISION)
+    command.upgrade(alembic_config, "head")
 
 
 def _postgres_reachable(url: str) -> bool:
@@ -156,9 +184,7 @@ def test_database(pytestconfig: pytest.Config) -> Iterator[str]:
     with engine.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 
-    from hontology.db.models import Base
-
-    Base.metadata.create_all(engine)
+    _migrate(engine)
 
     # Country codes are reference data the application seeds at startup, not user
     # content, so tests need them present for anything that resolves a locus.
