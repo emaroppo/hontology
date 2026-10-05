@@ -84,7 +84,9 @@ host change as a new experiment would make cross-machine comparison impossible.
 ## Quick start
 
 Requirements: Docker, Python 3.12+, [uv](https://docs.astral.sh/uv/), and
-[Ollama](https://ollama.com/) if you want to run the judge locally.
+either [Ollama](https://ollama.com/) or a
+[llama.cpp](https://github.com/ggml-org/llama.cpp) server if you want to run the
+judge locally.
 
 ```bash
 cp .env.example .env
@@ -109,6 +111,20 @@ The UI is six pages, each a pure HTTP client of the API:
 `make doctor` is the first thing to run if something is not working: it reports
 the database and the model provider separately, and degrades gracefully when
 only one is up — the ontology layer works fine with no model at all.
+
+**Serving models with llama.cpp.** Set `"provider": "llamacpp"` in a run's
+`judge` or `candidates` section and point `HONTOLOGY_LLAMACPP_HOST` at a
+`llama-server`; it is spoken to over its OpenAI-compatible API. One server holds
+one model, so embeddings usually need a second one started with `--embeddings`,
+at `HONTOLOGY_LLAMACPP_EMBED_HOST`. The model name in a config may be the server's
+id, an alias, or the bare file name without `.gguf` — the path is where the model
+lives, not what it is, so it stays out of the run's identity. Three things a plain
+OpenAI client would get wrong are refused rather than tolerated: a config naming
+a model the server is not holding (the server would answer with its own model
+anyway), thinking left to the chat template's default (reasoning models think
+unless told not to, which would make `think: false` untrue), and a per-slot
+context smaller than `context_window`, which llama.cpp fixes at startup rather
+than per request.
 
 **The app starts empty, by design** — there is no bundled ontology, because the
 whole premise is that the ontology is yours. Create one in the UI, or import a
@@ -520,7 +536,7 @@ Deferred deliberately, with the reason.
 ## Roadmap
 
 - [x] Schema: ontology, taxonomy, vectors, corpus, runs, labels, snapshots
-- [x] Pluggable LLM provider layer (Ollama; Anthropic behind the same protocol)
+- [x] Pluggable LLM provider layer (Ollama, llama.cpp; Anthropic behind the same protocol)
 - [x] Ontology service, import/export, snapshots, API and editor UI
 - [x] CAMEO ingest, embeddings, similarity review
 - [x] GDELT ingest: watermarking, catch-up, backfill, optional continuous watcher

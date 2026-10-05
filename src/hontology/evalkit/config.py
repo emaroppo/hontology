@@ -29,7 +29,17 @@ from typing import Any
 
 # Fields that describe *where* things run rather than *what* runs. Never hashed.
 INFRA_KEYS = frozenset(
-    {"db_url", "database_url", "ollama_host", "embed_host", "api_key", "region", "base_url"}
+    {
+        "db_url",
+        "database_url",
+        "ollama_host",
+        "llamacpp_host",
+        "llamacpp_embed_host",
+        "embed_host",
+        "api_key",
+        "region",
+        "base_url",
+    }
 )
 
 COMMON_DEFAULTS: dict[str, Any] = {

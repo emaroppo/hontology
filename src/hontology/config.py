@@ -41,6 +41,11 @@ class Settings(BaseSettings):
 
     # --- Provider transports (infrastructure) -------------------------------
     ollama_host: str = "http://localhost:11434"
+    # llama-server holds one model per process, so a chat model and an embedding
+    # model are usually two servers. The embed host falls back to the chat host.
+    llamacpp_host: str = "http://localhost:8080"
+    llamacpp_embed_host: str | None = None
+    llamacpp_api_key: str | None = None
 
     # --- Provider defaults (behavior: hashed when a run adopts them) --------
     default_judge_provider: str = "ollama"

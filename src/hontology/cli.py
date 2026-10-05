@@ -12,8 +12,8 @@ from sqlalchemy import select, text
 from hontology.config import get_settings
 from hontology.db.session import session_scope
 from hontology.ingest import scrape, service
+from hontology.judge import run as judge_run
 from hontology.judge.providers.base import ProviderError
-from hontology.judge.providers.ollama import OllamaChatProvider
 from hontology.ontology import service as ontology_service
 from hontology.ontology import snapshots
 
@@ -47,7 +47,8 @@ def doctor() -> None:
         typer.secho(f"database       FAIL  {exc}", fg=typer.colors.RED)
 
     try:
-        typer.echo(f"llm provider   {OllamaChatProvider(settings.ollama_host).health()}")
+        provider = judge_run.get_provider(settings.default_judge_provider)
+        typer.echo(f"llm provider   {provider.health()}")
     except ProviderError as exc:
         # Not fatal: the ontology layer works fine without a model.
         typer.secho(f"llm provider   unavailable  ({exc})", fg=typer.colors.YELLOW)

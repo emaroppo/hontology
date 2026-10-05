@@ -31,6 +31,8 @@ def _infra_snapshot() -> dict:
     settings = get_settings()
     return {
         "ollama_host": settings.ollama_host,
+        "llamacpp_host": settings.llamacpp_host,
+        "llamacpp_embed_host": settings.llamacpp_embed_host or settings.llamacpp_host,
         "database": settings.psycopg_url().rsplit("@", 1)[-1],
     }
 

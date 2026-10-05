@@ -20,17 +20,20 @@ against the vectors it actually used.
 from __future__ import annotations
 
 import hashlib
+from pathlib import PurePosixPath
 from typing import Protocol, runtime_checkable
 
 import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from hontology.config import get_settings
 from hontology.db.models import Concept, Embedding, EmbeddingModel
+from hontology.judge.providers import llamacpp
 from hontology.judge.providers.base import ProviderError
 
-# Per-model (document_prefix, query_prefix), as given on each model's card on
-# Hugging Face (nomic-ai/nomic-embed-text-v1.5, mixedbread-ai/mxbai-embed-large-v1).
+# Per-model-family (document_prefix, query_prefix), as given on each model's card
+# on Hugging Face (nomic-ai/nomic-embed-text-v1.5, mixedbread-ai/mxbai-embed-large-v1).
 # Models not listed get no prefix, which is the correct default for symmetric
 # models.
 _PREFIXES: dict[str, tuple[str, str]] = {
@@ -42,12 +45,26 @@ _PREFIXES: dict[str, tuple[str, str]] = {
 }
 
 
+def _prefixes(model: str) -> tuple[str, str]:
+    """Look a model up by family, not exact name.
+
+    The same weights go by many names — ``nomic-embed-text:latest`` in Ollama,
+    ``nomic-embed-text-v1.5.Q8_0`` as a GGUF file served by llama.cpp — and an
+    exact-match miss silently embeds without the prefix the model was trained on.
+    """
+    name = PurePosixPath(model).name.lower()
+    for family, prefixes in _PREFIXES.items():
+        if name.startswith(family):
+            return prefixes
+    return ("", "")
+
+
 def document_prefix(model: str) -> str:
-    return _PREFIXES.get(model, ("", ""))[0]
+    return _prefixes(model)[0]
 
 
 def query_prefix(model: str) -> str:
-    return _PREFIXES.get(model, ("", ""))[1]
+    return _prefixes(model)[1]
 
 
 def normalize_for_embedding(text: str) -> str:
@@ -126,9 +143,86 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         return len(self.embed(["dimension probe"], model=model)[0])
 
 
-def get_provider(name: str, host: str) -> EmbeddingProvider:
+class LlamaCppEmbeddingProvider(EmbeddingProvider):
+    """``/v1/embeddings`` on a ``llama-server`` started with ``--embeddings``.
+
+    As with the chat provider, the requested model is checked against what the
+    server actually holds: an embedding server answers any model name with its
+    one model, and vectors filed under the wrong model name would poison the
+    cache for every later run that trusts the key.
+    """
+
+    name = "llamacpp"
+
+    def __init__(
+        self,
+        host: str,
+        api_key: str | None = None,
+        *,
+        batch_size: int = 32,
+        timeout: float = 300.0,
+    ) -> None:
+        self.host = host.rstrip("/")
+        self.api_key = api_key
+        self.batch_size = batch_size
+        self.timeout = timeout
+        self._resolved: dict[str, str] = {}
+
+    def embed(self, texts: list[str], *, model: str) -> list[list[float]]:
+        if model not in self._resolved:
+            self._resolved[model] = llamacpp.resolve_model(self.host, model, self.api_key)
+        model_id = self._resolved[model]
+
+        out: list[list[float]] = []
+        for start in range(0, len(texts), self.batch_size):
+            chunk = texts[start : start + self.batch_size]
+            try:
+                response = httpx.post(
+                    f"{self.host}/v1/embeddings",
+                    json={"model": model_id, "input": chunk},
+                    headers=llamacpp.headers(self.api_key),
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                body = response.json()
+            except httpx.HTTPStatusError as exc:
+                # 501 is a server started without --embeddings, and the body
+                # says so; a too-long input is a 500 naming the batch size.
+                raise ProviderError(
+                    f"llama.cpp embed {exc.response.status_code} for {model!r}: "
+                    f"{exc.response.text[:300]}",
+                    retryable=exc.response.status_code >= 500
+                    and exc.response.status_code != 501,
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise ProviderError(
+                    f"llama.cpp embed transport error: {exc}", retryable=True
+                ) from exc
+
+            data = body.get("data") or []
+            if len(data) != len(chunk):
+                raise ProviderError(
+                    f"llama.cpp embed: sent {len(chunk)} texts to {model!r}, got "
+                    f"{len(data)} vectors back"
+                )
+            # The API carries an index per vector; order by it rather than trust
+            # the response order.
+            out.extend(item["embedding"] for item in sorted(data, key=lambda d: d["index"]))
+        return out
+
+    def dimension(self, model: str) -> int:
+        return len(self.embed(["dimension probe"], model=model)[0])
+
+
+def get_provider(name: str) -> EmbeddingProvider:
+    settings = get_settings()
     if name == "ollama":
-        return OllamaEmbeddingProvider(host)
+        return OllamaEmbeddingProvider(settings.ollama_host)
+    if name == "llamacpp":
+        return LlamaCppEmbeddingProvider(
+            settings.llamacpp_embed_host or settings.llamacpp_host,
+            settings.llamacpp_api_key,
+        )
     raise ProviderError(f"unknown embedding provider {name!r}")
 
 

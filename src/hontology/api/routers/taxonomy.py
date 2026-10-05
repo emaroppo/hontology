@@ -142,7 +142,7 @@ def set_link(payload: SetLinkIn, db: Session = Depends(get_db)):
 def run_similarity(payload: SimilarityIn, db: Session = Depends(get_db)):
     settings = get_settings()
     system = _cameo_system(db)
-    provider = embed.get_provider(settings.default_embed_provider, settings.ollama_host)
+    provider = embed.get_provider(settings.default_embed_provider)
 
     try:
         result = similarity.run_similarity(

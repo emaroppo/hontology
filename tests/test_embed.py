@@ -73,7 +73,7 @@ def test_normalization_prevents_vector_collapse():
     from hontology.retrieve.embed import document_prefix, get_provider
 
     settings = get_settings()
-    provider = get_provider("ollama", settings.ollama_host)
+    provider = get_provider("ollama")
     model = settings.default_embed_model
     labels = ["PROTEST", "ASSAULT", "APPEAL", "FIGHT", "COERCE", "YIELD", "DEMAND"]
 

@@ -28,6 +28,7 @@ from hontology.config import get_settings
 from hontology.db.models import Candidate, Concept, Document, Locus, Verdict
 from hontology.judge import prompts
 from hontology.judge.providers.base import GenerationConfig, ProviderError
+from hontology.judge.providers.llamacpp import LlamaCppChatProvider
 from hontology.judge.providers.ollama import OllamaChatProvider
 
 log = logging.getLogger(__name__)
@@ -59,6 +60,8 @@ def get_provider(name: str):
     settings = get_settings()
     if name == "ollama":
         return OllamaChatProvider(settings.ollama_host)
+    if name == "llamacpp":
+        return LlamaCppChatProvider(settings.llamacpp_host, settings.llamacpp_api_key)
     raise ProviderError(f"unknown judge provider {name!r}")
 
 

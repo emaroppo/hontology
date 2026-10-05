@@ -135,8 +135,7 @@ def build_semantic(
     refresh_embeddings: bool = False,
 ) -> CandidateStats:
     """Rank concepts against each document body by cosine similarity."""
-    settings = get_settings()
-    provider = embed.get_provider(config["embed_provider"], settings.ollama_host)
+    provider = embed.get_provider(config["embed_provider"])
     model = config["embed_model"]
 
     model_id, concept_keys = embed.embed_concepts(
