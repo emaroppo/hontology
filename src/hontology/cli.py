@@ -20,6 +20,8 @@ from hontology.ontology import snapshots
 app = typer.Typer(help="hontology — ontology-driven event detection and evaluation.")
 ontology_app = typer.Typer(help="Manage ontologies.")
 ingest_app = typer.Typer(help="Pull slices from the news feed.")
+# Documents fetched per committed batch by `ingest scrape`.
+SCRAPE_BATCH = 200
 app.add_typer(ontology_app, name="ontology")
 run_app = typer.Typer(help="Configure and execute detection runs.")
 app.add_typer(ingest_app, name="ingest")
@@ -300,36 +302,97 @@ def ingest_scrape(
     before: int = typer.Option(1, help="Calendar window: days before each date."),
     after: int = typer.Option(2, help="Calendar window: days after each date."),
 ) -> None:
-    """Fetch article text for documents that do not have it yet."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(message)s")
+    """Fetch article text for documents that do not have it yet.
+
+    Work commits in batches, so a long scrape that is stopped or crashes keeps
+    everything but its last batch instead of losing the whole run.
+    """
+    from hontology.ingest import filter as ingest_filter
+
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)-5s %(message)s")
     with session_scope() as session:
         document_ids = None
         if calendar_path is not None:
             from hontology.evalkit import calendar
 
-            document_ids = sorted(
-                calendar.all_window_documents(
-                    session, calendar.load(calendar_path), before=before, after=after
-                )
+            document_ids = calendar.all_window_documents(
+                session, calendar.load(calendar_path), before=before, after=after
             )
-        result = scrape.scrape_pending(
-            session,
-            limit=limit,
-            retry_failed=retry_failed,
-            use_reader_proxy=reader_proxy,
-            ontology_id=ontology_id,
-            document_ids=document_ids,
-        )
+        if ontology_id is not None:
+            # Resolved once here rather than per batch: matching scans every
+            # feed record, and the answer does not change while fetching.
+            matches = set(ingest_filter.matching_documents(session, ontology_id))
+            if not matches:
+                typer.secho(
+                    "no documents match this ontology's code links; nothing to fetch",
+                    fg=typer.colors.YELLOW,
+                )
+                raise typer.Exit(1)
+            document_ids = matches if document_ids is None else document_ids & matches
+    allowed = sorted(document_ids) if document_ids is not None else None
+    if allowed is not None:
+        typer.echo(f"{len(allowed)} document(s) in scope")
 
+    budget = limit if limit is not None else get_settings().scrape_budget
+    totals: dict[str, int] = {}
+    while budget > 0:
+        with session_scope() as session:
+            result = scrape.scrape_pending(
+                session,
+                limit=min(SCRAPE_BATCH, budget),
+                retry_failed=retry_failed,
+                use_reader_proxy=reader_proxy,
+                document_ids=allowed,
+            )
+        if not result["attempted"]:
+            break
+        budget -= result["attempted"]
+        for key in ("attempted", "ok", "junk", "failed", "blocked_by_robots"):
+            totals[key] = totals.get(key, 0) + result[key]
+        typer.echo(
+            f"attempted {totals['attempted']}: {totals['ok']} ok, {totals['junk']} junk, "
+            f"{totals['failed']} failed, {totals['blocked_by_robots']} blocked by robots"
+        )
+        # A retry pass re-attempts the same failures every batch; one is enough.
+        if retry_failed:
+            break
+    if not totals:
+        typer.echo("nothing to fetch")
+
+
+@ingest_app.command("dedup")
+def ingest_dedup(
+    calendar_path: Path | None = typer.Option(
+        None, "--calendar", help="Only documents inside this calendar's windows."
+    ),
+    before: int = typer.Option(1),
+    after: int = typer.Option(2),
+    threshold: float = typer.Option(0.8, help="Estimated Jaccard similarity to group at."),
+) -> None:
+    """Group near-duplicate articles so only one of each is retrieved and judged."""
+    from hontology.db.models import Document
+    from hontology.ingest import dedup
+
+    with session_scope() as session:
+        if calendar_path is not None:
+            from hontology.evalkit import calendar
+
+            ids = calendar.all_window_documents(
+                session, calendar.load(calendar_path), before=before, after=after
+            )
+        else:
+            ids = set(
+                session.scalars(select(Document.id).where(Document.body_path.is_not(None)))
+            )
+        result = dedup.deduplicate(session, sorted(ids), threshold=threshold)
+    copies = result["documents"] - result["representatives"]
     typer.echo(
-        f"attempted {result['attempted']}: {result['ok']} ok, {result['junk']} junk, "
-        f"{result['failed']} failed, {result['blocked_by_robots']} blocked by robots"
+        f"{result['documents']} fetched document(s): {result['representatives']} to judge, "
+        f"{result['newly_marked']} newly marked as copies "
+        f"({result['too_short']} too short to fingerprint)"
     )
-    if result["methods"]:
-        typer.echo(f"extractors   {result['methods']}")
-    if result.get("filter"):
-        typer.echo(f"filter       {result['filter']}")
-    typer.echo(f"remaining    {result['pending_remaining']}")
+    if result["documents"]:
+        typer.echo(f"judging load cut by {copies / result['documents']:.0%}")
 
 
 @ingest_app.command("filter-preview")
@@ -515,6 +578,144 @@ def run_start(
             f"liveness    {live['clean']}/{live['verdicts']} clean, {live['errors']} errors",
             fg=typer.colors.GREEN if live["ok"] else typer.colors.RED,
         )
+
+
+@run_app.command("calendar")
+def run_calendar(
+    ontology_id: int,
+    config_path: Path,
+    calendar_path: Path,
+    run_id: int | None = typer.Option(None, help="Resume this run instead of creating one."),
+    budget: int | None = typer.Option(
+        None, help="Pairs judged per window, highest retrieval score first. Default: all."
+    ),
+    before: int = typer.Option(1, help="Calendar window: days before each date."),
+    after: int = typer.Option(2, help="Calendar window: days after each date."),
+    poll: int = typer.Option(120, help="Seconds to wait when no window is ready yet."),
+    prepare_only: bool = typer.Option(
+        False,
+        help="Scrape, deduplicate and retrieve, but judge nothing and mark nothing "
+        "finished, to see each window's judging volume first.",
+    ),
+) -> None:
+    """Run a calendar window by window, as soon as each window's feed is ingested.
+
+    Each ready window is scraped, deduplicated, retrieved and judged into one
+    run; finished entries are recorded on the run, so a restart with --run-id
+    continues where it stopped. Score it afterwards with `eval calendar`.
+    """
+    import time
+    from datetime import UTC, datetime
+
+    from hontology.evalkit import calendar, calendar_run, runner
+    from hontology.ingest import filter as ingest_filter
+
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)-5s %(message)s")
+    entries = calendar.load(calendar_path)
+
+    with session_scope() as session:
+        loci = calendar.loci_for(session, entries)
+        if run_id is None:
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            run = runner.create_run(session, ontology_id=ontology_id, config=payload)
+        else:
+            run = _load_run(session, run_id)
+        run.status = "running"
+        run.stage = "calendar"
+        run.started_at = run.started_at or datetime.now(UTC)
+        run.manifest = (run.manifest or {}) | {
+            "documents": {
+                "calendar": str(calendar_path),
+                "window_days": [before, after],
+                "budget_per_window": budget,
+            }
+        }
+        run_id = run.id
+        # A prepare-only pass tracks its own progress, so a later judging pass
+        # still visits every window.
+        progress_key = "calendar_prepared" if prepare_only else "calendar_done"
+        finished = set((run.manifest or {}).get(progress_key, []))
+    typer.echo(f"run {run_id}: {len(finished)}/{len(entries)} entries already done")
+
+    try:
+        while len(finished) < len(entries):
+            with session_scope() as session:
+                links = ingest_filter.matching_documents(session, ontology_id)
+            passed = set(links) or None
+            progressed = False
+            for entry in entries:
+                if entry.id in finished:
+                    continue
+                places = [loci[c] for c in entry.countries]
+                with session_scope() as session:
+                    ready, failed = calendar_run.window_status(
+                        session, entry, places, before=before, after=after
+                    )
+                if not ready and failed:
+                    for feed, key in failed:
+                        with session_scope() as session:
+                            scope = places if feed == service.FEED_GKG else None
+                            service.ingest_slice(session, key, feed=feed, loci=scope)
+                    with session_scope() as session:
+                        ready, _ = calendar_run.window_status(
+                            session, entry, places, before=before, after=after
+                        )
+                if not ready:
+                    continue
+                with session_scope() as session:
+                    run = _load_run(session, run_id)
+                    summary = calendar_run.process_entry(
+                        session,
+                        run,
+                        entry,
+                        places,
+                        passed,
+                        before=before,
+                        after=after,
+                        budget=budget,
+                        judge=not prepare_only,
+                    )
+                    finished.add(entry.id)
+                    run.manifest = (run.manifest or {}) | {progress_key: sorted(finished)}
+                judge = summary["judge"] or {}
+                scope_note = f"{summary['passed_filter']} in scope"
+                unique_note = f"{summary['representatives']} unique"
+                judge_note = (
+                    f"{summary['pairs_selected']} pair(s) selected"
+                    if prepare_only
+                    else f"judged {judge.get('judged', 0)}, matched {judge.get('matched', 0)}"
+                )
+                typer.echo(
+                    f"[{len(finished)}/{len(entries)}] {entry.id}: "
+                    f"{scope_note}, {unique_note}, {judge_note}"
+                )
+                progressed = True
+            if not progressed and len(finished) < len(entries):
+                time.sleep(poll)
+    except BaseException as exc:
+        with session_scope() as session:
+            run = _load_run(session, run_id)
+            run.status = "failed"
+            run.error = (
+                "interrupted" if isinstance(exc, KeyboardInterrupt) else str(exc)[:1000]
+            ) or type(exc).__name__
+            run.finished_at = datetime.now(UTC)
+        raise
+
+    with session_scope() as session:
+        run = _load_run(session, run_id)
+        if prepare_only:
+            # Prepared, not judged: left resumable rather than marked done.
+            run.status = "candidates"
+            run.stage = "judge"
+            typer.echo(f"run {run_id} prepared; judge it with --run-id {run_id}")
+            return
+        run.status = "done"
+        run.stage = None
+        run.finished_at = datetime.now(UTC)
+    typer.echo(
+        f"run {run_id} done; score it with: hontology eval calendar {run_id} {calendar_path}"
+    )
 
 
 @run_app.command("resume")

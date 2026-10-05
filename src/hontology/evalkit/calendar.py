@@ -46,6 +46,7 @@ from hontology.db.models import (
 )
 from hontology.evalkit.metrics import wilson
 from hontology.ingest import filter as ingest_filter
+from hontology.ingest.dedup import representative_of
 
 POSITIVE = "positive"
 PRECURSOR = "precursor"
@@ -282,34 +283,39 @@ def evaluate(
             if filtered
             else set()
         )
-        retrieved = (
+        # A near-duplicate is never retrieved or judged itself; it reads its
+        # representative's results, wherever that representative was seen.
+        reads = representative_of(session, sorted(fetched)) if fetched else {}
+        retrieved_reps = (
             set(
                 session.scalars(
                     select(Candidate.document_id).where(
                         Candidate.run_id == run_id,
                         Candidate.concept_id == concept_id,
                         Candidate.selected.is_(True),
-                        Candidate.document_id.in_(fetched),
+                        Candidate.document_id.in_(set(reads.values())),
                     )
                 )
             )
-            if fetched
+            if reads
             else set()
         )
-        matched = (
+        matched_reps = (
             set(
                 session.scalars(
                     select(Verdict.document_id).where(
                         Verdict.run_id == run_id,
                         Verdict.concept_id == concept_id,
                         Verdict.matched.is_(True),
-                        Verdict.document_id.in_(retrieved),
+                        Verdict.document_id.in_(retrieved_reps),
                     )
                 )
             )
-            if retrieved
+            if retrieved_reps
             else set()
         )
+        retrieved = {d for d, rep in reads.items() if rep in retrieved_reps}
+        matched = {d for d, rep in reads.items() if rep in matched_reps}
         results.append(
             EntryResult(
                 entry=entry,

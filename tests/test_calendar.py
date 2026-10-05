@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 
 import pytest
+from sqlalchemy import select
 
 from hontology.db.models import (
     Candidate,
@@ -250,3 +251,37 @@ class TestEvaluate:
         entries = calendar.load(write(tmp_path, "x,positive,Volcano,HKG,2025-09-23,,,,,"))
         with session_scope() as session, pytest.raises(calendar.CalendarError, match="Volcano"):
             calendar.evaluate(session, run_id, entries)
+
+    def test_a_copy_reads_its_representatives_verdict(self, world):
+        """A Japanese outlet republishing the US article: the copy is never
+        judged itself, but its window counts the representative's match."""
+        run_id, entries = world
+        with session_scope() as session:
+            away = session.scalar(
+                select(Document.id).where(Document.url == "https://cal.test/away")
+            )
+            jp = by_fips(session)["JA"].id
+            feed_slice = session.scalar(
+                select(FeedSlice).where(FeedSlice.feed == "test_calendar")
+            )
+            copy = Document(
+                url="https://cal.test/copy",
+                url_hash="calcopy000000",
+                body_path="copy.txt",
+                duplicate_of=away,
+            )
+            session.add(copy)
+            session.flush()
+            session.add(
+                FeedArticle(
+                    slice_id=feed_slice.id,
+                    record_id="g4",
+                    document_id=copy.id,
+                    published_at=datetime(2025, 9, 23, 9, tzinfo=UTC),
+                    themes=[],
+                    locus_ids=[jp],
+                )
+            )
+        rows = {r["id"]: r for r in self._result(world)["entries"]}
+        assert rows["elsewhere"]["detected"] is True
+        assert rows["elsewhere"]["matched"] == 1

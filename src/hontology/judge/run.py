@@ -218,8 +218,16 @@ def judge_run(
     judge_body_limit: int,
     limit: int | None = None,
     progress: object | None = None,
+    document_ids: set[int] | None = None,
+    by_score: bool = False,
 ) -> dict:
-    """Judge every selected candidate for a run, skipping those already done."""
+    """Judge every selected candidate for a run, skipping those already done.
+
+    *document_ids* narrows the work to some documents, so a run can be judged a
+    window at a time. *by_score* takes the highest retrieval scores first, which
+    is what makes a *limit* a budget spent on the strongest candidates rather
+    than on whichever documents happen to sort first.
+    """
     judge_config = config["judge"]
     template = prompts.get(judge_config["prompt_id"])
     provider = get_provider(judge_config["provider"])
@@ -233,13 +241,15 @@ def judge_run(
         seed=judge_config["generation"]["seed"],
     )
 
-    candidates = list(
-        session.scalars(
-            select(Candidate)
-            .where(Candidate.run_id == run_id, Candidate.selected.is_(True))
-            .order_by(Candidate.document_id, Candidate.concept_id)
-        )
+    query = select(Candidate).where(Candidate.run_id == run_id, Candidate.selected.is_(True))
+    if document_ids is not None:
+        query = query.where(Candidate.document_id.in_(document_ids))
+    order = (
+        (Candidate.score.desc(), Candidate.document_id, Candidate.concept_id)
+        if by_score
+        else (Candidate.document_id, Candidate.concept_id)
     )
+    candidates = list(session.scalars(query.order_by(*order)))
     done = _already_judged(session, run_id)
 
     stats = JudgeStats(total=len(candidates))

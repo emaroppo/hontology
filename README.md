@@ -245,6 +245,20 @@ backfill can keep only articles mentioning given countries. A slice records the
 scope it was kept for, and is reprocessed rather than skipped when a later request
 asks for a place outside it: "ok for Hong Kong" is not "ok for the Netherlands".
 
+### Near-duplicates
+
+Wire stories are republished under many URLs: in a random slice, 23% of articles
+repeat another's headline, and an event window is worse. After fetching, bodies
+are grouped by MinHash over five-word shingles, and each copy points at one
+**representative**. Only representatives are retrieved and judged; a copy reads
+its representative's verdicts wherever results are read. A group keeps its
+representative when it grows, so verdicts never move and no copy points at
+another copy.
+
+```bash
+hontology ingest dedup --calendar calendar.csv
+```
+
 ### Fetching article text
 
 The feed gives URLs, not article bodies. Fetching them is a separate, bounded step:
@@ -400,6 +414,20 @@ hontology ingest calendar-preview calendar.csv --ontology-id <id>
 hontology ingest scrape --calendar calendar.csv --ontology-id <id>
 hontology run start <id> run.json --calendar calendar.csv
 hontology eval calendar <run-id> calendar.csv
+```
+
+A backfill takes hours, so `run calendar` does not wait for it. An entry is
+ready once every slice of its window is ingested in both feeds; it is then
+scraped, deduplicated, retrieved and judged into one run while later windows are
+still arriving. Finished entries are recorded on the run, so `--run-id` resumes,
+and `--prepare-only` stops before the judge to show each window's volume first.
+`--budget` caps the pairs judged per window, highest retrieval score first; the
+judge never sees which concept the calendar expects, so the cap is blind to the
+answer.
+
+```bash
+hontology run calendar <id> run.json calendar.csv --prepare-only
+hontology run calendar <id> run.json calendar.csv --run-id <run> --budget 200
 ```
 
 Scoring reports event recall over the positives, precursor recall, a false-alarm

@@ -116,8 +116,16 @@ def copy_candidates(session: Session, source_run_id: int, target_run_id: int) ->
 def pending_documents(
     session: Session, limit: int, *, document_ids: list[int] | None = None
 ) -> list[Document]:
-    """Documents with usable text, newest first, optionally within a given set."""
-    query = select(Document).where(Document.body_path.is_not(None), Document.is_junk.is_(False))
+    """Documents with usable text, newest first, optionally within a given set.
+
+    Near-duplicates are left out: only a group's representative is retrieved and
+    judged, and its copies read its verdicts (see `ingest.dedup`).
+    """
+    query = select(Document).where(
+        Document.body_path.is_not(None),
+        Document.is_junk.is_(False),
+        Document.duplicate_of.is_(None),
+    )
     if document_ids is not None:
         query = query.where(Document.id.in_(document_ids))
     return list(session.scalars(query.order_by(Document.id.desc()).limit(limit)))

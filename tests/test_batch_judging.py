@@ -385,3 +385,49 @@ class TestEmbeddingRefresh:
 
         assert "refresh" in inspect.signature(embed.ensure_embeddings).parameters
         assert "refresh" in inspect.signature(embed.embed_documents).parameters
+
+
+class TestNarrowedJudging:
+    """Judging one window at a time, and a budget spent on the strongest pairs."""
+
+    def _score(self, run, scores: dict[int, float]) -> None:
+        with session_scope() as session:
+            for candidate in session.scalars(select(Candidate).where(Candidate.run_id == run)):
+                candidate.score = scores[candidate.concept_id]
+
+    def test_a_budget_takes_the_highest_scores_first(self, batchable_run, monkeypatch):
+        first, second, third = batchable_run["concepts"]
+        self._score(batchable_run["run"], {first: 0.5, second: 0.9, third: 0.7})
+        provider = FakeProvider(['{"matched": false, "confidence": 0.5}'])
+        monkeypatch.setattr(judge_module, "get_provider", lambda name: provider)
+
+        with session_scope() as session:
+            judge_module.judge_run(
+                session,
+                batchable_run["run"],
+                config=normalize({}),
+                judge_body_limit=2000,
+                limit=2,
+                by_score=True,
+            )
+        with session_scope() as session:
+            judged = set(
+                session.scalars(
+                    select(Verdict.concept_id).where(Verdict.run_id == batchable_run["run"])
+                )
+            )
+        assert judged == {second, third}
+
+    def test_other_documents_are_left_alone(self, batchable_run, monkeypatch):
+        provider = FakeProvider(['{"matched": false, "confidence": 0.5}'])
+        monkeypatch.setattr(judge_module, "get_provider", lambda name: provider)
+        with session_scope() as session:
+            result = judge_module.judge_run(
+                session,
+                batchable_run["run"],
+                config=normalize({}),
+                judge_body_limit=2000,
+                document_ids={batchable_run["document"] + 1},
+            )
+        assert result["total"] == 0
+        assert provider.calls == []

@@ -112,6 +112,12 @@ class Document(Base, TimestampMixin):
     extractor_version: Mapped[str | None] = mapped_column(String)
     error: Mapped[str | None] = mapped_column(Text)
 
+    # The representative whose verdicts this near-duplicate reads, when it is
+    # a copy of an earlier article (see `ingest.dedup`). Never another copy.
+    duplicate_of: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="SET NULL"), index=True
+    )
+
     # Set at ingest, not discovered later as a mysterious judge failure.
     is_junk: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     junk_reason: Mapped[str | None] = mapped_column(String)

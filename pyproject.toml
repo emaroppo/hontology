@@ -29,6 +29,7 @@ dependencies = [
     "beautifulsoup4>=4.12",
     # CLI
     "typer>=0.15",
+    "numpy>=2.0",
 ]
 
 [project.optional-dependencies]
