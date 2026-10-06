@@ -41,7 +41,9 @@ COL_DAY = 1
 COL_EVENT_CODE = 26
 COL_EVENT_BASE_CODE = 27
 COL_EVENT_ROOT_CODE = 28
-COL_ACTION_GEO_COUNTRY = 51
+# ActionGeo_CountryCode, a FIPS code. Column 51 is ActionGeo_Type (a digit 1-5),
+# which once stood here and left every event without a country.
+COL_ACTION_GEO_COUNTRY = 53
 COL_SOURCE_URL = 60
 EXPORT_COLUMNS = 61
 

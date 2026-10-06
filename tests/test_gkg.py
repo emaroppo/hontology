@@ -178,3 +178,67 @@ class TestScopedIngest:
             assert article.document.url == "https://c.test/both"
             assert sorted(article.locus_ids) == sorted([hk, us])
             assert article.themes == ["STRIKE"]
+
+
+def test_the_export_reads_the_action_country_not_its_type():
+    """Column 51 is ActionGeo_Type (1-5); the FIPS country is column 53. Reading
+    51 once left every one of 14.6 million events without a country."""
+    row = [""] * gdelt.EXPORT_COLUMNS
+    row[gdelt.COL_EVENT_ID] = "1"
+    row[gdelt.COL_EVENT_BASE_CODE] = "143"
+    row[51] = "1"
+    row[52] = "Kenya"
+    row[53] = "KE"
+    row[gdelt.COL_SOURCE_URL] = "https://e.test/1"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("x.export.CSV", "\t".join(row) + "\n")
+    (record,) = gdelt.parse_export(buffer.getvalue())
+    assert record["country"] == "KE"
+
+
+@pytest.mark.requires_db
+def test_repair_gives_old_events_their_country():
+    """Rows ingested before the column fix have no country; re-reading their
+    slice sets it in place, and a repaired slice is not offered again."""
+    from datetime import UTC, datetime
+
+    from hontology.db.models import FeedEvent
+
+    key = "20250101000000"
+    row = [""] * gdelt.EXPORT_COLUMNS
+    row[gdelt.COL_EVENT_BASE_CODE] = "143"
+    row[gdelt.COL_SOURCE_URL] = "https://e.test/r"
+    lines = []
+    for event_id, fips in (("e1", "KE"), ("e2", "US")):
+        row[gdelt.COL_EVENT_ID], row[53] = event_id, fips
+        lines.append("\t".join(row))
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("x.export.CSV", "\n".join(lines) + "\n")
+
+    with session_scope() as session:
+        feed_slice = FeedSlice(
+            feed=service.FEED,
+            slice_key=key,
+            sliced_at=datetime(2025, 1, 1, tzinfo=UTC),
+            status="ok",
+        )
+        session.add(feed_slice)
+        session.flush()
+        session.add_all(
+            [FeedEvent(slice_id=feed_slice.id, feed_event_id=e) for e in ("e1", "e2")]
+        )
+
+    with session_scope() as session:
+        assert key in service.slices_missing_export_loci(session)
+        loci = service.export_loci(buffer.getvalue(), by_fips(session))
+        assert service.apply_export_loci(session, key, loci) == 2
+
+    with session_scope() as session:
+        lookup = by_fips(session)
+        located = dict(
+            session.execute(select(FeedEvent.feed_event_id, FeedEvent.locus_id)).all()
+        )
+        assert located == {"e1": lookup["KE"].id, "e2": lookup["US"].id}
+        assert key not in service.slices_missing_export_loci(session)

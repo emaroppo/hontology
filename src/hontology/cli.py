@@ -268,6 +268,47 @@ def ingest_calendar(
         typer.echo(f"[{index}/{len(days)}] {day}  {totals}")
 
 
+@ingest_app.command("repair-export-loci")
+def ingest_repair_export_loci(
+    workers: int = typer.Option(8, help="Slices downloaded in parallel."),
+    limit: int | None = typer.Option(None, help="Repair at most this many slices."),
+) -> None:
+    """Give old event rows their country, by re-reading their export slices.
+
+    Events ingested before the column fix were stored without a country. Each
+    slice is downloaded again, read with the corrected parser and its rows
+    updated in place, committing per slice, so the repair can stop and resume.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from hontology.ingest.loci import by_fips
+
+    settings = get_settings()
+    with session_scope() as session:
+        keys = service.slices_missing_export_loci(session)
+        lookup = by_fips(session)
+    keys = keys[:limit] if limit is not None else keys
+    typer.echo(f"{len(keys)} slice(s) to repair")
+
+    def fetch(key: str) -> tuple[str, dict[str, int] | None]:
+        try:
+            payload = gdelt.fetch_slice(settings.gdelt_base_url, key)
+        except Exception:  # noqa: BLE001 - a failed slice is reported, not fatal
+            return key, None
+        return key, service.export_loci(payload, lookup)
+
+    updated = failed = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for done, (key, loci) in enumerate(pool.map(fetch, keys), start=1):
+            if loci is None:
+                failed += 1
+            else:
+                with session_scope() as session:
+                    updated += service.apply_export_loci(session, key, loci)
+            if done % 500 == 0 or done == len(keys):
+                typer.echo(f"[{done}/{len(keys)}] {updated} event(s) located, {failed} failed")
+
+
 @ingest_app.command("calendar-preview")
 def ingest_calendar_preview(
     calendar_path: Path,
