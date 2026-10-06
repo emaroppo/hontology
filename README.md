@@ -452,6 +452,29 @@ reached has no verdicts, which would otherwise read as a miss, or as a quiet
 control. Judging cost (pairs, tokens, seconds) is reported per window and per
 run, from the verdicts themselves, so arms are compared on the same measure.
 
+**Article-level scores need a labelled sample drawn independently of any run.**
+`labels sample` takes every fetched representative in a calendar's windows,
+including articles retrieval found nothing in, and fixes one random order in
+which every prefix is a stratified sample, so labelling can stop whenever the
+intervals are narrow enough without biasing the sample. `labels sample-sheet`
+writes the next documents to read; a person lists the concepts that apply to
+each (or `none`), and `labels import-documents` writes every other concept as a
+negative, which is what makes recall measurable.
+
+```bash
+hontology labels sample <baseline-run> calendar.csv --out sample.json
+hontology labels sample-sheet <ontology-id> sample.json --out sheet.csv --count 120
+hontology labels import-documents <ontology-id> sheet.csv
+hontology eval arms <baseline-run> calendar.csv --arm <run> --manifest sample.json
+```
+
+`eval arms` puts every arm beside the baseline: calendar results raw and
+verified, article-level precision and recall end to end (a pair never judged
+counts as no) and judge-only, and judging cost. Intervals resample whole
+documents, because one article's labels are correlated and resampling single
+labels would understate them. An arm counts as an improvement only when the
+paired interval on its F1 difference lies above zero.
+
 **Funnel before metrics.** `eval funnel` shows attrition stage by stage and needs
 no ground truth at all, which makes it the first thing to read when a run
 produces less than expected — precision cannot tell a precise pipeline from a

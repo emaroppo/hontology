@@ -328,3 +328,86 @@ def import_observations(session: Session, ontology_id: int, csv_text: str) -> di
 
     session.flush()
     return report.as_dict()
+
+
+# ---------------------------------------------------------------------------
+# Whole-document labels
+# ---------------------------------------------------------------------------
+
+DOCUMENT_LABEL_COLUMNS = ("position", "document_url", "title", "excerpt", "concepts", "note")
+NO_CONCEPT = "none"
+
+
+def import_document_labels(
+    session: Session,
+    ontology_id: int,
+    csv_text: str,
+    *,
+    concept_names: set[str] | None = None,
+) -> dict:
+    """Load whole-document labels: the concepts that apply, all others negative.
+
+    One row per document. ``concepts`` lists the names that apply separated by
+    ``;``; the word ``none`` means none does; blank means not labelled yet and the
+    row is skipped. Every concept in *concept_names* (default: the ontology's)
+    that the row does not list is written as a negative, which is what makes
+    recall measurable: a pair the system never surfaced still has a label.
+
+    Written as ``human`` labels stamped with the current version, since a person
+    read the current wording. An unknown name rejects the whole row rather than
+    silently labelling the rest of it.
+    """
+    known = {
+        c.name: c.id
+        for c in session.scalars(select(Concept).where(Concept.ontology_id == ontology_id))
+    }
+    names = concept_names if concept_names is not None else set(known)
+    documents = positives = negatives = skipped_blank = 0
+    errors: list[str] = []
+
+    for line_number, row in enumerate(csv.DictReader(io.StringIO(csv_text)), start=2):
+        url = (row.get("document_url") or "").strip()
+        listed = (row.get("concepts") or "").strip()
+        if not url:
+            errors.append(f"line {line_number}: missing document_url")
+            continue
+        if not listed:
+            skipped_blank += 1
+            continue
+        chosen = (
+            set()
+            if listed.lower() == NO_CONCEPT
+            else {name.strip() for name in listed.split(";") if name.strip()}
+        )
+        unknown = sorted(chosen - names)
+        if unknown:
+            errors.append(f"line {line_number}: unknown concepts {unknown}")
+            continue
+        document = session.scalar(select(Document).where(Document.url == url))
+        if document is None:
+            errors.append(f"line {line_number}: unknown document {url}")
+            continue
+
+        note = (row.get("note") or "").strip() or None
+        for name in sorted(names):
+            label_service.upsert_label(
+                session,
+                document_id=document.id,
+                concept_id=known[name],
+                matched=name in chosen,
+                source=label_service.HUMAN,
+                note=note,
+                ontology_id=ontology_id,
+            )
+        documents += 1
+        positives += len(chosen)
+        negatives += len(names) - len(chosen)
+
+    session.flush()
+    return {
+        "documents": documents,
+        "positives": positives,
+        "negatives": negatives,
+        "skipped_blank": skipped_blank,
+        "errors": errors,
+    }

@@ -761,6 +761,114 @@ def labels_export(
         typer.echo(f"wrote {out} ({len(text_out.splitlines()) - 1} row(s))")
 
 
+@labels_app.command("sample")
+def labels_sample(
+    run_id: int,
+    calendar_path: Path,
+    out: Path = typer.Option(..., help="Manifest JSON to write."),
+    seed: int = typer.Option(20261006, help="Fixes the order; record it with the sample."),
+    before: int = typer.Option(1),
+    after: int = typer.Option(2),
+) -> None:
+    """Draw the labelled sample: every fetched representative in the calendar's
+    windows, in a frozen order whose every prefix is a stratified random sample."""
+    import hashlib
+
+    from hontology.evalkit import calendar, sample
+
+    entries = calendar.load(calendar_path)
+    digest = hashlib.sha256(calendar_path.read_bytes()).hexdigest()
+    with session_scope() as session:
+        documents = sample.frame(session, run_id, entries, before=before, after=after)
+    ordered = sample.frozen_order(documents, seed)
+    record = sample.manifest(run_id, digest, seed, ordered)
+    out.write_text(json.dumps(record, indent=1), encoding="utf-8")
+    typer.echo(
+        f"{record['size']} document(s) in {len(record['strata'])} strata; "
+        f"order {record['order_sha256'][:12]}"
+    )
+
+
+@labels_app.command("sample-sheet")
+def labels_sample_sheet(
+    ontology_id: int,
+    manifest_path: Path,
+    out: Path = typer.Option(..., help="Labelling CSV to write."),
+    start: int = typer.Option(1, help="First position in the frozen order (1-based)."),
+    count: int = typer.Option(120, help="How many documents."),
+) -> None:
+    """Write the next documents to label, in frozen order, plus the concept list.
+
+    Fill `concepts` with the names that apply, separated by `;`, or `none`.
+    Leave it blank for a document not yet read; blanks are skipped on import.
+    """
+    import csv
+
+    from hontology.db.models import Concept, Document
+    from hontology.evalkit.label_io import DOCUMENT_LABEL_COLUMNS
+
+    record = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunk = record["order"][start - 1 : start - 1 + count]
+    cache = get_settings().scrape_cache_dir
+    with session_scope() as session:
+        documents = {
+            d.id: d
+            for d in session.scalars(
+                select(Document).where(Document.id.in_([r["document_id"] for r in chunk]))
+            )
+        }
+        concepts = list(
+            session.scalars(
+                select(Concept).where(Concept.ontology_id == ontology_id).order_by(Concept.name)
+            )
+        )
+        rows = []
+        for position, row in enumerate(chunk, start=start):
+            document = documents[row["document_id"]]
+            path = cache / (document.body_path or "")
+            body = (
+                path.read_text(encoding="utf-8") if document.body_path and path.exists() else ""
+            )
+            rows.append(
+                {
+                    "position": position,
+                    "document_url": document.url,
+                    "title": document.title or body.split("\n", 1)[0][:160],
+                    "excerpt": " ".join(body.split())[:700],
+                    "concepts": "",
+                    "note": "",
+                }
+            )
+        reference = "\n\n".join(
+            f"{c.name}\n  {c.definition or ''}\n  counts when: {c.inclusion_criteria or '-'}"
+            f"\n  not when: {c.exclusion_criteria or '-'}"
+            for c in concepts
+        )
+    with out.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=DOCUMENT_LABEL_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    concept_file = out.with_suffix(".concepts.txt")
+    concept_file.write_text(reference + "\n", encoding="utf-8")
+    typer.echo(f"{len(rows)} document(s) to {out}; concept reference in {concept_file}")
+
+
+@labels_app.command("import-documents")
+def labels_import_documents(ontology_id: int, path: Path) -> None:
+    """Read whole-document labels: listed concepts positive, all others negative."""
+    from hontology.evalkit.label_io import import_document_labels
+
+    with session_scope() as session:
+        report = import_document_labels(session, ontology_id, path.read_text(encoding="utf-8"))
+    typer.echo(
+        f"{report['documents']} document(s): {report['positives']} positive, "
+        f"{report['negatives']} negative label(s); "
+        f"{report['skipped_blank']} blank row(s) skipped"
+    )
+    for error in report["errors"]:
+        typer.secho(f"  {error}", fg=typer.colors.YELLOW)
+
+
 @labels_app.command("import")
 def labels_import(
     ontology_id: int,
@@ -1042,6 +1150,81 @@ REVIEW_COLUMNS = (
     "confirmed",
     "note",
 )
+
+
+@eval_app.command("arms")
+def eval_arms(
+    baseline: int,
+    calendar_path: Path,
+    arm: list[int] = typer.Option([], "--arm", help="An arm's run id; repeat for several."),
+    manifest_path: Path | None = typer.Option(
+        None, "--manifest", help="Labelled-sample manifest."
+    ),
+    out: Path | None = typer.Option(None, help="Write the full report as JSON."),
+    before: int = typer.Option(1),
+    after: int = typer.Option(2),
+) -> None:
+    """The pre-registered comparison: every arm against the baseline, both levels."""
+    from hontology.evalkit import arms, calendar
+
+    with session_scope() as session:
+        report = arms.compare_arms(
+            session,
+            baseline,
+            arm,
+            calendar.load(calendar_path),
+            arms.load_manifest(manifest_path),
+            before=before,
+            after=after,
+        )
+    if out is not None:
+        out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+
+    def rate(stat: dict) -> str:
+        value = "-" if stat["rate"] is None else f"{stat['rate']:.2f}"
+        return f"{stat['hits']}/{stat['n']} {value}"
+
+    for run_id, run in report["runs"].items():
+        verified = run["calendar"]["verified"]
+        cost = run["cost"]
+        typer.echo(f"run {run_id}{' (baseline)' if run_id == baseline else ''}")
+        typer.echo(
+            f"  events    raw {rate(run['calendar']['event_recall'])}   "
+            f"verified {rate(verified['event_recall'])}   "
+            f"false alarms {rate(verified['false_alarm_rate'])}"
+        )
+        if "article" in run:
+            scores = run["article"]["end_to_end"]
+            typer.echo(
+                f"  articles  P {scores['precision'] or 0:.3f} {scores['precision_ci']}  "
+                f"R {scores['recall'] or 0:.3f} {scores['recall_ci']}  "
+                f"F1 {scores['f1'] or 0:.3f} {scores['f1_ci']}"
+            )
+        typer.echo(
+            f"  cost      {cost['pairs']} verdicts, "
+            f"{cost['input_tokens'] + cost['output_tokens']} tokens, "
+            f"{cost['seconds'] / 3600:.1f} h"
+        )
+    sample = report.get("sample")
+    if sample:
+        typer.echo(f"sample    {sample['labelled_prefix']} labelled in order")
+        if sample["out_of_turn"]:
+            typer.secho(
+                f"          {len(sample['out_of_turn'])} labelled out of turn (not counted)",
+                fg=typer.colors.YELLOW,
+            )
+        if "status" in sample:
+            status = sample["status"]
+            typer.echo(
+                f"stopping  half-widths {status['half_widths']} vs ±{status['target']}: "
+                f"{'target met' if status['target_met'] else 'keep labelling'}"
+            )
+    for arm_id, comparison in report["comparisons"].items():
+        f1 = comparison["f1"]
+        typer.echo(
+            f"arm {arm_id} vs baseline: F1 difference {f1['difference']} {f1['difference_ci']}"
+            f" -> {'improvement' if f1['improvement'] else 'not shown'}"
+        )
 
 
 @eval_app.command("calendar-review-export")
