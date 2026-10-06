@@ -303,3 +303,52 @@ def test_diagnostics_place_a_miss_at_its_level(world, monkeypatch):
         result = hierarchy_diagnostics(session, world["run"], world["run"], ontology_id, truth)
     assert result["recall_by_level"][0] == {"n": 2, "hits": 1, "recall": 0.5}
     assert result["recall_by_level"][1]["hits"] == 1
+
+
+def test_a_sample_is_judged_with_reused_retrieval_once(world, monkeypatch):
+    """Only the sample's documents are judged, and a second call with the same
+    documents asks nothing new."""
+    from hontology.evalkit.calendar_run import judge_documents
+
+    monkeypatch.setattr(
+        judge_module, "get_provider", lambda name: FakeJudge(world["names"], yes={"Trade"})
+    )
+    with session_scope() as session:
+        source = session.get(Run, world["run"])
+        arm = Run(
+            name="arm",
+            ontology_id=source.ontology_id,
+            ontology_version="v1",
+            config=normalize({"judge": {"prompt_id": "hier_batch_v1"}}),
+            candidates_key="c3",
+            judge_key="j3_c3",
+            status="running",
+        )
+        other = Document(url="https://hj.test/3", url_hash="hjtest000003", body_path="hj.txt")
+        session.add_all([arm, other])
+        session.flush()
+        session.add(
+            Candidate(
+                run_id=source.id,
+                document_id=other.id,
+                concept_id=world["ids"]["Tariff"],
+                source="semantic",
+                score=0.7,
+                rank=1,
+                selected=True,
+            )
+        )
+        session.flush()
+        first = judge_documents(
+            session, arm, source_run_id=source.id, document_ids=[world["document"]]
+        )
+        again = judge_documents(
+            session, arm, source_run_id=source.id, document_ids=[world["document"]]
+        )
+        judged = set(
+            session.scalars(select(Verdict.document_id).where(Verdict.run_id == arm.id))
+        )
+    assert first["retrieved"] == 1
+    assert first["judge"]["calls"] == 2  # top level, then Trade's children
+    assert again["judge"]["calls"] == 0
+    assert judged == {world["document"]}

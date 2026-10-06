@@ -311,6 +311,29 @@ def copy_window_candidates(
     return retrieved
 
 
+def judge_documents(
+    session: Session, run: Run, *, source_run_id: int, document_ids: list[int]
+) -> dict:
+    """Judge exactly these documents with another run's retrieval. Idempotent.
+
+    For scoring an arm on the labelled sample before, or instead of, judging
+    every calendar window: the sample's documents get *source*'s candidates
+    and are judged in full, with no budget. Calling it again with more
+    documents judges only the new ones.
+    """
+    retrieved = copy_window_candidates(session, source_run_id, run.id, set(document_ids))
+    session.commit()
+    result = judge_module.judge_run(
+        session,
+        run.id,
+        config=run.config,
+        judge_body_limit=run.config["common"]["judge_body_limit"],
+        document_ids=retrieved,
+    )
+    session.commit()
+    return {"documents": len(document_ids), "retrieved": len(retrieved), "judge": result}
+
+
 def check_same_leaves(session: Session, source_run: Run, ontology_id: int) -> None:
     """Refuse to reuse a run's retrieval if any leaf has been reworded since.
 

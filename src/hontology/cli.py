@@ -669,6 +669,74 @@ def run_start(
         )
 
 
+@run_app.command("sample")
+def run_sample(
+    ontology_id: int,
+    config_path: Path,
+    manifest_path: Path,
+    candidates_from: int = typer.Option(
+        ..., help="Reuse this run's retrieval for the sample's documents."
+    ),
+    first: int | None = typer.Option(
+        None, help="Judge only the first N documents in the sample's frozen order."
+    ),
+    run_id: int | None = typer.Option(None, help="Extend this run instead of creating one."),
+) -> None:
+    """Judge a labelled sample's documents with another run's retrieval.
+
+    An arm can be compared at article level as soon as documents are labelled,
+    without judging every calendar window first. Rerun with a larger --first
+    and the same --run-id as labelling continues; only new documents are judged.
+    The run's calendar entries stay unprocessed until `run calendar` extends it.
+    """
+    from datetime import UTC, datetime
+
+    from hontology.evalkit import calendar_run, runner
+
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)-5s %(message)s")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    order = [row["document_id"] for row in manifest["order"]]
+    document_ids = order[:first] if first is not None else order
+
+    with session_scope() as session:
+        if run_id is None:
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            run = runner.create_run(session, ontology_id=ontology_id, config=payload)
+        else:
+            run = _load_run(session, run_id)
+        # Same leaves, or the arms would be answering different questions.
+        calendar_run.check_same_leaves(
+            session, _load_run(session, candidates_from), run.ontology_id
+        )
+        run.status = "running"
+        run.started_at = run.started_at or datetime.now(UTC)
+        run.manifest = (
+            {"calendar_done": []}
+            | (run.manifest or {})
+            | {
+                "sample": {
+                    "manifest": str(manifest_path),
+                    "order_sha256": manifest["order_sha256"],
+                    "judged_first": len(document_ids),
+                    "candidates_from": candidates_from,
+                }
+            }
+        )
+        session.commit()
+        typer.echo(f"run {run.id}: judging {len(document_ids)} sample document(s)")
+        result = calendar_run.judge_documents(
+            session, run, source_run_id=candidates_from, document_ids=document_ids
+        )
+        run.status = "done"
+        run.finished_at = datetime.now(UTC)
+        judge = result["judge"] or {}
+        typer.echo(
+            f"run {run.id}: {result['retrieved']} of {result['documents']} document(s) "
+            f"retrieved by run {candidates_from}; judged {judge.get('judged', 0)}, "
+            f"matched {judge.get('matched', 0)}, {judge.get('calls', 0)} call(s)"
+        )
+
+
 @run_app.command("calendar")
 def run_calendar(
     ontology_id: int,
