@@ -396,9 +396,29 @@ def evaluate(
         raise CalendarError(f"concepts not in run's ontology: {', '.join(unknown)}")
 
     loci = loci_for(session, entries)
-    passed = set(ingest_filter.matching_documents(session, run.ontology_id))
-    has_filter = bool(passed)
     processed = processed_ids(run, entries)
+    # The filter is matched against the calendar's own windows: over the whole
+    # corpus it reads every feed record, which is slow and was what exhausted
+    # memory when the corpus held millions of events.
+    has_filter = bool(
+        ingest_filter.concept_code_map(session, run.ontology_id)
+        or ingest_filter.concept_theme_map(session, run.ontology_id)
+    )
+    in_windows: set[int] = set()
+    for entry in entries:
+        if entry.id in processed:
+            in_windows |= set(
+                window_documents(session, entry, loci, before=before, after=after)
+            )
+    passed = (
+        set(
+            ingest_filter.matching_documents(
+                session, run.ontology_id, document_ids=sorted(in_windows)
+            )
+        )
+        if has_filter and in_windows
+        else set()
+    )
     hierarchical = (
         prompts.get(run.config["judge"]["prompt_id"]).mode == prompts.HIERARCHICAL
         if run.config.get("judge")

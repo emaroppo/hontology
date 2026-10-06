@@ -30,6 +30,7 @@ ontology cannot use it would corrupt the corpus for the next one.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -91,9 +92,7 @@ def concept_theme_map(session: Session, ontology_id: int) -> dict[str, set[int]]
     return concept_code_map(session, ontology_id, system=THEMES_SLUG)
 
 
-def resolve_event(
-    event: FeedEvent, links: dict[str, set[int]]
-) -> tuple[str, str, set[int]] | None:
+def resolve_event(event: Any, links: dict[str, set[int]]) -> tuple[str, str, set[int]] | None:
     """Resolve one feed event to ``(code, level, concepts)``, or None.
 
     The fallback walks event → base → root and stops at the **first tier that
@@ -129,12 +128,16 @@ def matching_documents(
     if not links and not themes:
         return {}
 
-    query = select(FeedEvent).where(FeedEvent.document_id.is_not(None))
+    # Only the columns the match needs, streamed: over the whole corpus this is
+    # millions of rows, and loading them as objects exhausted memory.
+    query = select(
+        FeedEvent.document_id, FeedEvent.event_code, FeedEvent.base_code, FeedEvent.root_code
+    ).where(FeedEvent.document_id.is_not(None))
     if document_ids is not None:
         query = query.where(among(FeedEvent.document_id, document_ids))
 
     matches: dict[int, Match] = {}
-    for event in session.scalars(query):
+    for event in session.execute(query.execution_options(yield_per=50_000)):
         if event.document_id is None or event.document_id in matches:
             continue
         resolved = resolve_event(event, links)
