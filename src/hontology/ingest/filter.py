@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from hontology.db.base import among
 from hontology.db.models import (
     Code,
     CodeSystem,
@@ -130,7 +131,7 @@ def matching_documents(
 
     query = select(FeedEvent).where(FeedEvent.document_id.is_not(None))
     if document_ids is not None:
-        query = query.where(FeedEvent.document_id.in_(document_ids))
+        query = query.where(among(FeedEvent.document_id, document_ids))
 
     matches: dict[int, Match] = {}
     for event in session.scalars(query):
@@ -153,7 +154,7 @@ def matching_documents(
             FeedArticle.themes.overlap(sorted(themes)),
         )
         if document_ids is not None:
-            theme_query = theme_query.where(FeedArticle.document_id.in_(document_ids))
+            theme_query = theme_query.where(among(FeedArticle.document_id, document_ids))
         for document_id, article_themes in session.execute(theme_query):
             if document_id is None or document_id in matches:
                 continue

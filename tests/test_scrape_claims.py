@@ -99,3 +99,13 @@ def test_one_scraper_at_a_time_holds_a_host():
     assert order == ["first", "other"]
     with host_lock("another.test"):
         pass  # a different host is never held up
+
+
+def test_more_ids_than_postgres_allows_parameters():
+    """A calendar's windows hold more documents than 65,535, the most
+    parameters one query may bind; the ids travel as a single array."""
+    from hontology.db.session import session_scope
+
+    ids = list(range(1, 70_001))
+    with session_scope() as session:
+        assert pending_documents(session, 10, document_ids=ids) is not None

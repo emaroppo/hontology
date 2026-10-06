@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, func
+from sqlalchemy import ColumnElement, DateTime, ForeignKey, Integer, any_, bindparam, func
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     pass
+
+
+def among(column: Any, ids: Iterable[int]) -> ColumnElement[bool]:
+    """``column = ANY(:ids)``, the ids sent as one array parameter.
+
+    ``IN (...)`` binds a parameter per id, and Postgres refuses a query with
+    more than 65,535 of them: a calendar's windows hold more documents than that.
+    """
+    return column == any_(bindparam(None, list(ids), type_=ARRAY(Integer)))
 
 
 class TimestampMixin:

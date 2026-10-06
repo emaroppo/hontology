@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from hontology.config import get_settings
+from hontology.db.base import among
 from hontology.db.models import Document
 from hontology.ingest import extract
 from hontology.ingest import filter as filter_module
@@ -359,7 +360,7 @@ def pending_documents(
         else query.where(Document.body_path.is_(None))
     )
     if document_ids is not None:
-        query = query.where(Document.id.in_(document_ids))
+        query = query.where(among(Document.id, document_ids))
     query = query.order_by(Document.id).limit(limit)
     if claim:
         query = query.with_for_update(skip_locked=True, of=Document)
@@ -399,7 +400,7 @@ def wait_for_claimed(session: Session, document_ids: list[int]) -> bool:
     scraper has fetched them, or left them pending for a later batch.
     """
     pending = select(Document.id).where(
-        Document.id.in_(document_ids), Document.fetched_at.is_(None)
+        among(Document.id, document_ids), Document.fetched_at.is_(None)
     )
     free = set(session.scalars(pending.with_for_update(skip_locked=True, of=Document)))
     session.rollback()
@@ -408,7 +409,7 @@ def wait_for_claimed(session: Session, document_ids: list[int]) -> bool:
         return False
     # Blocks until the other scraper commits its batch.
     session.scalars(
-        select(Document.id).where(Document.id.in_(sorted(held))).with_for_update(of=Document)
+        select(Document.id).where(among(Document.id, sorted(held))).with_for_update(of=Document)
     ).all()
     session.rollback()
     return True
@@ -421,7 +422,7 @@ def _count_pending(
         Document.body_path.is_(None) if retry_failed else Document.fetched_at.is_(None)
     )
     if document_ids is not None:
-        query = query.where(Document.id.in_(document_ids))
+        query = query.where(among(Document.id, document_ids))
     return session.scalar(query) or 0
 
 
