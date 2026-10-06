@@ -2,9 +2,17 @@
 
 Article-level precision and recall need documents a person has labelled against
 every concept, drawn independently of whichever arm will be scored on them. The
-frame is the representative documents the calendar's windows actually fetched,
-including those retrieval found nothing in: leaving those out would hide every
-concept the system never surfaced, which is exactly what recall must count.
+frame is the representative documents in the calendar's windows that the run
+processed, including those retrieval found nothing in: leaving those out would
+hide every concept the system never surfaced, which is exactly what recall must
+count.
+
+A document fetched only after the run had processed its window (a host's crawl
+delay or a connection retry let it arrive late) was never retrieved or judged by
+the run, nor by any arm reusing the run's retrieval. It is left out of the frame
+and counted in the manifest: scored, it would be a miss no arm had a chance at.
+Retrieval stores every processed document's full candidate pool, selected or
+not, so "processed" is exactly "has candidate rows in the run".
 
 **One frozen order, labelled as a prefix.** Labelling stops when the baseline's
 intervals are narrow enough, so the sample size is not known in advance. The
@@ -61,11 +69,14 @@ def score_band(best: float | None) -> str:
 
 def frame(
     session: Session, run_id: int, entries: list[Entry], *, before: int, after: int
-) -> list[SampledDocument]:
-    """Every fetched representative in the entries' windows, with its stratum.
+) -> tuple[list[SampledDocument], int]:
+    """Every representative in the entries' windows that the run processed.
 
-    A document seen in several windows belongs to the first entry, in calendar
-    order, whose window contains it, so each document is in exactly one stratum.
+    Returns the frame, each document with its stratum, and how many fetched
+    representatives were left out because they arrived after the run had
+    processed their window. A document seen in several windows belongs to the
+    first entry, in calendar order, whose window contains it, so each document
+    is in exactly one stratum.
     """
     loci = loci_for(session, entries)
     window_of: dict[int, str] = {}
@@ -93,10 +104,12 @@ def frame(
             .group_by(Candidate.document_id)
         )
     }
-    return [
-        SampledDocument(doc_id, url, window_of[doc_id], score_band(best.get(doc_id)))
+    documents = [
+        SampledDocument(doc_id, url, window_of[doc_id], score_band(best[doc_id]))
         for doc_id, url in sorted(usable.items())
+        if doc_id in best
     ]
+    return documents, len(usable) - len(documents)
 
 
 def frozen_order(documents: list[SampledDocument], seed: int) -> list[SampledDocument]:
@@ -118,7 +131,12 @@ def frozen_order(documents: list[SampledDocument], seed: int) -> list[SampledDoc
 
 
 def manifest(
-    run_id: int, calendar_sha256: str, seed: int, ordered: list[SampledDocument]
+    run_id: int,
+    calendar_sha256: str,
+    seed: int,
+    ordered: list[SampledDocument],
+    *,
+    late_arrivals: int = 0,
 ) -> dict:
     """The frozen sample: everything needed to reproduce or audit it."""
     order = [
@@ -132,6 +150,8 @@ def manifest(
         "calendar_sha256": calendar_sha256,
         "seed": seed,
         "size": len(order),
+        # Fetched after the run processed their window: out of the frame.
+        "left_out_late_arrivals": late_arrivals,
         "strata": dict(sorted(strata.items())),
         "order": order,
     }

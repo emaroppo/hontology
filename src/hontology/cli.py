@@ -957,8 +957,9 @@ def labels_sample(
     before: int = typer.Option(1),
     after: int = typer.Option(2),
 ) -> None:
-    """Draw the labelled sample: every fetched representative in the calendar's
-    windows, in a frozen order whose every prefix is a stratified random sample."""
+    """Draw the labelled sample: every representative in the calendar's windows
+    that the run processed, in a frozen order whose every prefix is a stratified
+    random sample."""
     import hashlib
 
     from hontology.evalkit import calendar, sample
@@ -966,13 +967,14 @@ def labels_sample(
     entries = calendar.load(calendar_path)
     digest = hashlib.sha256(calendar_path.read_bytes()).hexdigest()
     with session_scope() as session:
-        documents = sample.frame(session, run_id, entries, before=before, after=after)
+        documents, late = sample.frame(session, run_id, entries, before=before, after=after)
     ordered = sample.frozen_order(documents, seed)
-    record = sample.manifest(run_id, digest, seed, ordered)
+    record = sample.manifest(run_id, digest, seed, ordered, late_arrivals=late)
     out.write_text(json.dumps(record, indent=1), encoding="utf-8")
     typer.echo(
         f"{record['size']} document(s) in {len(record['strata'])} strata; "
-        f"order {record['order_sha256'][:12]}"
+        f"order {record['order_sha256'][:12]}; "
+        f"{late} left out, fetched after the run processed their window"
     )
 
 
