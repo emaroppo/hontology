@@ -681,7 +681,6 @@ def run_calendar(
     from datetime import UTC, datetime
 
     from hontology.evalkit import calendar, calendar_run, runner
-    from hontology.ingest import filter as ingest_filter
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)-5s %(message)s")
     entries = calendar.load(calendar_path)
@@ -712,9 +711,6 @@ def run_calendar(
 
     try:
         while len(finished) < len(entries):
-            with session_scope() as session:
-                links = ingest_filter.matching_documents(session, ontology_id)
-            passed = set(links) or None
             progressed = False
             for entry in entries:
                 if entry.id in finished:
@@ -742,7 +738,6 @@ def run_calendar(
                         run,
                         entry,
                         places,
-                        passed,
                         before=before,
                         after=after,
                         budget=budget,

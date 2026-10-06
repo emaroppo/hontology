@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from hontology.db.models import Candidate, Document, FeedSlice, Run, Verdict
 from hontology.evalkit.calendar import Entry, window_documents
 from hontology.ingest import dedup, scrape, service
+from hontology.ingest import filter as ingest_filter
 from hontology.judge import run as judge_module
 from hontology.retrieve import candidates as candidates_module
 
@@ -73,7 +74,6 @@ def process_entry(
     run: Run,
     entry: Entry,
     places: list[int],
-    passed: set[int] | None,
     *,
     before: int,
     after: int,
@@ -94,7 +94,22 @@ def process_entry(
             after=after,
         )
     )
-    allowed = window & passed if passed is not None else window
+    # Filter matches are computed for this window now, not taken from a set
+    # computed earlier: a window that finished ingesting after that set was
+    # built would otherwise be judged against articles that did not exist yet,
+    # find nothing in scope, and be marked done.
+    ontology_id = run.ontology_id
+    has_links = bool(
+        ingest_filter.concept_code_map(session, ontology_id)
+        or ingest_filter.concept_theme_map(session, ontology_id)
+    )
+    if has_links:
+        matches = ingest_filter.matching_documents(
+            session, ontology_id, document_ids=sorted(window)
+        )
+        allowed = window & set(matches)
+    else:
+        allowed = window  # no links at all: the filter cannot distinguish anything
 
     fetched_now = 0
     deferred = 0
