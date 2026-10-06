@@ -26,14 +26,18 @@ import threading
 import time
 import urllib.robotparser
 from collections import defaultdict
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import lru_cache
 from urllib.parse import urlsplit
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import Engine, create_engine, func, select, text
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
 
 from hontology.config import get_settings
 from hontology.db.models import Document
@@ -335,6 +339,7 @@ def pending_documents(
     *,
     retry_failed: bool = False,
     document_ids: list[int] | None = None,
+    claim: bool = False,
 ) -> list[Document]:
     """Documents that still need a body.
 
@@ -342,6 +347,10 @@ def pending_documents(
     re-hitting URLs already known to be dead. ``document_ids`` narrows the work
     to a specific set — useful for fetching exactly the documents one run needs
     rather than draining the whole backlog.
+
+    With *claim*, the rows are locked until the caller commits, and rows another
+    scraper has claimed are skipped, so scrapers running side by side never
+    fetch the same document or double the rate on a host.
     """
     query = select(Document)
     query = (
@@ -351,7 +360,58 @@ def pending_documents(
     )
     if document_ids is not None:
         query = query.where(Document.id.in_(document_ids))
-    return list(session.scalars(query.order_by(Document.id).limit(limit)))
+    query = query.order_by(Document.id).limit(limit)
+    if claim:
+        query = query.with_for_update(skip_locked=True, of=Document)
+    return list(session.scalars(query))
+
+
+@lru_cache
+def _lock_engine(url: str) -> Engine:
+    # Unpooled: each host holds its own connection only while it is scraped,
+    # and a pool sized for the app would make the workers queue for one.
+    return create_engine(url, poolclass=NullPool, future=True)
+
+
+@contextmanager
+def host_lock(host: str) -> Iterator[None]:
+    """Hold a host for this process, across every scraper on the database.
+
+    The per-host spacing is kept inside one process; a second scraper working
+    on other documents from the same host would double the rate it sees. This
+    waits until no other scraper is on the host.
+    """
+    with _lock_engine(get_settings().database_url).connect() as connection:
+        key = {"host": host}
+        connection.execute(text("SELECT pg_advisory_lock(hashtextextended(:host, 0))"), key)
+        try:
+            yield
+        finally:
+            connection.execute(
+                text("SELECT pg_advisory_unlock(hashtextextended(:host, 0))"), key
+            )
+
+
+def wait_for_claimed(session: Session, document_ids: list[int]) -> bool:
+    """Wait out another scraper's claim on any of these pending documents.
+
+    Returns whether there was one. The caller then looks again: the other
+    scraper has fetched them, or left them pending for a later batch.
+    """
+    pending = select(Document.id).where(
+        Document.id.in_(document_ids), Document.fetched_at.is_(None)
+    )
+    free = set(session.scalars(pending.with_for_update(skip_locked=True, of=Document)))
+    session.rollback()
+    held = set(session.scalars(pending)) - free
+    if not held:
+        return False
+    # Blocks until the other scraper commits its batch.
+    session.scalars(
+        select(Document.id).where(Document.id.in_(sorted(held))).with_for_update(of=Document)
+    ).all()
+    session.rollback()
+    return True
 
 
 def _count_pending(
@@ -414,14 +474,14 @@ def scrape_pending(
         # first and intersecting afterwards starves the budget whenever the
         # backlog is larger than the window it happens to read.
         documents = pending_documents(
-            session, budget, retry_failed=retry_failed, document_ids=sorted(allowed)
+            session, budget, retry_failed=retry_failed, document_ids=sorted(allowed), claim=True
         )
         filtered_out = _count_pending(
             session, retry_failed=retry_failed, document_ids=document_ids
         ) - _count_pending(session, retry_failed=retry_failed, document_ids=sorted(allowed))
     else:
         documents = pending_documents(
-            session, budget, retry_failed=retry_failed, document_ids=document_ids
+            session, budget, retry_failed=retry_failed, document_ids=document_ids, claim=True
         )
 
     if not documents:
@@ -486,7 +546,12 @@ def scrape_pending(
 
     workers = min(settings.scrape_max_concurrency, len(by_host))
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        list(pool.map(lambda item: handle_host(*item), by_host.items()))
+
+        def handle_host_alone(host: str, docs: list[Document]) -> None:
+            with host_lock(host):
+                handle_host(host, docs)
+
+        list(pool.map(lambda item: handle_host_alone(*item), by_host.items()))
 
     session.flush()
     remaining = len(

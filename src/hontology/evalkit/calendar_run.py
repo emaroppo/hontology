@@ -164,6 +164,11 @@ def process_entry(
             session.commit()
             deferred = result.get("deferred", 0)
             if not result["attempted"]:
+                # Nothing left we could claim. A scraper running ahead may
+                # still hold some of this window's documents: wait for it,
+                # then look again, so none is retrieved before it is fetched.
+                if scrape.wait_for_claimed(session, sorted(allowed)):
+                    continue
                 break
             fetched_now += result["attempted"]
 
