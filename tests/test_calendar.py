@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from hontology.db.models import (
+    CalendarReview,
     Candidate,
     Document,
     FeedArticle,
@@ -296,3 +297,105 @@ class TestEvaluate:
         rows = {r["id"]: r for r in self._result(world)["entries"]}
         assert rows["closure"]["retrieved"] == 2
         assert rows["closure"]["lost_at"] == "judged"
+
+    def _set_run(self, run_id, **fields):
+        with session_scope() as session:
+            run = session.get(Run, run_id)
+            for key, value in fields.items():
+                setattr(run, key, value)
+
+    def test_only_entries_the_run_finished_are_scored(self, world):
+        """An entry the run never reached has no verdicts; scored, it would read
+        as a miss (or, for a control, as quiet)."""
+        run_id, _ = world
+        self._set_run(
+            run_id, status="running", manifest={"calendar_done": ["closure", "quiet"]}
+        )
+        result = self._result(world)
+        assert {r["id"] for r in result["entries"]} == {"closure", "quiet"}
+        assert sorted(result["not_processed"]) == ["elsewhere", "storm"]
+        assert result["summary"]["event_recall"]["n"] == 1
+
+    def test_an_unfinished_run_without_progress_scores_nothing(self, world):
+        run_id, _ = world
+        self._set_run(run_id, status="failed")
+        result = self._result(world)
+        assert result["entries"] == []
+        assert len(result["not_processed"]) == 4
+
+    def test_no_lead_time_without_its_disruption(self, world):
+        run_id, _ = world
+        self._set_run(run_id, manifest={"calendar_done": ["storm"]})
+        assert self._result(world)["lead_times"] == []
+
+    def test_unique_counts_what_survives_deduplication(self, world):
+        rows = {r["id"]: r for r in self._result(world)["entries"]}
+        assert rows["closure"]["unique"] == 2
+
+    def test_cost_is_counted_per_window_and_per_run(self, world):
+        run_id, _ = world
+        with session_scope() as session:
+            for verdict in session.scalars(select(Verdict).where(Verdict.run_id == run_id)):
+                verdict.input_tokens, verdict.output_tokens, verdict.latency_s = 100, 10, 2.0
+        result = self._result(world)
+        rows = {r["id"]: r for r in result["entries"]}
+        # hit and seen are the Hong Kong window's documents: three verdicts.
+        assert rows["closure"]["cost"] == {
+            "pairs": 3,
+            "input_tokens": 300,
+            "output_tokens": 30,
+            "seconds": 6.0,
+        }
+        assert result["cost"]["pairs"] == 4
+
+    def _review(self, entry_id: str, url: str, confirmed: bool) -> None:
+        with session_scope() as session:
+            session.add(
+                CalendarReview(entry_id=entry_id, document_url=url, confirmed=confirmed)
+            )
+
+    def test_an_unreviewed_detection_is_pending(self, world):
+        result = self._result(world)
+        rows = {r["id"]: r for r in result["entries"]}
+        assert rows["closure"]["verified"] is None
+        assert "closure" in result["summary"]["verified"]["pending_review"]
+        assert result["summary"]["verified"]["event_recall"]["hits"] == 0
+
+    def test_a_confirmed_match_verifies_the_detection(self, world):
+        self._review("closure", "https://cal.test/hit", True)
+        result = self._result(world)
+        rows = {r["id"]: r for r in result["entries"]}
+        assert rows["closure"]["verified"] is True
+        assert result["summary"]["verified"]["event_recall"]["hits"] == 1
+
+    def test_a_rejected_match_is_a_coincidence_not_a_detection(self, world):
+        """Matched, but the article was about another event of the same kind."""
+        self._review("closure", "https://cal.test/hit", False)
+        result = self._result(world)
+        rows = {r["id"]: r for r in result["entries"]}
+        assert rows["closure"]["detected"] is True
+        assert rows["closure"]["verified"] is False
+        assert result["summary"]["verified"]["event_recall"]["hits"] == 0
+
+    def test_reviews_import_from_csv_and_update_in_place(self, world, tmp_path):
+        from typer.testing import CliRunner
+
+        from hontology.cli import app
+
+        path = tmp_path / "review.csv"
+        path.write_text(
+            "entry_id,url,confirmed,note\n"
+            "closure,https://cal.test/hit,no,first look\n"
+            "closure,https://cal.test/seen,,\n",
+            encoding="utf-8",
+        )
+        runner = CliRunner()
+        assert runner.invoke(app, ["eval", "calendar-review-import", str(path)]).exit_code == 0
+        path.write_text(
+            "entry_id,url,confirmed,note\nclosure,https://cal.test/hit,yes,second look\n",
+            encoding="utf-8",
+        )
+        assert runner.invoke(app, ["eval", "calendar-review-import", str(path)]).exit_code == 0
+        with session_scope() as session:
+            reviews = list(session.scalars(select(CalendarReview)))
+        assert [(r.confirmed, r.note) for r in reviews] == [(True, "second look")]

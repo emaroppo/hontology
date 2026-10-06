@@ -965,9 +965,10 @@ def eval_calendar(
     if out is not None:
         out.write_text(json.dumps(result, indent=2), encoding="utf-8")
 
-    stages = calendar.STAGES
+    # `unique` sits after `fetched`: what is left once near-duplicates collapse.
+    columns = (*calendar.STAGES[:3], "unique", *calendar.STAGES[3:])
     typer.echo(
-        f"{'entry':34} {'kind':9} " + " ".join(f"{s[:8]:>8}" for s in stages) + "  result"
+        f"{'entry':34} {'kind':9} " + " ".join(f"{c[:8]:>8}" for c in columns) + "  result"
     )
     for row in result["entries"]:
         verdict = (
@@ -975,9 +976,16 @@ def eval_calendar(
             if row["detected"]
             else ("quiet" if row["kind"] == calendar.CONTROL else f"lost at {row['lost_at']}")
         )
+        if row["detected"]:
+            # A person's review of the matches: confirmed, rejected, or not yet.
+            verdict += {True: " (confirmed)", False: " (rejected)", None: " (unreviewed)"}[
+                row["verified"]
+            ]
+            if row["kind"] == calendar.CONTROL and row["verified"] is True:
+                verdict = "control withdrawn: a real instance was found"
         typer.echo(
             f"{row['id'][:34]:34} {row['kind']:9} "
-            + " ".join(f"{row[s]:>8}" for s in stages)
+            + " ".join(f"{row[c]:>8}" for c in columns)
             + f"  {verdict}"
         )
 
@@ -991,11 +999,136 @@ def eval_calendar(
         rate = "-" if stat["rate"] is None else f"{stat['rate']:.2f}"
         typer.echo(f"{label:18} {stat['hits']}/{stat['n']}  {rate}  {format_ci(*stat['ci'])}")
     typer.echo(f"positives lost at  {result['summary']['positives_lost_at']}")
+    verified = result["summary"]["verified"]
+    typer.echo("verified by review:")
+    for label, key in (
+        ("  event recall", "event_recall"),
+        ("  precursor recall", "precursor_recall"),
+        ("  false alarm rate", "false_alarm_rate"),
+    ):
+        stat = verified[key]
+        rate = "-" if stat["rate"] is None else f"{stat['rate']:.2f}"
+        typer.echo(f"{label:18} {stat['hits']}/{stat['n']}  {rate}  {format_ci(*stat['ci'])}")
+    if verified["controls_withdrawn"]:
+        typer.echo(f"  withdrawn        {', '.join(verified['controls_withdrawn'])}")
+    if verified["pending_review"]:
+        pending = verified["pending_review"]
+        typer.echo(f"  pending review   {len(pending)}: {', '.join(pending)}")
+    cost = result["cost"]
+    typer.echo(
+        f"judging cost       {cost['pairs']} pair(s), {cost['input_tokens']} in / "
+        f"{cost['output_tokens']} out tokens, {cost['seconds'] / 3600:.1f} h"
+    )
+    if result["not_processed"]:
+        skipped = result["not_processed"]
+        typer.echo(f"not processed      {len(skipped)}, not scored: {', '.join(skipped)}")
     for lead in result["lead_times"]:
         typer.echo(
             f"lead  {lead['precursor']} -> {lead['disruption']}: {lead['lead_days']} day(s)"
             f"{'' if lead['disruption_detected'] else '  (disruption itself missed)'}"
         )
+
+
+REVIEW_COLUMNS = (
+    "entry_id",
+    "kind",
+    "concept",
+    "countries",
+    "date",
+    "description",
+    "first_seen",
+    "url",
+    "evidence",
+    "confirmed",
+    "note",
+)
+
+
+@eval_app.command("calendar-review-export")
+def eval_calendar_review_export(
+    run_id: int,
+    calendar_path: Path,
+    out: Path = typer.Option(..., help="CSV to write; fill `confirmed` with yes or no."),
+    per_entry: int = typer.Option(5, help="Unreviewed matches listed per entry."),
+    before: int = typer.Option(1),
+    after: int = typer.Option(2),
+) -> None:
+    """Write the matches still awaiting review, earliest first, for a person to mark.
+
+    For an event or precursor, `confirmed` asks: does this article describe this
+    very event? For a control: does it report a real instance of the concept
+    there and then? Entries already confirmed are left out.
+    """
+    import csv
+
+    from hontology.evalkit import calendar
+
+    entries = calendar.load(calendar_path)
+    by_id = {e.id: e for e in entries}
+    with session_scope() as session:
+        result = calendar.evaluate(session, run_id, entries, before=before, after=after)
+    rows = []
+    for row in result["entries"]:
+        if row["verified"] is not None:
+            continue
+        unreviewed = [m for m in row["matches"] if m["confirmed"] is None][:per_entry]
+        for match in unreviewed:
+            rows.append(
+                {
+                    "entry_id": row["id"],
+                    "kind": row["kind"],
+                    "concept": row["concept"],
+                    "countries": row["countries"],
+                    "date": row["date"],
+                    "description": by_id[row["id"]].description,
+                    "first_seen": match["first_seen"],
+                    "url": match["url"],
+                    "evidence": (match["evidence"] or "").replace("\n", " "),
+                    "confirmed": "",
+                    "note": "",
+                }
+            )
+    with out.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=REVIEW_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    typer.echo(
+        f"{len(rows)} match(es) to review across {len({r['entry_id'] for r in rows})} entries"
+    )
+
+
+@eval_app.command("calendar-review-import")
+def eval_calendar_review_import(path: Path) -> None:
+    """Read reviewed matches back; rows left blank in `confirmed` are skipped."""
+    import csv
+
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from hontology.db.models import CalendarReview
+
+    answers = {"yes": True, "y": True, "true": True, "1": True}
+    answers |= {"no": False, "n": False, "false": False, "0": False}
+    saved = skipped = 0
+    with path.open(encoding="utf-8", newline="") as handle, session_scope() as session:
+        for row in csv.DictReader(handle):
+            answer = answers.get((row.get("confirmed") or "").strip().lower())
+            if answer is None:
+                skipped += 1
+                continue
+            statement = pg_insert(CalendarReview).values(
+                entry_id=row["entry_id"].strip(),
+                document_url=row["url"].strip(),
+                confirmed=answer,
+                note=(row.get("note") or "").strip() or None,
+            )
+            session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=["entry_id", "document_url"],
+                    set_={"confirmed": answer, "note": statement.excluded.note},
+                )
+            )
+            saved += 1
+    typer.echo(f"saved {saved} review(s); {skipped} row(s) left blank")
 
 
 @eval_app.command("detections")

@@ -15,6 +15,7 @@ from hontology.db.models.corpus import (
 from hontology.db.models.labels import (
     ALL_SOURCES,
     TRUSTED_SOURCES,
+    CalendarReview,
     Observation,
     PairLabel,
 )
@@ -39,6 +40,7 @@ from hontology.db.models.vectors import (
 
 __all__ = [
     "ALL_SOURCES",
+    "CalendarReview",
     "TRUSTED_SOURCES",
     "Base",
     "Candidate",

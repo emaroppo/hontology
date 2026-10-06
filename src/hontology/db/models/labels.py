@@ -101,3 +101,24 @@ class PairLabel(Base, TimestampMixin):
 
     concept: Mapped[Concept] = relationship()
     locus: Mapped[Locus | None] = relationship()
+
+
+class CalendarReview(Base, TimestampMixin):
+    """A person's answer to "is this matched article about that calendar entry?".
+
+    For an event or precursor: does the article describe *this* event, rather
+    than another of the same kind? For a control: does it report a real instance
+    of the concept there and then, which would make the control itself wrong?
+
+    Keyed by the calendar entry's id and the article's URL, never database ids,
+    so one review serves every run and arm that matches the same article.
+    """
+
+    __tablename__ = "calendar_reviews"
+    __table_args__ = (UniqueConstraint("entry_id", "document_url"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entry_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    document_url: Mapped[str] = mapped_column(Text, nullable=False)
+    confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)

@@ -437,6 +437,21 @@ disruption's day. Every entry is scored through the stages its documents pass,
 happened: an event whose articles never reached the feed needs a different fix
 from one the judge rejected.
 
+A match only says that *some* article in the window reported the concept, not
+that it reported *this* event: in the pilot, two of eight "detections" were
+other export measures and another country's port. So detections are verified
+by a person. `eval calendar-review-export` lists the matches awaiting review,
+one row per story rather than per copy; `confirmed` is marked yes or no and
+read back with `eval calendar-review-import`. Reviews are keyed by entry and
+URL, so one review serves every run that matches the same article. Scoring then
+reports raw and verified recall side by side; a control whose match turns out
+to be a real instance is withdrawn as a calendar error rather than counted.
+
+Only entries a run has actually processed are scored. An entry the run never
+reached has no verdicts, which would otherwise read as a miss, or as a quiet
+control. Judging cost (pairs, tokens, seconds) is reported per window and per
+run, from the verdicts themselves, so arms are compared on the same measure.
+
 **Funnel before metrics.** `eval funnel` shows attrition stage by stage and needs
 no ground truth at all, which makes it the first thing to read when a run
 produces less than expected — precision cannot tell a precise pipeline from a

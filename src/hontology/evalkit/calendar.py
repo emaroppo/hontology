@@ -30,10 +30,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from hontology.db.models import (
+    CalendarReview,
     Candidate,
     Concept,
     Document,
@@ -211,10 +212,42 @@ class EntryResult:
     entry: Entry
     stages: dict[str, int] = field(default_factory=dict)
     first_match: datetime | None = None
+    # Fetched documents left after near-duplicates collapse onto one
+    # representative: what retrieval and the judge actually see.
+    unique: int = 0
+    # Judging spent on this window's documents, across every concept.
+    cost: dict = field(default_factory=dict)
+    # One row per matched representative, earliest sighting first, with any
+    # review of it: {url, first_seen, evidence, confirmed}.
+    matches: list[dict] = field(default_factory=list)
 
     @property
     def detected(self) -> bool:
         return self.stages.get("matched", 0) > 0
+
+    @property
+    def verified(self) -> bool | None:
+        """Whether a person confirmed a match: True, False, or None if pending.
+
+        For an event or precursor, True means some matched article describes
+        this very event, and False that every match was about something else.
+        For a control, True means a match reported a real instance, so the
+        control itself was wrong; False confirms the false alarm.
+        """
+        if not self.matches:
+            return False
+        reviews = [m["confirmed"] for m in self.matches]
+        if any(r is True for r in reviews):
+            return True
+        if all(r is False for r in reviews):
+            return False
+        return None
+
+    @property
+    def first_confirmed(self) -> datetime | None:
+        return min(
+            (m["first_seen"] for m in self.matches if m["confirmed"] is True), default=None
+        )
 
     @property
     def lost_at(self) -> str | None:
@@ -234,6 +267,13 @@ class EntryResult:
             "detected": self.detected,
             "lost_at": self.lost_at,
             "first_match": self.first_match.isoformat() if self.first_match else None,
+            "verified": self.verified,
+            "matches": [
+                m | {"first_seen": m["first_seen"].isoformat() if m["first_seen"] else None}
+                for m in self.matches
+            ],
+            "unique": self.unique,
+            "cost": self.cost,
             **self.stages,
         }
 
@@ -241,6 +281,92 @@ class EntryResult:
 def _rate(hits: int, n: int) -> dict:
     low, high = wilson(hits, n)
     return {"hits": hits, "n": n, "rate": (hits / n) if n else None, "ci": [low, high]}
+
+
+def judging_cost(session: Session, run_id: int, document_ids: set[int] | None = None) -> dict:
+    """Pairs judged, tokens and seconds a run spent, optionally on some documents.
+
+    Read from the verdicts themselves, so it is the same measure in every arm:
+    a hierarchical run's internal-class answers are verdict rows too.
+    """
+    query = select(
+        func.count(Verdict.id),
+        func.coalesce(func.sum(Verdict.input_tokens), 0),
+        func.coalesce(func.sum(Verdict.output_tokens), 0),
+        func.coalesce(func.sum(Verdict.latency_s), 0.0),
+    ).where(Verdict.run_id == run_id)
+    if document_ids is not None:
+        if not document_ids:
+            return {"pairs": 0, "input_tokens": 0, "output_tokens": 0, "seconds": 0.0}
+        query = query.where(Verdict.document_id.in_(document_ids))
+    pairs, tokens_in, tokens_out, seconds = session.execute(query).one()
+    return {
+        "pairs": int(pairs),
+        "input_tokens": int(tokens_in),
+        "output_tokens": int(tokens_out),
+        "seconds": round(float(seconds), 1),
+    }
+
+
+def _matches(
+    session: Session,
+    run_id: int,
+    concept_id: int,
+    entry: Entry,
+    matched: set[int],
+    reads: dict[int, int],
+    docs: dict[int, datetime],
+    reviews: dict[tuple[str, str], bool],
+) -> list[dict]:
+    """The entry's matched representatives, earliest first, with their reviews.
+
+    One row per representative, not per copy: reviewing a story once covers
+    every outlet that republished it.
+    """
+    seen: dict[int, datetime] = {}
+    for doc_id in matched:
+        rep = reads[doc_id]
+        if rep not in seen or docs[doc_id] < seen[rep]:
+            seen[rep] = docs[doc_id]
+    if not seen:
+        return []
+    urls = dict(
+        session.execute(select(Document.id, Document.url).where(Document.id.in_(seen))).all()
+    )
+    evidence = dict(
+        session.execute(
+            select(Verdict.document_id, Verdict.evidence).where(
+                Verdict.run_id == run_id,
+                Verdict.concept_id == concept_id,
+                Verdict.document_id.in_(seen),
+            )
+        ).all()
+    )
+    rows = [
+        {
+            "url": urls[rep],
+            "first_seen": seen[rep],
+            "evidence": evidence.get(rep),
+            "confirmed": reviews.get((entry.id, urls[rep])),
+        }
+        for rep in seen
+    ]
+    return sorted(rows, key=lambda row: row["first_seen"])
+
+
+def processed_ids(run: Run, entries: list[Entry]) -> set[str]:
+    """The entries this run has actually been through.
+
+    A run made with `run calendar` records each entry as it finishes; one made
+    with `run start --calendar` processed every window at once, so its entries
+    count only once it is done. Anything else is not scored: an entry the run
+    never reached has no verdicts, which is indistinguishable from a miss.
+    """
+    ids = {e.id for e in entries}
+    done = (run.manifest or {}).get("calendar_done")
+    if done is not None:
+        return ids & set(done)
+    return ids if run.status == "done" else set()
 
 
 def evaluate(
@@ -267,9 +393,18 @@ def evaluate(
     loci = loci_for(session, entries)
     passed = set(ingest_filter.matching_documents(session, run.ontology_id))
     has_filter = bool(passed)
+    processed = processed_ids(run, entries)
+    reviews = {
+        (review.entry_id, review.document_url): review.confirmed
+        for review in session.scalars(
+            select(CalendarReview).where(CalendarReview.entry_id.in_([e.id for e in entries]))
+        )
+    }
 
     results: list[EntryResult] = []
     for entry in entries:
+        if entry.id not in processed:
+            continue
         concept_id = concepts[entry.concept]
         docs = window_documents(session, entry, loci, before=before, after=after)
         filtered = {d for d in docs if d in passed} if has_filter else set(docs)
@@ -331,6 +466,11 @@ def evaluate(
                     "matched": len(matched),
                 },
                 first_match=min((docs[d] for d in matched), default=None),
+                unique=len(set(reads.values())),
+                cost=judging_cost(session, run_id, set(reads.values())),
+                matches=_matches(
+                    session, run_id, concept_id, entry, matched, reads, docs, reviews
+                ),
             )
         )
 
@@ -339,7 +479,10 @@ def evaluate(
     for result in results:
         if result.entry.kind != PRECURSOR or not result.detected:
             continue
-        target = by_id[result.entry.precursor_of]
+        target = by_id.get(result.entry.precursor_of)
+        if target is None:
+            # The disruption itself was not processed: no lead time to speak of.
+            continue
         start = datetime.combine(target.entry.date, time(), tzinfo=UTC)
         lead_times.append(
             {
@@ -347,6 +490,12 @@ def evaluate(
                 "disruption": target.entry.id,
                 # Positive = the precursor was seen before the disruption's day.
                 "lead_days": round((start - result.first_match).total_seconds() / 86400, 2),
+                # The same, from the earliest match a person confirmed.
+                "verified_lead_days": (
+                    round((start - result.first_confirmed).total_seconds() / 86400, 2)
+                    if result.first_confirmed
+                    else None
+                ),
                 "disruption_detected": target.detected,
             }
         )
@@ -366,6 +515,7 @@ def evaluate(
         "ontology_id": run.ontology_id,
         "window": {"before_days": before, "after_days": after},
         "filter_applied": has_filter,
+        "not_processed": [e.id for e in entries if e.id not in processed],
         "summary": {
             "event_recall": _rate(sum(r.detected for r in of(POSITIVE)), len(of(POSITIVE))),
             "precursor_recall": _rate(
@@ -373,7 +523,25 @@ def evaluate(
             ),
             "false_alarm_rate": _rate(sum(r.detected for r in of(CONTROL)), len(of(CONTROL))),
             "positives_lost_at": lost(POSITIVE),
+            "verified": {
+                "event_recall": _rate(
+                    sum(r.verified is True for r in of(POSITIVE)), len(of(POSITIVE))
+                ),
+                "precursor_recall": _rate(
+                    sum(r.verified is True for r in of(PRECURSOR)), len(of(PRECURSOR))
+                ),
+                # A control whose match reported a real instance is a calendar
+                # error: withdrawn from the denominator, and listed.
+                "false_alarm_rate": _rate(
+                    sum(r.detected and r.verified is False for r in of(CONTROL)),
+                    sum(r.verified is not True for r in of(CONTROL)),
+                ),
+                "controls_withdrawn": [r.entry.id for r in of(CONTROL) if r.verified is True],
+                "pending_review": [r.entry.id for r in results if r.verified is None],
+            },
         },
         "lead_times": lead_times,
+        # The whole run, so windows that share documents are not counted twice.
+        "cost": judging_cost(session, run_id),
         "entries": [r.as_dict() for r in results],
     }
