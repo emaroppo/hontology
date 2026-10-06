@@ -1355,6 +1355,9 @@ def eval_arms(
         None, "--manifest", help="Labelled-sample manifest."
     ),
     out: Path | None = typer.Option(None, help="Write the full report as JSON."),
+    markdown: Path | None = typer.Option(
+        None, "--markdown", help="Write the report as Markdown tables, for the write-up."
+    ),
     before: int = typer.Option(1),
     after: int = typer.Option(2),
 ) -> None:
@@ -1373,6 +1376,8 @@ def eval_arms(
         )
     if out is not None:
         out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    if markdown is not None:
+        markdown.write_text(arms.render_markdown(report), encoding="utf-8")
 
     def rate(stat: dict) -> str:
         value = "-" if stat["rate"] is None else f"{stat['rate']:.2f}"
