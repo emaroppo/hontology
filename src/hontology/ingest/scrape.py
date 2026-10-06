@@ -52,6 +52,8 @@ class ScrapeStats:
     junk: int = 0
     failed: int = 0
     blocked: int = 0
+    # Left pending because the host's crawl delay would have stalled the batch.
+    deferred: int = 0
     methods: dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
     def as_dict(self) -> dict:
@@ -61,6 +63,7 @@ class ScrapeStats:
             "junk": self.junk,
             "failed": self.failed,
             "blocked_by_robots": self.blocked,
+            "deferred": self.deferred,
             "methods": dict(self.methods),
         }
 
@@ -70,12 +73,19 @@ def host_of(url: str) -> str:
 
 
 class RobotsCache:
-    """Per-host robots.txt, fetched once per process."""
+    """Per-host robots.txt, fetched once per process.
+
+    The shared lock guards only the dictionaries, never the network: a fetch
+    holds just its own host's lock. Holding one lock across every fetch made
+    the whole thread pool wait in single file on each new host's robots.txt,
+    up to its timeout, which is most of a batch when the hosts are new.
+    """
 
     def __init__(self, user_agent: str, *, timeout: float = 10.0) -> None:
         self.user_agent = user_agent
         self.timeout = timeout
         self._parsers: dict[str, urllib.robotparser.RobotFileParser | None] = {}
+        self._host_locks: dict[str, threading.Lock] = {}
         self._lock = threading.Lock()
 
     def _load(self, url: str) -> urllib.robotparser.RobotFileParser | None:
@@ -110,8 +120,15 @@ class RobotsCache:
     def allowed(self, url: str) -> bool:
         host = host_of(url)
         with self._lock:
-            if host not in self._parsers:
-                self._parsers[host] = self._load(url)
+            host_lock = self._host_locks.setdefault(host, threading.Lock())
+        with host_lock:
+            with self._lock:
+                loaded = host in self._parsers
+            if not loaded:
+                parsed = self._load(url)
+                with self._lock:
+                    self._parsers[host] = parsed
+        with self._lock:
             parser = self._parsers[host]
         if parser is None:
             return True
@@ -130,6 +147,39 @@ class RobotsCache:
         return float(delay) if delay else None
 
 
+_ROBOTS: dict[str, RobotsCache] = {}
+_ROBOTS_LOCK = threading.Lock()
+
+
+def robots_cache(user_agent: str) -> RobotsCache:
+    """The process's robots cache, shared by every scrape batch.
+
+    A batched scrape calls the scraper many times; a cache per call fetched
+    the same hosts' robots.txt again on every batch.
+    """
+    with _ROBOTS_LOCK:
+        if user_agent not in _ROBOTS:
+            _ROBOTS[user_agent] = RobotsCache(user_agent)
+        return _ROBOTS[user_agent]
+
+
+# The longest a worker sleeps for one host's crawl delay. Beyond it the host's
+# remaining documents are deferred to a later batch: a site asking for ten
+# minutes between requests is honoured, but no longer holds a whole batch open
+# while every other host waits on it.
+MAX_POLITE_WAIT_S = 15.0
+
+_LIMITERS: dict[float, HostLimiter] = {}
+
+
+def host_limiter(default_delay: float) -> HostLimiter:
+    """The process's limiter, so a later batch still knows when a host was hit."""
+    with _ROBOTS_LOCK:
+        if default_delay not in _LIMITERS:
+            _LIMITERS[default_delay] = HostLimiter(default_delay)
+        return _LIMITERS[default_delay]
+
+
 class HostLimiter:
     """Enforces a minimum gap between requests to the same host."""
 
@@ -137,6 +187,15 @@ class HostLimiter:
         self.default_delay = default_delay
         self._last: dict[str, float] = {}
         self._lock = threading.Lock()
+
+    def ready_in(self, host: str, delay: float | None = None) -> float:
+        """Seconds until *host* may be asked again, without reserving the slot."""
+        gap = delay if delay is not None else self.default_delay
+        with self._lock:
+            previous = self._last.get(host)
+        if previous is None:
+            return 0.0
+        return max(0.0, previous + gap - time.monotonic())
 
     def wait(self, host: str, delay: float | None = None) -> None:
         gap = delay if delay is not None else self.default_delay
@@ -149,23 +208,61 @@ class HostLimiter:
             time.sleep(sleep_for)
 
 
+# Far beyond any article page; a response this large is a feed, an archive or
+# a misbehaving server, and reading all of it would only slow the batch.
+MAX_PAGE_BYTES = 5 * 1024 * 1024
+
+
+class _TooSlow(Exception):
+    pass
+
+
+def _get_bounded(url: str, *, user_agent: str, timeout: float) -> tuple[str, int]:
+    """GET a page within a total time and size budget.
+
+    httpx's timeout bounds each network operation, not the whole response: a
+    server that trickles a byte every few seconds never trips it, and one such
+    page held an entire scrape batch open for ten minutes. Streaming the body
+    against a deadline makes *timeout* a limit on the whole download.
+    """
+    deadline = time.monotonic() + timeout
+    with httpx.stream(
+        "GET",
+        url,
+        timeout=timeout,
+        headers={"User-Agent": user_agent, "Accept": "text/html,*/*"},
+        follow_redirects=True,
+    ) as response:
+        if response.status_code >= 400:
+            return "", response.status_code
+        chunks: list[bytes] = []
+        size = 0
+        for chunk in response.iter_bytes():
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > MAX_PAGE_BYTES:
+                raise _TooSlow(f"page larger than {MAX_PAGE_BYTES} bytes")
+            if time.monotonic() > deadline:
+                raise _TooSlow(f"download exceeded {timeout:.0f}s")
+        body = b"".join(chunks).decode(response.encoding or "utf-8", errors="replace")
+        return body, response.status_code
+
+
 def fetch_html(
     url: str, *, user_agent: str, timeout: float, retries: int = 2
 ) -> tuple[str | None, int | None, str]:
     """Fetch a page. Returns ``(html, status_code, error)``.
 
     Retries only transient statuses: a 404 or a 403 will not become a 200 by
-    asking again, and retrying them just wastes the host's time and ours.
+    asking again, and retrying them just wastes the host's time and ours. A
+    page too slow or too large is not retried either: it would be again.
     """
     last_error = ""
     for attempt in range(retries + 1):
         try:
-            response = httpx.get(
-                url,
-                timeout=timeout,
-                headers={"User-Agent": user_agent, "Accept": "text/html,*/*"},
-                follow_redirects=True,
-            )
+            text, status_code = _get_bounded(url, user_agent=user_agent, timeout=timeout)
+        except _TooSlow as exc:
+            return None, None, f"TooSlow: {exc}"
         except httpx.HTTPError as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             if attempt < retries:
@@ -173,13 +270,13 @@ def fetch_html(
                 continue
             return None, None, last_error
 
-        if response.status_code in RETRY_STATUS and attempt < retries:
+        if status_code in RETRY_STATUS and attempt < retries:
             time.sleep(2.0**attempt)
-            last_error = f"HTTP {response.status_code}"
+            last_error = f"HTTP {status_code}"
             continue
-        if response.status_code >= 400:
-            return None, response.status_code, f"HTTP {response.status_code}"
-        return response.text, response.status_code, ""
+        if status_code >= 400:
+            return None, status_code, f"HTTP {status_code}"
+        return text, status_code, ""
 
     return None, None, last_error
 
@@ -330,8 +427,8 @@ def scrape_pending(
     if not documents:
         return ScrapeStats().as_dict() | {"pending_remaining": 0}
 
-    robots = RobotsCache(settings.scrape_user_agent)
-    limiter = HostLimiter(settings.scrape_per_host_delay_s)
+    robots = robots_cache(settings.scrape_user_agent)
+    limiter = host_limiter(settings.scrape_per_host_delay_s)
     stats = ScrapeStats()
     stats_lock = threading.Lock()
 
@@ -350,7 +447,14 @@ def scrape_pending(
                     stats.blocked += 1
                 continue
 
-            limiter.wait(host, robots.crawl_delay(document.url))
+            delay = robots.crawl_delay(document.url)
+            if limiter.ready_in(host, delay) > MAX_POLITE_WAIT_S:
+                # This and the host's remaining documents wait for a later
+                # batch; they stay pending, so nothing is lost.
+                with stats_lock:
+                    stats.deferred += len(docs) - docs.index(document)
+                return
+            limiter.wait(host, delay)
             html, status_code, error = fetch_html(
                 document.url,
                 user_agent=settings.scrape_user_agent,

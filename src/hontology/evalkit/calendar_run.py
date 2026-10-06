@@ -97,11 +97,13 @@ def process_entry(
     allowed = window & passed if passed is not None else window
 
     fetched_now = 0
+    deferred = 0
     while True:
         result = scrape.scrape_pending(
             session, limit=SCRAPE_BATCH, document_ids=sorted(allowed)
         )
         session.commit()
+        deferred = result.get("deferred", 0)
         if not result["attempted"]:
             break
         fetched_now += result["attempted"]
@@ -180,6 +182,8 @@ def process_entry(
         "in_window": len(window),
         "passed_filter": len(allowed),
         "fetched_now": fetched_now,
+        # Still pending at the end: hosts whose crawl delay outlasted the pass.
+        "deferred": deferred,
         "representatives": len(representatives),
         "copies_marked": dedup_result["newly_marked"],
         "retrieved_new": len(new),

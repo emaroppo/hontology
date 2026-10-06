@@ -6,6 +6,7 @@ All mocked — a test suite must not depend on, or hammer, live sites.
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -212,3 +213,82 @@ class TestScrapePending:
 
         with session_scope() as session:
             session.execute(sql_text("DELETE FROM documents WHERE url = :u"), {"u": url})
+
+
+class TestRobotsConcurrency:
+    """robots.txt for different hosts must load in parallel, and once each."""
+
+    def test_different_hosts_load_concurrently(self, monkeypatch):
+        robots = RobotsCache(AGENT)
+        monkeypatch.setattr(robots, "_load", lambda url: time.sleep(0.3))
+        started = time.monotonic()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(robots.allowed, [f"https://h{i}.test/a" for i in range(4)]))
+        # Serialized, four loads would take 1.2 s.
+        assert time.monotonic() - started < 0.8
+
+    def test_one_host_loads_once_under_contention(self, monkeypatch):
+        robots = RobotsCache(AGENT)
+        calls: list[str] = []
+
+        def slow_load(url):
+            calls.append(url)
+            time.sleep(0.1)
+
+        monkeypatch.setattr(robots, "_load", slow_load)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(robots.allowed, [f"https://same.test/{i}" for i in range(4)]))
+        assert len(calls) == 1
+
+
+class TestLimiterReadiness:
+    def test_an_unseen_host_is_ready_now(self):
+        assert HostLimiter(1.0).ready_in("new.test") == 0.0
+
+    def test_a_long_crawl_delay_reports_the_remaining_wait(self):
+        limiter = HostLimiter(1.0)
+        limiter.wait("slow.test", 600.0)
+        assert 590 < limiter.ready_in("slow.test", 600.0) <= 600
+
+
+class TestBoundedFetch:
+    @respx.mock
+    def test_a_trickling_server_fails_at_the_deadline(self):
+        """Every byte arrives inside the per-read timeout, so only a total
+        deadline stops it."""
+
+        def trickle():
+            for _ in range(100):
+                time.sleep(0.05)
+                yield b"<p>x</p>"
+
+        respx.get("https://slow.test/a").mock(
+            return_value=httpx.Response(200, content=trickle())
+        )
+        started = time.monotonic()
+        html, _, error = fetch_html("https://slow.test/a", user_agent=AGENT, timeout=0.3)
+        assert html is None
+        assert error.startswith("TooSlow")
+        assert time.monotonic() - started < 1.5
+
+    @respx.mock
+    def test_an_oversized_page_is_refused(self, monkeypatch):
+        monkeypatch.setattr("hontology.ingest.scrape.MAX_PAGE_BYTES", 10)
+        respx.get("https://big.test/a").mock(
+            return_value=httpx.Response(200, content=b"x" * 100)
+        )
+        html, _, error = fetch_html("https://big.test/a", user_agent=AGENT, timeout=5)
+        assert html is None
+        assert "larger" in error
+
+    @respx.mock
+    def test_a_normal_page_decodes_with_its_charset(self):
+        respx.get("https://ok.test/a").mock(
+            return_value=httpx.Response(
+                200,
+                content="café".encode("latin-1"),
+                headers={"Content-Type": "text/html; charset=latin-1"},
+            )
+        )
+        html, status, error = fetch_html("https://ok.test/a", user_agent=AGENT, timeout=5)
+        assert (html, status, error) == ("café", 200, "")
