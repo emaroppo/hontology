@@ -225,6 +225,7 @@ class TestEvaluate:
             "passed_filter": 3,
             "fetched": 2,
             "retrieved": 2,
+            "judged": 2,
             "matched": 1,
         }
         assert rows["closure"]["detected"] is True
@@ -285,3 +286,13 @@ class TestEvaluate:
         rows = {r["id"]: r for r in self._result(world)["entries"]}
         assert rows["elsewhere"]["detected"] is True
         assert rows["elsewhere"]["matched"] == 1
+
+    def test_a_retrieved_document_never_judged_is_lost_at_judged(self, world):
+        """A budget that stops before a document must not read as a rejection."""
+        run_id, entries = world
+        with session_scope() as session:
+            for verdict in session.scalars(select(Verdict).where(Verdict.run_id == run_id)):
+                session.delete(verdict)
+        rows = {r["id"]: r for r in self._result(world)["entries"]}
+        assert rows["closure"]["retrieved"] == 2
+        assert rows["closure"]["lost_at"] == "judged"

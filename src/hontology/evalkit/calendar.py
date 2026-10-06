@@ -10,7 +10,7 @@ a precursor was detected before its disruption.
 Every entry is scored through the same stages a document passes, so a miss says
 where it happened:
 
-    in_feed → passed_filter → fetched → retrieved → matched
+    in_feed → passed_filter → fetched → retrieved → judged → matched
 
 An event whose articles never reached the feed needs a different fix from one
 the judge rejected, and a calendar that only reported detected/missed would
@@ -58,7 +58,10 @@ KINDS = (POSITIVE, PRECURSOR, CONTROL)
 DEFAULT_BEFORE = 1
 DEFAULT_AFTER = 2
 
-STAGES = ("in_feed", "passed_filter", "fetched", "retrieved", "matched")
+# `judged` sits apart from `matched` because a run with a judging budget can
+# retrieve a document and never judge it; that miss is the budget's, not the
+# judge's, and must not read as a rejection.
+STAGES = ("in_feed", "passed_filter", "fetched", "retrieved", "judged", "matched")
 
 
 class CalendarError(ValueError):
@@ -300,21 +303,21 @@ def evaluate(
             if reads
             else set()
         )
-        matched_reps = (
-            set(
-                session.scalars(
-                    select(Verdict.document_id).where(
-                        Verdict.run_id == run_id,
-                        Verdict.concept_id == concept_id,
-                        Verdict.matched.is_(True),
-                        Verdict.document_id.in_(retrieved_reps),
-                    )
+        verdicts = (
+            session.execute(
+                select(Verdict.document_id, Verdict.matched).where(
+                    Verdict.run_id == run_id,
+                    Verdict.concept_id == concept_id,
+                    Verdict.document_id.in_(retrieved_reps),
                 )
-            )
+            ).all()
             if retrieved_reps
-            else set()
+            else []
         )
+        judged_reps = {doc_id for doc_id, _ in verdicts}
+        matched_reps = {doc_id for doc_id, matched in verdicts if matched}
         retrieved = {d for d, rep in reads.items() if rep in retrieved_reps}
+        judged = {d for d, rep in reads.items() if rep in judged_reps}
         matched = {d for d, rep in reads.items() if rep in matched_reps}
         results.append(
             EntryResult(
@@ -324,6 +327,7 @@ def evaluate(
                     "passed_filter": len(filtered),
                     "fetched": len(fetched),
                     "retrieved": len(retrieved),
+                    "judged": len(judged),
                     "matched": len(matched),
                 },
                 first_match=min((docs[d] for d in matched), default=None),

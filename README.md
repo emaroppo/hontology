@@ -433,7 +433,7 @@ hontology run calendar <id> run.json calendar.csv --run-id <run> --budget 200
 Scoring reports event recall over the positives, precursor recall, a false-alarm
 rate over the controls, and lead time where a precursor was matched before its
 disruption's day. Every entry is scored through the stages its documents pass,
-`in_feed → passed_filter → fetched → retrieved → matched`, so a miss says where it
+`in_feed → passed_filter → fetched → retrieved → judged → matched`, so a miss says where it
 happened: an event whose articles never reached the feed needs a different fix
 from one the judge rejected.
 
