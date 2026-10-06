@@ -391,9 +391,16 @@ def ingest_scrape(
                 session, calendar.load(calendar_path), before=before, after=after
             )
         if ontology_id is not None:
-            # Resolved once here rather than per batch: matching scans every
-            # feed record, and the answer does not change while fetching.
-            matches = set(ingest_filter.matching_documents(session, ontology_id))
+            # Resolved once here rather than per batch: the answer does not
+            # change while fetching. With a calendar, only its windows are
+            # matched; matching every feed record loads all of them.
+            matches = set(
+                ingest_filter.matching_documents(
+                    session,
+                    ontology_id,
+                    document_ids=sorted(document_ids) if document_ids is not None else None,
+                )
+            )
             if not matches:
                 typer.secho(
                     "no documents match this ontology's code links; nothing to fetch",
