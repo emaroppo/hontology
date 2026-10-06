@@ -148,14 +148,14 @@ def matching_documents(
         )
 
     if themes:
-        query = select(FeedArticle.document_id, FeedArticle.themes).where(
+        theme_query = select(FeedArticle.document_id, FeedArticle.themes).where(
             FeedArticle.document_id.is_not(None),
             FeedArticle.themes.overlap(sorted(themes)),
         )
         if document_ids is not None:
-            query = query.where(FeedArticle.document_id.in_(document_ids))
-        for document_id, article_themes in session.execute(query):
-            if document_id in matches:
+            theme_query = theme_query.where(FeedArticle.document_id.in_(document_ids))
+        for document_id, article_themes in session.execute(theme_query):
+            if document_id is None or document_id in matches:
                 continue
             hit = sorted(t for t in article_themes if t in themes)
             matches[document_id] = Match(

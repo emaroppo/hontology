@@ -330,18 +330,22 @@ def _matches(
             seen[rep] = docs[doc_id]
     if not seen:
         return []
-    urls = dict(
-        session.execute(select(Document.id, Document.url).where(Document.id.in_(seen))).all()
-    )
-    evidence = dict(
-        session.execute(
+    urls: dict[int, str] = {
+        doc_id: url
+        for doc_id, url in session.execute(
+            select(Document.id, Document.url).where(Document.id.in_(seen))
+        )
+    }
+    evidence: dict[int, str | None] = {
+        doc_id: text
+        for doc_id, text in session.execute(
             select(Verdict.document_id, Verdict.evidence).where(
                 Verdict.run_id == run_id,
                 Verdict.concept_id == concept_id,
                 Verdict.document_id.in_(seen),
             )
-        ).all()
-    )
+        )
+    }
     rows = [
         {
             "url": urls[rep],
@@ -477,7 +481,11 @@ def evaluate(
     by_id = {r.entry.id: r for r in results}
     lead_times = []
     for result in results:
-        if result.entry.kind != PRECURSOR or not result.detected:
+        if (
+            result.entry.kind != PRECURSOR
+            or result.entry.precursor_of is None
+            or result.first_match is None
+        ):
             continue
         target = by_id.get(result.entry.precursor_of)
         if target is None:
