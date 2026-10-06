@@ -13,6 +13,12 @@ go.
 > GDELT feed, scrape article text, retrieve candidates, judge them, build
 > ground truth, and score the result. Verified end to end against the live
 > feed with a local model.
+>
+> **In progress: does a class hierarchy beat a flat list?** A pre-registered
+> comparison of a flat 44-concept supply-chain ontology against the same
+> concepts arranged as a class hierarchy and judged top-down, on the same
+> articles, retrieval, model and leaf wording. The flat baseline is running on
+> a pilot event calendar; no results yet.
 
 ---
 
@@ -24,9 +30,10 @@ is knowing whether the number means anything. This project is built around three
 claims that are easy to state and annoying to actually implement:
 
 **1. The ontology belongs to the user, not the code.** Concepts, their
-definitions, their inclusion and exclusion criteria, and how they group together
-are data, editable in the UI. Changing what you're looking for should not require
-changing the pipeline.
+definitions, their inclusion and exclusion criteria, and how they relate — as a
+class hierarchy, with typed relations between classes — are data, editable in
+the UI or in an OWL tool such as Protégé. Changing what you're looking for should
+not require changing the pipeline.
 
 **2. Labels rot, and the system should notice.** A ground-truth label is an
 answer to a question — "does this article evidence *this* concept, as currently
@@ -65,6 +72,12 @@ similarity in pgvector. Both emit identical `(document, concept, score, rank)`
 rows, so downstream stages cannot tell them apart and you can A/B the strategies
 directly.
 
+**Flat or hierarchical, one pipeline.** Classes can be arranged with
+`subclass_of`, several parents allowed. Retrieval ranks leaf classes only, and
+every class of a flat ontology is a leaf, so adding structure leaves a flat run
+exactly as it was. A hierarchical judge then descends the tree: it asks about the
+top-level classes in one call, and only below a yes asks about the children.
+
 **Runs are content-addressed by stage.** A run config is sectioned
 (`common` / `candidates` / `judge`) and each stage's artifact key chains to its
 upstream:
@@ -102,6 +115,7 @@ The UI is six pages, each a pure HTTP client of the API:
 
 | Page | What it is for |
 |---|---|
+| **Home** | The ontologies installed, where to start when there are none, and how the pieces fit together |
 | **Ontology** | Author concepts, import/export, resolve versions, health checks |
 | **Code Links** | Curate concept↔CAMEO associations from similarity proposals |
 | **Labelling** | The queue, adjudication of machine proposals, bank import/export |
@@ -148,6 +162,43 @@ curl -X POST localhost:8100/ontologies/import -H 'Content-Type: application/json
 Inclusion and exclusion criteria are not documentation — they go into the judge
 prompt verbatim. Writing a sharp exclusion is usually the highest-leverage edit
 available for precision.
+
+### Structuring the ontology
+
+A flat list of concepts becomes a class hierarchy by adding relations, written
+by class name in the export format (version 2):
+
+```json
+"relations": [
+  ["Import ban or quota", "subclass_of", "Trade restriction"],
+  ["Import ban or quota", "subclass_of", "Sanctions"],
+  ["Logistics strike notice", "precursor_of", "Port strike"]
+]
+```
+
+`subclass_of` makes the ontology a directed acyclic graph: cycles are refused,
+and a relation set is replaced whole, so a bad file leaves the old one in place.
+A class may have several parents, read as **either**, not both: an import ban can
+be adopted as trade policy or as a sanction, without every ban being a sanction.
+The top level is every class without a parent; there is no artificial root.
+`precursor_of` is stored for later use and drives no logic yet.
+
+Structure is part of an ontology's version only once there is some, so a flat
+ontology keeps its version hash. Leaf wording is what labels answer, so adding
+parent classes leaves every leaf label valid, and an import can be told to refuse
+any rewording of existing classes.
+
+The hierarchy can be authored or reviewed in [Protégé](https://protege.stanford.edu/)
+or any OWL tool:
+
+```bash
+hontology ontology export-owl <id> ontology.ttl
+hontology ontology import-owl ontology.ttl          # refuses to reword existing classes
+```
+
+Each class is an `owl:Class` with its definition and criteria as annotations. A
+single parent is `rdfs:subClassOf`; two parents become `rdfs:subClassOf` an
+`owl:unionOf`, OWL's spelling of either-or.
 
 ---
 
@@ -283,6 +334,18 @@ Fetching is polite by construction: robots.txt honored and cached per host
 requests to one host serialized with a minimum gap while concurrency happens
 across hosts, retries only on transient statuses, and a hard per-run budget.
 
+**Several scrapers can run at once without duplicating work.** Each claims its
+batch with `SELECT … FOR UPDATE SKIP LOCKED`, so no article is fetched twice, and
+holds a host through a Postgres advisory lock while it works on it, so the
+per-host spacing stays what one scraper would keep. That is what lets a scraper
+run ahead of a calendar run while the judge is busy.
+
+**A connection failure is not taken at its word.** A name that does not resolve
+looks the same whether the site is gone or the local network dropped out for a
+moment, so a DNS or connection error leaves the article pending for a later
+batch and counts the failure; only the third is recorded as final. A 404, a 403
+or a timeout is final at once.
+
 `lag_slices` is the number to watch. It is `null` before the first ingest rather
 than `0`, because a fresh install that has never run is idle, not current.
 
@@ -361,6 +424,18 @@ array is visible rather than silently shrinking the denominator. Sampling does
 not apply to batched runs — repeating the call re-rolls every verdict together,
 so the votes are not independent.
 
+**Or top-down through the hierarchy.** `hier_batch_v1` judges an article by
+descending the class hierarchy: every top-level class in one batched call, then,
+for each class answered yes, its children as one call per sibling set. Nothing
+below a no, or below a failed call, is asked, and a class with two parents that
+both said yes is asked once. The wording is `strict_batch_v1`'s, unchanged; only
+the list of classes in each call differs, so a flat and a hierarchical run
+answer the same question per leaf. Retrieval serves only as a gate: an article
+is judged if retrieval selected any leaf for it, and the descent may reach
+leaves retrieval did not pick. Descent state is rebuilt from stored verdicts, so
+an interrupted run resumes without asking anything twice, and each call's
+tokens are split exactly across the classes it answered.
+
 **Document embeddings are cached.** Bodies are embedded once and stored
 content-addressed, so a sweep over selection parameters — which change nothing
 about the text — costs no embedding calls at all. `--refresh-embeddings` forces a
@@ -430,6 +505,25 @@ hontology run calendar <id> run.json calendar.csv --prepare-only
 hontology run calendar <id> run.json calendar.csv --run-id <run> --budget 200
 ```
 
+A run scrapes a window and then judges it, so the scraper idles while the judge
+works. A second process can scrape the later windows in the meantime; the two
+never fetch the same article, and the run waits for any batch the other still
+holds in its window before retrieving it:
+
+```bash
+hontology ingest scrape --calendar calendar.csv --ontology-id <id>   # beside run calendar
+```
+
+The feed itself has gaps: GDELT published nothing from 15 June to 1 July 2025.
+A slice the source never published is terminal, so a window inside such a gap
+would count as ingested with no articles in it, scoring its event as a miss the
+detector never had a chance at. Such a window is set aside instead, recorded on
+the run and never scored.
+
+`--candidates-from <run>` makes a run reuse another's retrieval, window by
+window, so two arms differ only in how they judge; it refuses to start if any
+leaf's wording changed since that run's version.
+
 Scoring reports event recall over the positives, precursor recall, a false-alarm
 rate over the controls, and lead time where a precursor was matched before its
 disruption's day. Every entry is scored through the stages its documents pass,
@@ -468,12 +562,27 @@ hontology labels import-documents <ontology-id> sheet.csv
 hontology eval arms <baseline-run> calendar.csv --arm <run> --manifest sample.json
 ```
 
+In a hierarchy, documents are labelled on leaf classes only; a parent class is
+true exactly when one of its leaves is.
+
+An arm can be scored on the sample before, or instead of, judging every
+calendar window. `run sample` gives the sample's first documents another run's
+retrieval and judges just those, uncapped; rerun with a larger `--first` and the
+same `--run-id` as labelling continues, and only the new documents are judged:
+
+```bash
+hontology run sample <ontology-id> hier.json sample.json --candidates-from <baseline-run> --first 120
+```
+
 `eval arms` puts every arm beside the baseline: calendar results raw and
 verified, article-level precision and recall end to end (a pair never judged
 counts as no) and judge-only, and judging cost. Intervals resample whole
 documents, because one article's labels are correlated and resampling single
 labels would understate them. An arm counts as an improvement only when the
-paired interval on its F1 difference lies above zero.
+paired interval on its F1 difference lies above zero. For a hierarchical arm it
+adds recall at each level given a positive parent, yes answers on parent
+classes where no leaf below is actually true, and how many of its true positives the
+baseline's retrieval had selected at all.
 
 **Funnel before metrics.** `eval funnel` shows attrition stage by stage and needs
 no ground truth at all, which makes it the first thing to read when a run
@@ -598,7 +707,9 @@ A few decisions that are load-bearing and non-obvious:
   are NULL.** Recomputation rebuilds only the former, so manual curation survives.
 - **Scrape failures are cached as rows.** A dead or paywalled URL with no row
   gets re-fetched on every run forever; the row makes a permanent failure cost
-  one request, with an explicit opt-in to retry.
+  one request, with an explicit opt-in to retry. The exception is a connection
+  failure, which a network blip produces just as well as a dead host: it gets
+  three tries in separate batches before it counts.
 - **A model's self-reported confidence is not trusted until it earns it.** The
   queue ranks partly by model uncertainty, so a run that reports 0.5 on
   everything would look maximally uncertain on every pair and flood it. Each
@@ -634,16 +745,33 @@ Deferred deliberately, with the reason.
 - **Locus-scoped tracking, a per-place UI, and a one-command bootstrap.** All
   three assume a country-scoped domain, which cuts against a domain-agnostic
   engine. **Pinned until the domain direction is settled.**
-- **Concept groups have no API or UI.** The service layer supports forking a
-  group and retuning its edge weights, but it is reachable only through import.
+- **Concept groups and class relations have no editor in the UI.** Groups are
+  reachable only through import; the class hierarchy through import or an OWL
+  tool such as Protégé.
 - **No machine pre-labelling pass**, though the schema and the adjudication flow
   were built for one.
 - **Descriptive per-stage drill-down.** The funnel and detection export both work
   with no labels; score distributions and per-stage inspection do not exist yet.
-- **Batched judging is unmeasured.** It has run against the local 9B model only
-  as a smoke test, which confirmed the response parses into one verdict per
-  concept. Its accuracy relative to per-pair judging is untested, and all three
+- **Batched judging's accuracy against per-pair judging is unmeasured.** It is
+  the flat baseline of the hierarchy comparison, chosen for cost; the labelled
+  sample will measure it, but not against per-pair judging. The three
   aggregation rules are covered only by tests with a mocked provider.
+- **Further arms after the hierarchy comparison.** Each is its own pre-stated
+  comparison, on the same labelled sample:
+  - *leaf wording*: moving criteria from the leaves to their parents, which
+    first needs labels tied to a fixed reference definition rather than to the
+    prompt's wording, and runs that carry their own wording;
+  - *ontology-assisted retrieval*: scoring families rather than single leaves,
+    spreading selections across families, and using a class's feed-code links as
+    evidence, starting with retrieval's recall on the labelled sample;
+  - *budgets*: a per-concept judging budget, and fixed budgets for every arm.
+- **US events wait for state-level places.** A US-wide window holds far too many
+  articles to scrape, so US entries are left out of the evaluation calendar.
+- **`precursor_of` drives nothing yet.** Precursors are leaf classes under their
+  family; the relation is stored for when it does.
+- **Forecasting from detections belongs in a separate library.** hontology would
+  provide a point-in-time detections export, each row stamped with when it could
+  first have been known, and stay free of any particular target variable.
 
 ## Roadmap
 
@@ -656,3 +784,8 @@ Deferred deliberately, with the reason.
 - [x] Run configuration, both retrieval sources, judge loop with resume
 - [x] Ground-truth bank, labelling queue, staleness handling
 - [x] Metrics, A/B comparison, consistency checks, regression gate, leaderboard
+- [x] GDELT knowledge graph feed, feed-code filter, near-duplicate grouping
+- [x] Event calendars: window-by-window runs, verified detections, outage-aware scoring
+- [x] Labelled sample with a frozen order, article-level scoring, arms report
+- [x] Class hierarchy, OWL interchange, hierarchical judging
+- [ ] Flat vs hierarchical comparison: first report at 120 labelled documents
