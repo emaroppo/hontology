@@ -50,6 +50,12 @@ log = logging.getLogger(__name__)
 RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
+# A connection failure (DNS or a refused connection) is tried again in later
+# batches, and recorded as a failure only at the last of these attempts.
+CONNECT_ERROR = "ConnectError"
+MAX_CONNECT_FAILURES = 3
+
+
 @dataclass
 class ScrapeStats:
     attempted: int = 0
@@ -59,6 +65,8 @@ class ScrapeStats:
     blocked: int = 0
     # Left pending because the host's crawl delay would have stalled the batch.
     deferred: int = 0
+    # Left pending after a connection failure, to be tried in a later batch.
+    retry_later: int = 0
     methods: dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
     def as_dict(self) -> dict:
@@ -69,6 +77,7 @@ class ScrapeStats:
             "failed": self.failed,
             "blocked_by_robots": self.blocked,
             "deferred": self.deferred,
+            "retry_later": self.retry_later,
             "methods": dict(self.methods),
         }
 
@@ -521,6 +530,17 @@ def scrape_pending(
                 user_agent=settings.scrape_user_agent,
                 timeout=settings.scrape_timeout_s,
             )
+            if error.startswith(CONNECT_ERROR) and (
+                document.connect_failures + 1 < MAX_CONNECT_FAILURES
+            ):
+                # The name did not resolve or the host did not answer. A
+                # network blip looks exactly like a dead host, so the document
+                # stays pending for a later batch instead of failing for good.
+                document.connect_failures += 1
+                document.error = error[:1000]
+                with stats_lock:
+                    stats.retry_later += 1
+                continue
             result = (
                 extract.extract(
                     document.url,

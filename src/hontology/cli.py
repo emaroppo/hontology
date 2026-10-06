@@ -426,12 +426,21 @@ def ingest_scrape(
         if not result["attempted"]:
             break
         budget -= result["attempted"]
-        for key in ("attempted", "ok", "junk", "failed", "blocked_by_robots", "deferred"):
+        for key in (
+            "attempted",
+            "ok",
+            "junk",
+            "failed",
+            "blocked_by_robots",
+            "deferred",
+            "retry_later",
+        ):
             totals[key] = totals.get(key, 0) + result[key]
         typer.echo(
             f"attempted {totals['attempted']}: {totals['ok']} ok, {totals['junk']} junk, "
             f"{totals['failed']} failed, {totals['blocked_by_robots']} blocked by robots, "
-            f"{totals['deferred']} deferred by crawl delay"
+            f"{totals['deferred']} deferred by crawl delay, "
+            f"{totals['retry_later']} left for a later batch after a connection failure"
         )
         # A retry pass re-attempts the same failures every batch; one is enough.
         if retry_failed:

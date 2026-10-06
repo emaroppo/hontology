@@ -106,6 +106,9 @@ class Document(Base, TimestampMixin):
 
     fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     http_status: Mapped[int | None] = mapped_column(Integer)
+    # Connection failures so far. They leave the document pending, since the
+    # network may be at fault rather than the host, until the limit is reached.
+    connect_failures: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     extractor: Mapped[str | None] = mapped_column(String)
     # Recorded so a library upgrade that changes extraction is attributable
     # rather than showing up as an unexplained metric shift.
