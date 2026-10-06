@@ -399,3 +399,31 @@ class TestEvaluate:
         with session_scope() as session:
             reviews = list(session.scalars(select(CalendarReview)))
         assert [(r.confirmed, r.note) for r in reviews] == [(True, "second look")]
+
+    def test_a_hierarchical_run_counts_a_leaf_it_descended_to(self, world):
+        """The hierarchical arm reaches a concept by descending, not because
+        retrieval selected it; scored as flat, its match would be invisible."""
+        run_id, _ = world
+        with session_scope() as session:
+            storm = session.scalar(
+                select(Verdict.concept_id).where(
+                    Verdict.matched.is_(True),
+                    Verdict.run_id == run_id,
+                    Verdict.document_id
+                    == session.scalar(
+                        select(Document.id).where(Document.url == "https://cal.test/seen")
+                    ),
+                )
+            )
+            for candidate in session.scalars(
+                select(Candidate).where(
+                    Candidate.run_id == run_id, Candidate.concept_id == storm
+                )
+            ):
+                session.delete(candidate)
+        flat = {r["id"]: r for r in self._result(world)["entries"]}
+        assert flat["storm"]["lost_at"] == "retrieved"
+
+        self._set_run(run_id, config={"judge": {"prompt_id": "hier_batch_v1"}})
+        hier = {r["id"]: r for r in self._result(world)["entries"]}
+        assert hier["storm"]["detected"] is True

@@ -48,6 +48,7 @@ from hontology.db.models import (
 from hontology.evalkit.metrics import wilson
 from hontology.ingest import filter as ingest_filter
 from hontology.ingest.dedup import representative_of
+from hontology.judge import prompts
 
 POSITIVE = "positive"
 PRECURSOR = "precursor"
@@ -398,6 +399,11 @@ def evaluate(
     passed = set(ingest_filter.matching_documents(session, run.ontology_id))
     has_filter = bool(passed)
     processed = processed_ids(run, entries)
+    hierarchical = (
+        prompts.get(run.config["judge"]["prompt_id"]).mode == prompts.HIERARCHICAL
+        if run.config.get("judge")
+        else False
+    )
     reviews = {
         (review.entry_id, review.document_url): review.confirmed
         for review in session.scalars(
@@ -428,17 +434,19 @@ def evaluate(
         # A near-duplicate is never retrieved or judged itself; it reads its
         # representative's results, wherever that representative was seen.
         reads = representative_of(session, sorted(fetched)) if fetched else {}
+        # A flat run judges a concept only where retrieval selected it. A
+        # hierarchical run judges every document retrieval let through, and
+        # reaches the concept by descending, so there "retrieved" means any
+        # selected leaf at all.
+        retrieval_gate = [
+            Candidate.run_id == run_id,
+            Candidate.selected.is_(True),
+            Candidate.document_id.in_(set(reads.values())),
+        ]
+        if not hierarchical:
+            retrieval_gate.append(Candidate.concept_id == concept_id)
         retrieved_reps = (
-            set(
-                session.scalars(
-                    select(Candidate.document_id).where(
-                        Candidate.run_id == run_id,
-                        Candidate.concept_id == concept_id,
-                        Candidate.selected.is_(True),
-                        Candidate.document_id.in_(set(reads.values())),
-                    )
-                )
-            )
+            set(session.scalars(select(Candidate.document_id).where(*retrieval_gate)))
             if reads
             else set()
         )

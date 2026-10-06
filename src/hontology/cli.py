@@ -670,6 +670,11 @@ def run_calendar(
         help="Scrape, deduplicate and retrieve, but judge nothing and mark nothing "
         "finished, to see each window's judging volume first.",
     ),
+    candidates_from: int | None = typer.Option(
+        None,
+        help="Reuse this run's retrieval: judge exactly its documents in each window, "
+        "once it has finished that window. For comparing judging arms.",
+    ),
 ) -> None:
     """Run a calendar window by window, as soon as each window's feed is ingested.
 
@@ -700,8 +705,14 @@ def run_calendar(
                 "calendar": str(calendar_path),
                 "window_days": [before, after],
                 "budget_per_window": budget,
+                "candidates_from": candidates_from,
             }
         }
+        if candidates_from is not None:
+            # Same leaves, or the arms would be answering different questions.
+            calendar_run.check_same_leaves(
+                session, _load_run(session, candidates_from), run.ontology_id
+            )
         run_id = run.id
         # A prepare-only pass tracks its own progress, so a later judging pass
         # still visits every window.
@@ -729,6 +740,12 @@ def run_calendar(
                         ready, _ = calendar_run.window_status(
                             session, entry, places, before=before, after=after
                         )
+                if ready and candidates_from is not None:
+                    # Reusing another run's retrieval: wait until it has
+                    # finished this window, so the documents are all there.
+                    with session_scope() as session:
+                        source = _load_run(session, candidates_from)
+                        ready = entry.id in (source.manifest or {}).get("calendar_done", [])
                 if not ready:
                     continue
                 with session_scope() as session:
@@ -742,6 +759,7 @@ def run_calendar(
                         after=after,
                         budget=budget,
                         judge=not prepare_only,
+                        candidates_from=candidates_from,
                     )
                     finished.add(entry.id)
                     run.manifest = (run.manifest or {}) | {progress_key: sorted(finished)}
@@ -884,11 +902,16 @@ def labels_sample_sheet(
                 select(Document).where(Document.id.in_([r["document_id"] for r in chunk]))
             )
         }
-        concepts = list(
-            session.scalars(
+        from hontology.ontology import hierarchy
+
+        leaf_ids = hierarchy.leaves(session, ontology_id)
+        concepts = [
+            c
+            for c in session.scalars(
                 select(Concept).where(Concept.ontology_id == ontology_id).order_by(Concept.name)
             )
-        )
+            if c.id in leaf_ids  # people label leaves; internal classes are derived
+        ]
         rows = []
         for position, row in enumerate(chunk, start=start):
             document = documents[row["document_id"]]

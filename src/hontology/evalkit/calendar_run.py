@@ -18,17 +18,20 @@ document that was never judged.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from hontology.db.models import Candidate, Document, FeedSlice, Run, Verdict
+from hontology.db.models import Candidate, Concept, Document, FeedSlice, Run, Verdict
 from hontology.evalkit.calendar import Entry, window_documents
 from hontology.ingest import dedup, scrape, service
 from hontology.ingest import filter as ingest_filter
+from hontology.ingest.dedup import representative_of
 from hontology.judge import run as judge_module
+from hontology.ontology import hierarchy, snapshots
 from hontology.retrieve import candidates as candidates_module
 
 log = logging.getLogger(__name__)
@@ -79,8 +82,12 @@ def process_entry(
     after: int,
     budget: int | None,
     judge: bool = True,
+    candidates_from: int | None = None,
 ) -> dict:
     """Scrape, deduplicate, retrieve and judge one ready window. Idempotent.
+
+    With *candidates_from*, the window reuses that run's retrieval instead of
+    building its own (see `copy_window_candidates`).
 
     With *judge* off it stops after retrieval, so the volume a window would
     send to the judge can be seen before any judging is paid for.
@@ -94,69 +101,81 @@ def process_entry(
             after=after,
         )
     )
-    # Filter matches are computed for this window now, not taken from a set
-    # computed earlier: a window that finished ingesting after that set was
-    # built would otherwise be judged against articles that did not exist yet,
-    # find nothing in scope, and be marked done.
-    ontology_id = run.ontology_id
-    has_links = bool(
-        ingest_filter.concept_code_map(session, ontology_id)
-        or ingest_filter.concept_theme_map(session, ontology_id)
-    )
-    if has_links:
-        matches = ingest_filter.matching_documents(
-            session, ontology_id, document_ids=sorted(window)
-        )
-        allowed = window & set(matches)
-    else:
-        allowed = window  # no links at all: the filter cannot distinguish anything
-
-    fetched_now = 0
-    deferred = 0
-    while True:
-        result = scrape.scrape_pending(
-            session, limit=SCRAPE_BATCH, document_ids=sorted(allowed)
-        )
+    if candidates_from is not None:
+        # Another run's retrieval, reused: judge exactly the documents it
+        # judged in this window, with no scraping, deduplication or retrieval
+        # of our own, so the two runs differ only in how they judge.
+        representatives = copy_window_candidates(session, candidates_from, run.id, window)
         session.commit()
-        deferred = result.get("deferred", 0)
-        if not result["attempted"]:
-            break
-        fetched_now += result["attempted"]
+        allowed = window
+        fetched_now = deferred = 0
+        dedup_result = {"newly_marked": 0}
+        new: list[Document] = []
+        retrieval = {"copied_from_run": candidates_from, "documents": len(representatives)}
+    else:
+        # Filter matches are computed for this window now, not taken from a set
+        # computed earlier: a window that finished ingesting after that set was
+        # built would otherwise be judged against articles that did not exist yet,
+        # find nothing in scope, and be marked done.
+        ontology_id = run.ontology_id
+        has_links = bool(
+            ingest_filter.concept_code_map(session, ontology_id)
+            or ingest_filter.concept_theme_map(session, ontology_id)
+        )
+        if has_links:
+            matches = ingest_filter.matching_documents(
+                session, ontology_id, document_ids=sorted(window)
+            )
+            allowed = window & set(matches)
+        else:
+            allowed = window  # no links at all: the filter cannot distinguish anything
 
-    dedup_result = dedup.deduplicate(session, sorted(allowed))
-    session.commit()
+        fetched_now = 0
+        deferred = 0
+        while True:
+            result = scrape.scrape_pending(
+                session, limit=SCRAPE_BATCH, document_ids=sorted(allowed)
+            )
+            session.commit()
+            deferred = result.get("deferred", 0)
+            if not result["attempted"]:
+                break
+            fetched_now += result["attempted"]
 
-    representatives = set(
-        session.scalars(
-            select(Document.id).where(
-                Document.id.in_(allowed),
-                Document.body_path.is_not(None),
-                Document.is_junk.is_(False),
-                Document.duplicate_of.is_(None),
+        dedup_result = dedup.deduplicate(session, sorted(allowed))
+        session.commit()
+
+        representatives = set(
+            session.scalars(
+                select(Document.id).where(
+                    Document.id.in_(allowed),
+                    Document.body_path.is_not(None),
+                    Document.is_junk.is_(False),
+                    Document.duplicate_of.is_(None),
+                )
             )
         )
-    )
-    already = set(
-        session.scalars(
-            select(Candidate.document_id)
-            .where(Candidate.run_id == run.id, Candidate.document_id.in_(representatives))
-            .distinct()
+        already = set(
+            session.scalars(
+                select(Candidate.document_id)
+                .where(Candidate.run_id == run.id, Candidate.document_id.in_(representatives))
+                .distinct()
+            )
         )
-    )
-    new = list(
-        session.scalars(select(Document).where(Document.id.in_(representatives - already)))
-    )
-    retrieval = None
-    if new:
-        retrieval = candidates_module.build_semantic(
-            session,
-            run.id,
-            ontology_id=run.ontology_id,
-            documents=new,
-            config=run.config["candidates"],
-            embed_body_limit=run.config["common"]["embed_body_limit"],
-        ).as_dict()
-        session.commit()
+        new = list(
+            session.scalars(select(Document).where(Document.id.in_(representatives - already)))
+        )
+        retrieval = None
+        if new:
+            retrieval = candidates_module.build_semantic(
+                session,
+                run.id,
+                ontology_id=run.ontology_id,
+                documents=new,
+                config=run.config["candidates"],
+                embed_body_limit=run.config["common"]["embed_body_limit"],
+            ).as_dict()
+            session.commit()
 
     remaining = None
     if budget is not None:
@@ -208,3 +227,80 @@ def process_entry(
     }
     log.info("calendar entry %s: %s", entry.id, summary)
     return summary
+
+
+def copy_window_candidates(
+    session: Session, source_run_id: int, target_run_id: int, window: set[int]
+) -> set[int]:
+    """Copy *source*'s candidates for the window's representatives into *target*.
+
+    Returns the representatives *source* retrieved for. Documents already
+    copied are left alone, so this is safe to repeat.
+    """
+    representatives = (
+        set(representative_of(session, sorted(window)).values()) if window else set()
+    )
+    if not representatives:
+        return set()
+    retrieved = set(
+        session.scalars(
+            select(Candidate.document_id)
+            .where(
+                Candidate.run_id == source_run_id,
+                Candidate.document_id.in_(representatives),
+            )
+            .distinct()
+        )
+    )
+    present = set(
+        session.scalars(
+            select(Candidate.document_id)
+            .where(Candidate.run_id == target_run_id, Candidate.document_id.in_(retrieved))
+            .distinct()
+        )
+    )
+    for row in session.scalars(
+        select(Candidate).where(
+            Candidate.run_id == source_run_id, Candidate.document_id.in_(retrieved - present)
+        )
+    ):
+        session.add(
+            Candidate(
+                run_id=target_run_id,
+                document_id=row.document_id,
+                concept_id=row.concept_id,
+                source=row.source,
+                score=row.score,
+                rank=row.rank,
+                selected=row.selected,
+                matched_code=row.matched_code,
+                matched_level=row.matched_level,
+            )
+        )
+    session.flush()
+    return retrieved
+
+
+def check_same_leaves(session: Session, source_run: Run, ontology_id: int) -> None:
+    """Refuse to reuse a run's retrieval if any leaf has been reworded since.
+
+    The source's retrieval and the leaf labels both answered the leaves'
+    wording at the source's version; a reworded leaf would make the arms
+    answer different questions.
+    """
+    snapshot = snapshots.get_version(session, ontology_id, source_run.ontology_version)
+    if snapshot is None:
+        raise ValueError(
+            f"run {source_run.id}'s version {source_run.ontology_version} is unknown"
+        )
+    then = {row["id"]: row for row in json.loads(snapshot.payload)}
+    now = {
+        row["id"]: row
+        for row in snapshots.normalize_set(
+            list(session.scalars(select(Concept).where(Concept.ontology_id == ontology_id)))
+        )
+    }
+    leaves = hierarchy.leaves(session, ontology_id)
+    changed = sorted(cid for cid in leaves if then.get(cid) != now.get(cid))
+    if changed:
+        raise ValueError(f"leaves differ from run {source_run.id}'s version: {changed}")

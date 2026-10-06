@@ -23,6 +23,9 @@ DEFAULT_PROMPT_ID = "strict_v1"
 
 PER_PAIR = "per-pair"
 PER_DOCUMENT = "per-document"
+# Top-down over a class hierarchy: one batched call per sibling set, descending
+# only into the children of classes judged positive.
+HIERARCHICAL = "hierarchical"
 
 RESPONSE_SHAPE = (
     "Output format, a single JSON object:\n"
@@ -51,12 +54,12 @@ class PromptTemplate:
     build_batch: Callable[[Document, list[Concept], str, int], str] | None = None
 
     def __post_init__(self) -> None:
-        if self.mode == PER_DOCUMENT and self.build_batch is None:
+        if self.mode in (PER_DOCUMENT, HIERARCHICAL) and self.build_batch is None:
             raise ValueError(
-                f"prompt {self.prompt_id!r} declares mode {PER_DOCUMENT!r} but "
+                f"prompt {self.prompt_id!r} declares mode {self.mode!r} but "
                 "supplies no build_batch"
             )
-        if self.mode not in (PER_PAIR, PER_DOCUMENT):
+        if self.mode not in (PER_PAIR, PER_DOCUMENT, HIERARCHICAL):
             raise ValueError(f"prompt {self.prompt_id!r} has unknown mode {self.mode!r}")
 
 
@@ -260,6 +263,21 @@ register(
     PromptTemplate(
         prompt_id="strict_batch_v1",
         mode=PER_DOCUMENT,
+        system=_STRICT_SYSTEM,
+        build_pair=_build_strict,
+        build_batch=_build_batch_strict,
+    )
+)
+
+
+# The hierarchical arm is asked exactly as the batched baseline is: the same
+# system prompt, the same builder, the same response shape. Only which classes
+# go into each call differs, so a difference between the arms is the hierarchy's
+# and not the wording's.
+register(
+    PromptTemplate(
+        prompt_id="hier_batch_v1",
+        mode=HIERARCHICAL,
         system=_STRICT_SYSTEM,
         build_pair=_build_strict,
         build_batch=_build_batch_strict,

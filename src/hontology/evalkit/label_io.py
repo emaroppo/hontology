@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 
 from hontology.db.models import Concept, Document, Locus, Observation, PairLabel
 from hontology.evalkit import labels as label_service
+from hontology.ontology import hierarchy
 
 LABEL_COLUMNS = [
     "document_url",
@@ -349,7 +350,7 @@ def import_document_labels(
 
     One row per document. ``concepts`` lists the names that apply separated by
     ``;``; the word ``none`` means none does; blank means not labelled yet and the
-    row is skipped. Every concept in *concept_names* (default: the ontology's)
+    row is skipped. Every concept in *concept_names* (default: the ontology's leaves)
     that the row does not list is written as a negative, which is what makes
     recall measurable: a pair the system never surfaced still has a label.
 
@@ -361,7 +362,14 @@ def import_document_labels(
         c.name: c.id
         for c in session.scalars(select(Concept).where(Concept.ontology_id == ontology_id))
     }
-    names = concept_names if concept_names is not None else set(known)
+    # Leaves only: an internal class's answer is derived from its leaves, so a
+    # person never labels one, and naming one is an error.
+    leaf_ids = hierarchy.leaves(session, ontology_id)
+    names = (
+        concept_names
+        if concept_names is not None
+        else {name for name, cid in known.items() if cid in leaf_ids}
+    )
     documents = positives = negatives = skipped_blank = 0
     errors: list[str] = []
 
