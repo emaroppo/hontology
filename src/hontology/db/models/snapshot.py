@@ -41,5 +41,9 @@ class OntologySnapshot(Base, TimestampMixin):
     n_concepts: Mapped[int] = mapped_column(Integer, default=0)
     # The full concept set as JSON, so a replay never needs the live tables.
     payload: Mapped[str] = mapped_column(Text, nullable=False)
+    # The subclass_of edges as JSON [[child id, parent id], ...]; NULL for a
+    # flat ontology. Kept apart from `payload` so code reading the concept rows
+    # is unaffected, and hashed only when present.
+    edges: Mapped[str | None] = mapped_column(Text)
 
     ontology: Mapped[Ontology] = relationship()

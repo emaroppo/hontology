@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from hontology.config import get_settings
 from hontology.db.models import Candidate, Document, Embedding
+from hontology.ontology import hierarchy
 from hontology.retrieve import embed
 
 log = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ _NEAREST_CONCEPTS = text(
     FROM embeddings c, doc
     WHERE c.model_id = :model_id
       AND c.object_type = 'concept'
+      AND c.object_id = ANY(:concept_ids)
       AND c.text_key = ANY(:text_keys)
     ORDER BY c.embedding <=> doc.embedding
     LIMIT :pool_size
@@ -141,9 +143,18 @@ def build_semantic(
     model_id, concept_keys = embed.embed_concepts(
         session, provider, model, ontology_id, fields=config["concept_fields"]
     )
+    # Leaves only: internal classes of a hierarchy are never retrieved, so a flat
+    # run is unchanged when an ontology gains structure. In a flat ontology every
+    # concept is a leaf.
+    leaf_ids = hierarchy.leaves(session, ontology_id)
+    concept_keys = {cid: key for cid, key in concept_keys.items() if cid in leaf_ids}
     if not concept_keys:
         return CandidateStats()
     text_keys = list(set(concept_keys.values()))
+    # Matched by concept id as well as text key: a text key alone is shared by
+    # any concept with identical wording, including deleted ones and other
+    # ontologies' copies.
+    concept_ids = sorted(concept_keys)
 
     stats = CandidateStats()
 
@@ -182,6 +193,7 @@ def build_semantic(
                     "document_id": document.id,
                     "document_key": document_keys[document.id],
                     "text_keys": text_keys,
+                    "concept_ids": concept_ids,
                     "pool_size": config["pool_size"],
                 },
             ).all()

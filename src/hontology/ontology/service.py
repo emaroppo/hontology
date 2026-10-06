@@ -23,10 +23,15 @@ from hontology.db.models import (
     Concept,
     ConceptGroup,
     ConceptGroupMember,
+    ConceptRelation,
     Ontology,
 )
+from hontology.ontology import hierarchy
 
-EXPORT_VERSION = 1
+EXPORT_VERSION = 2
+# Version 1 carried no relations; it still imports, leaving relations untouched.
+SUPPORTED_EXPORT_VERSIONS = (1, 2)
+TEXT_FIELDS = ("definition", "inclusion_criteria", "exclusion_criteria")
 
 
 class NotFound(LookupError):
@@ -277,17 +282,37 @@ def export_ontology(session: Session, ontology_id: int) -> dict[str, Any]:
             }
             for g in groups
         ],
+        "relations": _export_relations(session, ontology_id),
     }
 
 
-def import_ontology(session: Session, payload: dict[str, Any]) -> Ontology:
+def _export_relations(session: Session, ontology_id: int) -> list[list[str]]:
+    names = {c.id: c.name for c in list_concepts(session, ontology_id)}
+    return sorted(
+        [names[r.subject_id], r.predicate, names[r.object_id]]
+        for r in session.scalars(
+            select(ConceptRelation).where(ConceptRelation.ontology_id == ontology_id)
+        )
+    )
+
+
+def import_ontology(
+    session: Session, payload: dict[str, Any], *, allow_text_change: bool = True
+) -> Ontology:
     """Create or merge an ontology from an exported dict.
 
     Upserts by ``slug`` for the ontology and by concept ``name`` within it, so
     re-importing an edited export updates in place instead of duplicating.
+
+    With *allow_text_change* off, an import may add classes and relations but
+    may not reword an existing class: adding structure to an ontology must never
+    silently change the questions its labels answered.
+
+    A payload carrying ``relations`` replaces the ontology's relations; one
+    without them (every version 1 export) leaves them as they are.
     """
     version = payload.get("export_version", EXPORT_VERSION)
-    if version != EXPORT_VERSION:
+    if version not in SUPPORTED_EXPORT_VERSIONS:
         raise Conflict(f"unsupported export_version {version!r}")
 
     slug = str(payload["slug"]).strip()
@@ -314,6 +339,17 @@ def import_ontology(session: Session, payload: dict[str, Any]) -> Ontology:
         }
         if name in by_name:
             concept = by_name[name]
+            if not allow_text_change:
+                changed = [
+                    key
+                    for key in TEXT_FIELDS
+                    if (getattr(concept, key) or "").strip() != (fields[key] or "").strip()
+                ]
+                if changed:
+                    raise Conflict(
+                        f"import would reword {name!r} ({', '.join(changed)}); "
+                        "pass allow_text_change to permit it"
+                    )
             for key, value in fields.items():
                 setattr(concept, key, value)
             concept.category_id = (
@@ -332,7 +368,22 @@ def import_ontology(session: Session, payload: dict[str, Any]) -> Ontology:
 
     session.flush()
     _import_groups(session, ontology, payload.get("groups", []))
+    if "relations" in payload:
+        _import_relations(session, ontology, payload["relations"])
     return ontology
+
+
+def _import_relations(session: Session, ontology: Ontology, rows: list[list[str]]) -> None:
+    ids = {c.name: c.id for c in list_concepts(session, ontology.id)}
+    unknown = sorted({name for row in rows for name in (row[0], row[2]) if name not in ids})
+    if unknown:
+        raise Conflict(f"relations name unknown classes: {', '.join(unknown)}")
+    try:
+        hierarchy.set_relations(
+            session, ontology.id, [(ids[s], str(p), ids[o]) for s, p, o in rows]
+        )
+    except hierarchy.HierarchyError as exc:
+        raise Conflict(str(exc)) from exc
 
 
 def _import_groups(session: Session, ontology: Ontology, rows: list[dict[str, Any]]) -> None:

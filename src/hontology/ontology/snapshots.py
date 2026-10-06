@@ -25,6 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from hontology.db.models import Concept, OntologySnapshot
+from hontology.ontology import hierarchy
 
 # The fields whose text reaches the embedding model or the judge prompt. These,
 # and only these, define a version.
@@ -61,25 +62,31 @@ def normalize_set(concepts: Sequence[Concept | dict]) -> list[dict[str, Any]]:
     return sorted((_normalize(c) for c in concepts), key=lambda r: r["id"])
 
 
-def content_hash(concepts: Sequence[Concept | dict]) -> str:
-    """Stable hash over the concept set's wording.
+def content_hash(
+    concepts: Sequence[Concept | dict], edges: Sequence[Sequence[int]] | None = None
+) -> str:
+    """Stable hash over the concept set's wording, and its hierarchy if it has one.
 
     Order-independent (rows are sorted by id) and whitespace-insensitive at the
     edges, so cosmetic edits do not mint versions.
+
+    ``subclass_of`` edges are included only when there are any. They decide
+    which questions a hierarchical judge asks, so moving a class is a new
+    version; but a flat ontology hashes exactly as it always did, so adding the
+    capability mints no versions for anyone who does not use it.
     """
-    canonical = json.dumps(
-        normalize_set(concepts),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    rows: Any = normalize_set(concepts)
+    if edges:
+        rows = {"concepts": rows, "subclass_of": sorted([int(c), int(p)] for c, p in edges)}
+    canonical = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def resolve_current(session: Session, ontology_id: int) -> SnapshotRef:
     """Resolve the live concept set to a snapshot, minting one only if changed."""
     concepts = list(session.scalars(select(Concept).where(Concept.ontology_id == ontology_id)))
-    digest = content_hash(concepts)
+    structure = hierarchy.edges(session, ontology_id)
+    digest = content_hash(concepts, structure)
 
     existing = session.scalar(
         select(OntologySnapshot).where(
@@ -110,6 +117,7 @@ def resolve_current(session: Session, ontology_id: int) -> SnapshotRef:
         content_hash=digest,
         n_concepts=len(concepts),
         payload=json.dumps(normalize_set(concepts), ensure_ascii=False),
+        edges=json.dumps([list(edge) for edge in structure]) if structure else None,
     )
     session.add(snapshot)
     session.flush()

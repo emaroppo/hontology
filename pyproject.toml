@@ -30,6 +30,7 @@ dependencies = [
     # CLI
     "typer>=0.15",
     "numpy>=2.0",
+    "rdflib>=7.0",
 ]
 
 [project.optional-dependencies]

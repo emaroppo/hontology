@@ -94,6 +94,37 @@ def ontology_export(ontology_id: int, out: Path | None = None) -> None:
         typer.echo(f"wrote {out}")
 
 
+@ontology_app.command("export-owl")
+def ontology_export_owl(ontology_id: int, out: Path) -> None:
+    """Write the ontology as OWL (Turtle), for Protégé or any OWL tool."""
+    from hontology.ontology import owl
+
+    with session_scope() as session:
+        out.write_text(owl.export_turtle(session, ontology_id), encoding="utf-8")
+    typer.echo(f"wrote {out}")
+
+
+@ontology_app.command("import-owl")
+def ontology_import_owl(
+    path: Path,
+    allow_text_change: bool = typer.Option(
+        False, help="Permit rewording existing classes; off so structure cannot alter them."
+    ),
+) -> None:
+    """Create or merge an ontology from OWL (Turtle), relations included."""
+    from hontology.ontology import owl, snapshots
+
+    with session_scope() as session:
+        ontology = owl.import_turtle(
+            session, path.read_text(encoding="utf-8"), allow_text_change=allow_text_change
+        )
+        ref = snapshots.resolve_current(session, ontology.id)
+    typer.echo(
+        f"imported {ontology.slug!r} (id {ontology.id}) as {ref.version}"
+        f"{' (new version)' if ref.created else ''}"
+    )
+
+
 @ontology_app.command("links-import")
 def ontology_links_import(ontology_id: int, path: Path) -> None:
     """Apply hand-curated concept↔code links from a CSV (concept,system,code)."""

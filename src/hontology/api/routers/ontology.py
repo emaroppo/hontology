@@ -121,7 +121,11 @@ def export_ontology(ontology_id: int, db: Session = Depends(get_db)):
 def import_ontology(payload: OntologyImport, db: Session = Depends(get_db)):
     """Create or merge. Re-importing an edited export updates in place."""
     try:
-        return service.import_ontology(db, payload.model_dump())
+        data = payload.model_dump()
+        if data.get("relations") is None:
+            # Absent, not empty: leave the ontology's relations as they are.
+            data.pop("relations", None)
+        return service.import_ontology(db, data)
     except (service.Conflict, service.NotFound) as exc:
         raise _handle(exc) from exc
 

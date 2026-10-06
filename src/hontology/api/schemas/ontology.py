@@ -74,6 +74,9 @@ class OntologyImport(BaseModel):
     description: str | None = None
     concepts: list[ConceptIn] = Field(default_factory=list)
     groups: list[GroupIn] = Field(default_factory=list)
+    # [subject, predicate, object] by class name. Absent (None) leaves the
+    # ontology's relations untouched; a list, even empty, replaces them.
+    relations: list[list[str]] | None = None
 
 
 class SnapshotOut(BaseModel):

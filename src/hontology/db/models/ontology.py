@@ -16,7 +16,7 @@ domain is baked into the schema. Three structural decisions are load-bearing:
 
 from __future__ import annotations
 
-from sqlalchemy import Float, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, Float, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from hontology.db.base import Base, OwnedMixin, TimestampMixin
@@ -96,6 +96,48 @@ class Concept(Base, TimestampMixin):
 
     ontology: Mapped[Ontology] = relationship(back_populates="concepts")
     category: Mapped[Category | None] = relationship(back_populates="concepts")
+
+
+# Typed relations between concepts. `subclass_of` makes the ontology a
+# hierarchy, and is what the hierarchical judge walks; `precursor_of` records
+# that one class can lead to another and drives nothing yet.
+SUBCLASS_OF = "subclass_of"
+PRECURSOR_OF = "precursor_of"
+PREDICATES = (SUBCLASS_OF, PRECURSOR_OF)
+
+
+class ConceptRelation(Base, TimestampMixin):
+    """A typed edge between two concepts of the same ontology.
+
+    ``subclass_of`` reads "every subject is an object" and may give a concept
+    several parents. A second parent means *either*, not *both*: an import ban
+    can be adopted as trade policy or as part of a sanctions package, so it sits
+    under both without being a sanction every time. A concept with no
+    ``subclass_of`` children is a leaf; in a flat ontology every concept is.
+    """
+
+    __tablename__ = "concept_relations"
+    __table_args__ = (
+        UniqueConstraint("subject_id", "predicate", "object_id"),
+        CheckConstraint(
+            "predicate IN ('subclass_of', 'precursor_of')",
+            name="ck_concept_relations_predicate",
+        ),
+        CheckConstraint("subject_id <> object_id", name="ck_concept_relations_not_self"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ontology_id: Mapped[int] = mapped_column(
+        ForeignKey("ontologies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    subject_id: Mapped[int] = mapped_column(
+        ForeignKey("concepts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    predicate: Mapped[str] = mapped_column(String, nullable=False)
+    object_id: Mapped[int] = mapped_column(
+        ForeignKey("concepts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    note: Mapped[str | None] = mapped_column(Text)
 
 
 class ConceptGroup(Base, TimestampMixin):
