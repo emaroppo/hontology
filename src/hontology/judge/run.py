@@ -422,6 +422,16 @@ def liveness(session: Session, run_id: int) -> dict:
     }
 
 
+def _share(total: int | None, parts: int, position: int) -> int:
+    """One pair's share of a call's tokens; the first pair also takes the remainder.
+
+    Splitting with plain integer division drops the remainder on every call, so
+    a run's recorded tokens would fall short of what it actually spent.
+    """
+    whole, remainder = divmod(total or 0, parts)
+    return whole + (remainder if position == 0 else 0)
+
+
 def _judge_batched(
     session: Session,
     run_id: int,
@@ -532,7 +542,7 @@ def _judge_batched(
             session.commit()
             continue
 
-        for concept in concepts:
+        for position, concept in enumerate(concepts):
             result = parsed[concept.id]
             if result.get("omitted"):
                 omitted_total += 1
@@ -549,8 +559,8 @@ def _judge_batched(
                     # One call served the whole group, so attributing its full
                     # cost to each pair would multiply the real cost.
                     latency_s=completion.latency_s / len(concepts),
-                    input_tokens=(completion.input_tokens or 0) // len(concepts),
-                    output_tokens=(completion.output_tokens or 0) // len(concepts),
+                    input_tokens=_share(completion.input_tokens, len(concepts), position),
+                    output_tokens=_share(completion.output_tokens, len(concepts), position),
                     **common,
                 )
             )

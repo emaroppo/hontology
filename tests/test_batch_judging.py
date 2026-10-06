@@ -449,8 +449,8 @@ class TestCostRecorded:
             ).all()
         assert rows and all(row == (100, 20) for row in rows)
 
-    def test_a_batched_call_splits_its_tokens(self, batchable_run, monkeypatch):
-        """One call for three concepts must not be recorded as three calls' worth."""
+    def test_a_batched_call_splits_its_tokens_exactly(self, batchable_run, monkeypatch):
+        """One call for three concepts is recorded as exactly one call's worth."""
         response = json.dumps(
             {
                 "verdicts": [
@@ -469,4 +469,5 @@ class TestCostRecorded:
                     Verdict.run_id == batchable_run["run"]
                 )
             )
-        assert total == 99  # 100 split three ways, rounded down per pair
+        # 100 split three ways: 34 + 33 + 33, so nothing is lost to rounding.
+        assert total == 100
