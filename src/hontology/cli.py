@@ -718,13 +718,18 @@ def run_calendar(
         # still visits every window.
         progress_key = "calendar_prepared" if prepare_only else "calendar_done"
         finished = set((run.manifest or {}).get(progress_key, []))
+        # Windows the source published nothing for: set aside, never scored.
+        unobservable = set((run.manifest or {}).get("calendar_unobservable", []))
     typer.echo(f"run {run_id}: {len(finished)}/{len(entries)} entries already done")
+    unobservable &= {e.id for e in entries}
+    if unobservable:
+        typer.echo(f"  set aside, no source data: {', '.join(sorted(unobservable))}")
 
     try:
-        while len(finished) < len(entries):
+        while len(finished | unobservable) < len(entries):
             progressed = False
             for entry in entries:
-                if entry.id in finished:
+                if entry.id in finished or entry.id in unobservable:
                     continue
                 places = [loci[c] for c in entry.countries]
                 with session_scope() as session:
@@ -740,6 +745,23 @@ def run_calendar(
                         ready, _ = calendar_run.window_status(
                             session, entry, places, before=before, after=after
                         )
+                if ready:
+                    with session_scope() as session:
+                        if calendar_run.window_unobservable(
+                            session, entry, places, before=before, after=after
+                        ):
+                            unobservable.add(entry.id)
+                            run = _load_run(session, run_id)
+                            stored = set((run.manifest or {}).get("calendar_unobservable", []))
+                            run.manifest = (run.manifest or {}) | {
+                                "calendar_unobservable": sorted(stored | {entry.id})
+                            }
+                            typer.echo(
+                                f"[set aside] {entry.id}: the source published nothing "
+                                "for this window; not scored"
+                            )
+                            progressed = True
+                            continue
                 if ready and candidates_from is not None:
                     # Reusing another run's retrieval: wait until it has
                     # finished this window, so the documents are all there.
@@ -776,7 +798,7 @@ def run_calendar(
                     f"{scope_note}, {unique_note}, {judge_note}"
                 )
                 progressed = True
-            if not progressed and len(finished) < len(entries):
+            if not progressed and len(finished | unobservable) < len(entries):
                 time.sleep(poll)
     except BaseException as exc:
         with session_scope() as session:

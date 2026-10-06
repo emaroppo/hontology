@@ -72,6 +72,31 @@ def window_status(
     return complete, failed
 
 
+def window_unobservable(
+    session: Session, entry: Entry, places: list[int], *, before: int, after: int
+) -> bool:
+    """Whether the source published nothing for the window, in either feed.
+
+    A slice the source never published is marked missing, which is terminal, so
+    a window inside an outage counts as ingested with no articles in it. Scored,
+    its event would be a miss the detector never had a chance at, and a control
+    would pass for the same reason; such a window is set aside instead.
+    """
+    start, end = entry.window(before, after)
+    for feed in (service.FEED, service.FEED_GKG):
+        for status, scope in session.execute(
+            select(FeedSlice.status, FeedSlice.scope).where(
+                FeedSlice.feed == feed,
+                FeedSlice.sliced_at >= start,
+                FeedSlice.sliced_at < end,
+            )
+        ):
+            covers = feed != service.FEED_GKG or scope is None or set(places) <= set(scope)
+            if covers and status in service.TERMINAL and status != "missing":
+                return False
+    return True
+
+
 def process_entry(
     session: Session,
     run: Run,

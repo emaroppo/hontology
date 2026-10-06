@@ -5,11 +5,12 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
 from hontology.db.models import FeedSlice
 from hontology.db.session import session_scope
 from hontology.evalkit.calendar import Entry
-from hontology.evalkit.calendar_run import SLICES_PER_DAY, window_status
+from hontology.evalkit.calendar_run import SLICES_PER_DAY, window_status, window_unobservable
 from hontology.ingest import service
 
 pytestmark = pytest.mark.requires_db
@@ -66,3 +67,40 @@ def test_a_graph_slice_kept_for_another_country_does_not_count():
 def test_a_full_graph_slice_counts():
     fill(gkg_scope=None)
     assert status()[0] is True
+
+
+def unobservable() -> bool:
+    with session_scope() as session:
+        return window_unobservable(session, ENTRY, [PLACE], before=0, after=0)
+
+
+def mark(status: str, feed: str | None = None) -> None:
+    with session_scope() as session:
+        for row in session.scalars(select(FeedSlice)):
+            if feed is None or row.feed == feed:
+                row.status = status
+
+
+def test_a_window_the_source_never_published_is_unobservable():
+    """Every slice missing in both feeds: ingested, but nothing to see."""
+    fill(gkg_scope=[PLACE])
+    mark("missing")
+    assert status()[0] is True
+    assert unobservable() is True
+
+
+def test_one_feed_published_is_enough_to_observe():
+    fill(gkg_scope=[PLACE])
+    mark("missing", feed=service.FEED_GKG)
+    assert unobservable() is False
+
+
+def test_a_graph_slice_kept_for_another_country_is_no_observation():
+    fill(gkg_scope=[PLACE + 1])
+    mark("missing", feed=service.FEED)
+    assert unobservable() is True
+
+
+def test_an_ingested_window_is_observable():
+    fill(gkg_scope=[PLACE])
+    assert unobservable() is False
