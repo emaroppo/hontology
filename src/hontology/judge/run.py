@@ -466,19 +466,27 @@ def _judge_call(
     iso2_to_locus: dict[str, int],
     common: dict,
     stats: JudgeStats,
+    routing: bool = False,
 ) -> tuple[dict[int, bool | None], int]:
     """One batched call over *concepts*, writing a verdict for each.
 
     Returns each concept's answer (None when the call failed) and how many
     concepts the model left out of its reply. Shared by batched and
     hierarchical judging, so both ask the judge in exactly the same way.
+    With *routing*, the concepts are parent classes asked as routing questions.
     """
-    assert template.build_batch is not None  # guaranteed by PromptTemplate
-    prompt = template.build_batch(document, concepts, body, judge_body_limit)
+    if routing:
+        assert template.build_route is not None and template.route_system is not None
+        prompt = template.build_route(document, concepts, body, judge_body_limit)
+        system = template.route_system
+    else:
+        assert template.build_batch is not None  # guaranteed by PromptTemplate
+        prompt = template.build_batch(document, concepts, body, judge_body_limit)
+        system = template.system
 
     try:
         completion = provider.complete(
-            system=template.system,
+            system=system,
             prompt=prompt,
             config=generation,
             want_json=True,
@@ -635,25 +643,40 @@ def _judge_hierarchical(
                         answered[concept.id] = None
                     session.commit()
                     continue
-                answers, omitted = _judge_call(
-                    session,
-                    document=document,
-                    concepts=concepts,
-                    body=body,
-                    template=template,
-                    provider=provider,
-                    judge_config=judge_config,
-                    generation=generation,
-                    judge_body_limit=judge_body_limit,
-                    iso2_to_locus=iso2_to_locus,
-                    common=common,
-                    stats=stats,
+                # With routing questions, parents and leaves of one sibling set
+                # are asked in separate calls, so leaves see exactly the prompt
+                # the flat arm uses.
+                groups = (
+                    [
+                        ([c for c in concepts if children.get(c.id)], True),
+                        ([c for c in concepts if not children.get(c.id)], False),
+                    ]
+                    if template.build_route is not None
+                    else [(concepts, False)]
                 )
-                answered.update(answers)
-                omitted_total += omitted
-                processed += len(concepts)
-                calls += 1
-                session.commit()
+                for group, routing in groups:
+                    if not group:
+                        continue
+                    answers, omitted = _judge_call(
+                        session,
+                        document=document,
+                        concepts=group,
+                        body=body,
+                        template=template,
+                        provider=provider,
+                        judge_config=judge_config,
+                        generation=generation,
+                        judge_body_limit=judge_body_limit,
+                        iso2_to_locus=iso2_to_locus,
+                        common=common,
+                        stats=stats,
+                        routing=routing,
+                    )
+                    answered.update(answers)
+                    omitted_total += omitted
+                    processed += len(group)
+                    calls += 1
+                    session.commit()
 
         if callable(progress):
             progress(done_documents, len(documents))

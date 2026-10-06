@@ -352,3 +352,65 @@ def test_a_sample_is_judged_with_reused_retrieval_once(world, monkeypatch):
     assert first["judge"]["calls"] == 2  # top level, then Trade's children
     assert again["judge"]["calls"] == 0
     assert judged == {world["document"]}
+
+
+class RecordingJudge(FakeJudge):
+    """Also records which system prompt each call was given."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.systems: list[str] = []
+
+    def complete(self, *, system, prompt, **kwargs):
+        self.systems.append(system)
+        return super().complete(system=system, prompt=prompt, **kwargs)
+
+
+def judge_v2(world, provider, monkeypatch):
+    monkeypatch.setattr(judge_module, "get_provider", lambda name: provider)
+    with session_scope() as session:
+        return judge_module.judge_run(
+            session,
+            world["run"],
+            config=normalize({"judge": {"prompt_id": "hier_batch_v2"}}),
+            judge_body_limit=2000,
+        )
+
+
+def test_routing_questions_and_leaves_are_asked_in_separate_calls(world, monkeypatch):
+    """The top level mixes two parents and a leaf: the parents go to a routing
+    call, the leaf to a call with the flat arm's own system prompt."""
+    from hontology.judge import prompts
+
+    provider = RecordingJudge(world["names"], yes={"Trade", "Sanction", "Ban"})
+    result = judge_v2(world, provider, monkeypatch)
+    strict = prompts.get("strict_batch_v1").system
+    route = prompts.get("hier_batch_v2").route_system
+    calls = list(zip(provider.calls, provider.systems, strict=True))
+    assert calls[0] == ({"Trade", "Sanction"}, route)
+    assert calls[1] == ({"Hack"}, strict)
+    assert all(system == strict for asked, system in calls[2:])  # only leaves below
+    assert result["calls"] == 4  # routing, top leaf, Trade's leaves, Sanction's leaf
+    assert verdicts(world)["Ban"] is True
+
+
+def test_leaves_are_asked_exactly_as_the_flat_arm_asks_them(world, monkeypatch):
+    from hontology.judge import prompts
+
+    v2, flat = prompts.get("hier_batch_v2"), prompts.get("strict_batch_v1")
+    assert v2.system == flat.system
+    assert v2.build_batch is flat.build_batch
+
+
+def test_a_routing_question_is_the_parents_text(world, monkeypatch):
+    provider = FakeJudge(world["names"], yes=set())
+    prompts_seen: list[str] = []
+
+    def record(*, system, prompt, **kwargs):
+        prompts_seen.append(prompt)
+        return FakeJudge.complete(provider, system=system, prompt=prompt, **kwargs)
+
+    monkeypatch.setattr(provider, "complete", record)
+    judge_v2(world, provider, monkeypatch)
+    assert "question: Trade." in prompts_seen[0]
+    assert "=== Questions ===" in prompts_seen[0]

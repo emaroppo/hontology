@@ -52,6 +52,10 @@ class PromptTemplate:
     system: str
     build_pair: Callable[[Document, Concept, str, int], str]
     build_batch: Callable[[Document, list[Concept], str, int], str] | None = None
+    # Hierarchical only: how parent classes are asked, when they are asked as
+    # routing questions in calls of their own rather than as concepts.
+    route_system: str | None = None
+    build_route: Callable[[Document, list[Concept], str, int], str] | None = None
 
     def __post_init__(self) -> None:
         if self.mode in (PER_DOCUMENT, HIERARCHICAL) and self.build_batch is None:
@@ -61,6 +65,14 @@ class PromptTemplate:
             )
         if self.mode not in (PER_PAIR, PER_DOCUMENT, HIERARCHICAL):
             raise ValueError(f"prompt {self.prompt_id!r} has unknown mode {self.mode!r}")
+        if (self.route_system is None) != (self.build_route is None):
+            raise ValueError(
+                f"prompt {self.prompt_id!r} needs both route_system and build_route"
+            )
+        if self.build_route is not None and self.mode != HIERARCHICAL:
+            raise ValueError(
+                f"prompt {self.prompt_id!r}: routing questions need mode {HIERARCHICAL!r}"
+            )
 
 
 _REGISTRY: dict[str, PromptTemplate] = {}
@@ -281,5 +293,69 @@ register(
         system=_STRICT_SYSTEM,
         build_pair=_build_strict,
         build_batch=_build_batch_strict,
+    )
+)
+
+
+# ===========================================================================
+# hier_batch_v2
+#
+# A parent class is a routing step, not a finding: it decides whether the
+# classes below it are asked at all. A wrong yes costs one more call; a wrong
+# no loses every leaf beneath it. The strict prompt leans the other way (it
+# rejects warnings, threats and articles merely "about" a concept), which is
+# right for leaves and wrong for routing. So parents are asked as questions,
+# leaning to yes, in calls of their own; leaves are asked exactly as in
+# hier_batch_v1 and the flat baseline, in separate calls, so leaf judging is
+# unchanged and any difference between the arms comes from the hierarchy.
+# ===========================================================================
+
+_ROUTE_SYSTEM = (
+    "You route a news article through a classification of supply-chain events. "
+    "For each question, decide whether the article concerns it at all.\n"
+    "Answer matched=true if any part of the article reports, describes, warns of "
+    "or threatens what the question asks about, even briefly or in passing, and "
+    "whether it has happened, is under way or is only expected. More specific "
+    "classes are judged separately and strictly after this step, so when in "
+    "doubt, answer true.\n"
+    "Answer matched=false only when the article has nothing to do with the "
+    "question, or the relevant words appear only in menus, boilerplate or a "
+    "paywall notice.\n"
+    "Copy the evidence exactly from the article text; do not summarise it or "
+    "make it up. Give confidence as how likely your answer is to be right, "
+    "from 0 to 1.\n"
+    "Output one JSON object and nothing else."
+)
+
+
+def _build_route(
+    document: Document, concepts: list[Concept], body: str, body_limit: int
+) -> str:
+    # A parent's text is its routing question, held as ontology content.
+    blocks = "\n\n".join(
+        f"[concept_id {concept.id}]\nquestion: {concept.definition or concept.name}"
+        for concept in concepts
+    )
+    return (
+        f"=== Article ===\n"
+        f"url: {document.url}\n"
+        f"title: {document.title or ''}\n"
+        f"body: {_trim(body, body_limit)}\n\n"
+        f"Answer EACH of the following {len(concepts)} questions independently "
+        f"against the article above.\n\n"
+        f"=== Questions ===\n{blocks}\n\n"
+        f"{BATCH_RESPONSE_SHAPE.replace('concept listed', 'question listed')}\n"
+    )
+
+
+register(
+    PromptTemplate(
+        prompt_id="hier_batch_v2",
+        mode=HIERARCHICAL,
+        system=_STRICT_SYSTEM,
+        build_pair=_build_strict,
+        build_batch=_build_batch_strict,
+        route_system=_ROUTE_SYSTEM,
+        build_route=_build_route,
     )
 )
