@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from hontology.db.models import Candidate, Document, Run, Verdict
 from hontology.db.session import session_scope
@@ -431,3 +431,42 @@ class TestNarrowedJudging:
             )
         assert result["total"] == 0
         assert provider.calls == []
+
+
+class TestCostRecorded:
+    def test_per_pair_verdicts_carry_their_tokens(self, batchable_run, monkeypatch):
+        provider = FakeProvider(['{"matched": false, "confidence": 0.5}'])
+        monkeypatch.setattr(judge_module, "get_provider", lambda name: provider)
+        with session_scope() as session:
+            judge_module.judge_run(
+                session, batchable_run["run"], config=normalize({}), judge_body_limit=2000
+            )
+        with session_scope() as session:
+            rows = session.execute(
+                select(Verdict.input_tokens, Verdict.output_tokens).where(
+                    Verdict.run_id == batchable_run["run"]
+                )
+            ).all()
+        assert rows and all(row == (100, 20) for row in rows)
+
+    def test_a_batched_call_splits_its_tokens(self, batchable_run, monkeypatch):
+        """One call for three concepts must not be recorded as three calls' worth."""
+        response = json.dumps(
+            {
+                "verdicts": [
+                    {"concept_id": c, "matched": False} for c in batchable_run["concepts"]
+                ]
+            }
+        )
+        monkeypatch.setattr(judge_module, "get_provider", lambda name: FakeProvider([response]))
+        with session_scope() as session:
+            judge_module.judge_run(
+                session, batchable_run["run"], config=batch_config(), judge_body_limit=2000
+            )
+        with session_scope() as session:
+            total = session.scalar(
+                select(func.sum(Verdict.input_tokens)).where(
+                    Verdict.run_id == batchable_run["run"]
+                )
+            )
+        assert total == 99  # 100 split three ways, rounded down per pair

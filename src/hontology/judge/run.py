@@ -315,6 +315,8 @@ def judge_run(
         parsed_samples: list[dict] = []
         reasoning = ""
         latency = 0.0
+        tokens_in = 0
+        tokens_out = 0
         error = ""
 
         for _ in range(samples):
@@ -330,6 +332,8 @@ def judge_run(
                 parsed_samples.append(parse_verdict(completion.text))
                 reasoning = completion.reasoning or reasoning
                 latency += completion.latency_s
+                tokens_in += completion.input_tokens or 0
+                tokens_out += completion.output_tokens or 0
                 stats.input_tokens += completion.input_tokens or 0
                 stats.output_tokens += completion.output_tokens or 0
             except (ProviderError, json.JSONDecodeError) as exc:
@@ -356,6 +360,8 @@ def judge_run(
                     mode=template.mode,
                     samples=samples,
                     latency_s=latency,
+                    input_tokens=tokens_in,
+                    output_tokens=tokens_out,
                 )
             )
             stats.judged += 1
@@ -372,6 +378,8 @@ def judge_run(
                     mode=template.mode,
                     samples=samples,
                     latency_s=latency,
+                    input_tokens=tokens_in,
+                    output_tokens=tokens_out,
                     error=error or "no samples parsed",
                 )
             )
@@ -539,8 +547,10 @@ def _judge_batched(
                     evidence=result["evidence"] or None,
                     reasoning=completion.reasoning or None,
                     # One call served the whole group, so attributing its full
-                    # latency to each pair would multiply the real cost.
+                    # cost to each pair would multiply the real cost.
                     latency_s=completion.latency_s / len(concepts),
+                    input_tokens=(completion.input_tokens or 0) // len(concepts),
+                    output_tokens=(completion.output_tokens or 0) // len(concepts),
                     **common,
                 )
             )
