@@ -413,39 +413,35 @@ def ingest_scrape(
         typer.echo(f"{len(allowed)} document(s) in scope")
 
     budget = limit if limit is not None else get_settings().scrape_budget
-    totals: dict[str, int] = {}
-    while budget > 0:
+
+    def scrape_batch(held: list[int]) -> dict:
         with session_scope() as session:
-            result = scrape.scrape_pending(
+            return scrape.scrape_pending(
                 session,
                 limit=min(SCRAPE_BATCH, budget),
                 retry_failed=retry_failed,
                 use_reader_proxy=reader_proxy,
                 document_ids=allowed,
+                exclude=held,
             )
-        if not result["attempted"]:
-            break
-        budget -= result["attempted"]
-        for key in (
-            "attempted",
-            "ok",
-            "junk",
-            "failed",
-            "blocked_by_robots",
-            "deferred",
-            "retry_later",
-        ):
-            totals[key] = totals.get(key, 0) + result[key]
+
+    def report(totals: dict[str, int]) -> None:
         typer.echo(
             f"attempted {totals['attempted']}: {totals['ok']} ok, {totals['junk']} junk, "
             f"{totals['failed']} failed, {totals['blocked_by_robots']} blocked by robots, "
             f"{totals['deferred']} deferred by crawl delay, "
             f"{totals['retry_later']} left for a later batch after a connection failure"
         )
-        # A retry pass re-attempts the same failures every batch; one is enough.
-        if retry_failed:
-            break
-    if not totals:
+
+    if retry_failed:
+        # A retry pass would re-attempt the same failures every batch; one is enough.
+        first = scrape_batch([])
+        totals = {key: first.get(key, 0) for key in scrape.TOTAL_KEYS}
+        if totals["attempted"]:
+            report(totals)
+    else:
+        totals = scrape.drain(scrape_batch, budget=budget, on_batch=report)
+    if not totals["attempted"]:
         typer.echo("nothing to fetch")
 
 

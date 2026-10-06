@@ -62,3 +62,16 @@ def test_other_failures_are_final_at_once(monkeypatch, document_id):
     assert result["failed"] == 1
     assert document.fetched_at is not None
     assert document.connect_failures == 0
+
+
+def test_a_connection_failure_is_handed_back_and_can_be_left_out(monkeypatch, document_id):
+    result, _ = attempt(monkeypatch, document_id, DNS)
+    assert result["held_back"] == [document_id]
+    with session_scope() as session:
+        assert scrape.pending_documents(session, 10, document_ids=[document_id]) != []
+        assert (
+            scrape.pending_documents(
+                session, 10, document_ids=[document_id], exclude=[document_id]
+            )
+            == []
+        )

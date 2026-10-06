@@ -26,7 +26,7 @@ import threading
 import time
 import urllib.robotparser
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -35,7 +35,7 @@ from functools import lru_cache
 from urllib.parse import urlsplit
 
 import httpx
-from sqlalchemy import Engine, create_engine, func, select, text
+from sqlalchemy import Engine, create_engine, func, not_, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -67,6 +67,8 @@ class ScrapeStats:
     deferred: int = 0
     # Left pending after a connection failure, to be tried in a later batch.
     retry_later: int = 0
+    # Ids of the documents deferred or left for later, for a caller to hold back.
+    held_back: list[int] = field(default_factory=list)
     methods: dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
     def as_dict(self) -> dict:
@@ -350,6 +352,7 @@ def pending_documents(
     retry_failed: bool = False,
     document_ids: list[int] | None = None,
     claim: bool = False,
+    exclude: list[int] | None = None,
 ) -> list[Document]:
     """Documents that still need a body.
 
@@ -361,6 +364,9 @@ def pending_documents(
     With *claim*, the rows are locked until the caller commits, and rows another
     scraper has claimed are skipped, so scrapers running side by side never
     fetch the same document or double the rate on a host.
+
+    *exclude* leaves out documents a caller is holding back for now, such as
+    ones whose host asked for a long crawl delay.
     """
     query = select(Document)
     query = (
@@ -370,6 +376,8 @@ def pending_documents(
     )
     if document_ids is not None:
         query = query.where(among(Document.id, document_ids))
+    if exclude:
+        query = query.where(not_(among(Document.id, exclude)))
     query = query.order_by(Document.id).limit(limit)
     if claim:
         query = query.with_for_update(skip_locked=True, of=Document)
@@ -435,6 +443,61 @@ def _count_pending(
     return session.scalar(query) or 0
 
 
+# How long a document deferred by a crawl delay, or left pending after a
+# connection failure, is kept out of the next batches. Crawl delays seen in the
+# wild reach ten minutes.
+HOLD_BACK_S = 600.0
+TOTAL_KEYS = (
+    "attempted",
+    "ok",
+    "junk",
+    "failed",
+    "blocked_by_robots",
+    "deferred",
+    "retry_later",
+)
+
+
+def drain(
+    scrape_batch: Callable[[list[int]], dict],
+    *,
+    budget: int,
+    on_batch: Callable[[dict[str, int]], None] | None = None,
+    hold_back_s: float = HOLD_BACK_S,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, int]:
+    """Scrape batch after batch until nothing is left or the budget is spent.
+
+    *scrape_batch* takes the ids to hold back and scrapes one batch. A document
+    deferred for its host's crawl delay, or left pending after a connection
+    failure, is held back for *hold_back_s*: still pending and lowest in id, the
+    same documents would otherwise fill every batch, and a batch of nothing but
+    them would look like the end of the work. Scraping stops only when a batch
+    attempts nothing while nothing is held back; when only held-back documents
+    remain, it waits for the first to come due.
+    """
+    held: dict[int, float] = {}
+    totals = dict.fromkeys(TOTAL_KEYS, 0)
+    while budget > 0:
+        now = clock()
+        held = {d: due for d, due in held.items() if due > now}
+        result = scrape_batch(sorted(held))
+        for document_id in result.get("held_back", []):
+            held[document_id] = now + hold_back_s
+        for key in TOTAL_KEYS:
+            totals[key] += result.get(key, 0)
+        if result["attempted"]:
+            budget -= result["attempted"]
+            if on_batch is not None:
+                on_batch(totals)
+            continue
+        if not held:
+            break
+        sleep(max(0.0, min(held.values()) - clock()))
+    return totals
+
+
 def scrape_pending(
     session: Session,
     *,
@@ -443,6 +506,7 @@ def scrape_pending(
     use_reader_proxy: bool = False,
     document_ids: list[int] | None = None,
     ontology_id: int | None = None,
+    exclude: list[int] | None = None,
 ) -> dict:
     """Fetch and extract bodies for pending documents.
 
@@ -484,14 +548,24 @@ def scrape_pending(
         # first and intersecting afterwards starves the budget whenever the
         # backlog is larger than the window it happens to read.
         documents = pending_documents(
-            session, budget, retry_failed=retry_failed, document_ids=sorted(allowed), claim=True
+            session,
+            budget,
+            retry_failed=retry_failed,
+            document_ids=sorted(allowed),
+            claim=True,
+            exclude=exclude,
         )
         filtered_out = _count_pending(
             session, retry_failed=retry_failed, document_ids=document_ids
         ) - _count_pending(session, retry_failed=retry_failed, document_ids=sorted(allowed))
     else:
         documents = pending_documents(
-            session, budget, retry_failed=retry_failed, document_ids=document_ids, claim=True
+            session,
+            budget,
+            retry_failed=retry_failed,
+            document_ids=document_ids,
+            claim=True,
+            exclude=exclude,
         )
 
     if not documents:
@@ -523,6 +597,7 @@ def scrape_pending(
                 # batch; they stay pending, so nothing is lost.
                 with stats_lock:
                     stats.deferred += len(docs) - docs.index(document)
+                    stats.held_back.extend(d.id for d in docs[docs.index(document) :])
                 return
             limiter.wait(host, delay)
             html, status_code, error = fetch_html(
@@ -540,6 +615,7 @@ def scrape_pending(
                 document.error = error[:1000]
                 with stats_lock:
                     stats.retry_later += 1
+                    stats.held_back.append(document.id)
                 continue
             result = (
                 extract.extract(
@@ -587,4 +663,4 @@ def scrape_pending(
             "skipped_no_code_match": filtered_out,
         }
     log.info("scrape: %s", result)
-    return result
+    return result | {"held_back": stats.held_back}
