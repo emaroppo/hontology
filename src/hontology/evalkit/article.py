@@ -121,6 +121,10 @@ def _totals(
     return tp, fp, fn
 
 
+# The group that windows with a single labelled document are resampled in.
+SINGLETON_POOL = "\x00singletons"
+
+
 def _resample(
     documents: list[int], groups: dict[int, str] | None, rng: random.Random
 ) -> list[int]:
@@ -128,12 +132,22 @@ def _resample(
 
     Resampling within groups matches a sample stratified by them: each group
     keeps its labelled count, so the weights that count on it stay fixed.
+
+    A group with one labelled document would always redraw that document and
+    add no variance at all; early in labelling, when most windows hold one
+    labelled document, every interval would collapse to a point. Such groups
+    are pooled into one and resampled together (collapsed strata), and each
+    document keeps its own weight.
     """
     if groups is None:
         return rng.choices(documents, k=len(documents))
     by_group: dict[str, list[int]] = defaultdict(list)
     for doc_id in documents:
         by_group[groups.get(doc_id, "")].append(doc_id)
+    singles = [g for g, members in by_group.items() if len(members) == 1]
+    if len(singles) > 1:
+        pooled = [by_group.pop(g)[0] for g in singles]
+        by_group[SINGLETON_POOL] = pooled
     draw: list[int] = []
     for group in sorted(by_group):
         members = by_group[group]

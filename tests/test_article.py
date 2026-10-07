@@ -289,3 +289,28 @@ class TestEqualPerWindow:
         for seed in range(5):
             draw = article._resample(documents, groups, random.Random(seed))
             assert Counter(groups[d] for d in draw) == {"a": 2, "b": 2}
+
+    def test_windows_with_one_labelled_document_still_vary(self):
+        """Early in labelling most windows hold one labelled document; resampling
+        each alone would redraw it every time and give a zero-width interval."""
+        truth = {(d, 10): d % 2 == 0 for d in range(1, 9)}
+        predicted = {(d, 10): True for d in range(1, 9)}
+        result = article.document_bootstrap(
+            truth,
+            predicted,
+            n_boot=200,
+            weights=dict.fromkeys(range(1, 9), 1.0),
+            groups={d: f"window-{d}" for d in range(1, 9)},
+        )
+        low, high = result["precision_ci"]
+        assert low < result["precision"] < high
+
+    def test_windows_with_several_labelled_documents_stay_apart(self):
+        import random
+
+        documents = [1, 2, 3, 4, 5]
+        groups = {1: "a", 2: "a", 3: "b", 4: "c", 5: "d"}
+        for seed in range(5):
+            draw = article._resample(documents, groups, random.Random(seed))
+            assert sum(1 for d in draw if groups[d] == "a") == 2
+            assert len(draw) == 5
