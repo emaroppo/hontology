@@ -27,6 +27,10 @@ def list_runs(db: Session = Depends(get_db)):
             "ontology_version": run.ontology_version,
             "candidates_key": run.candidates_key,
             "judge_key": run.judge_key,
+            "stage": run.stage,
+            "progress_done": run.progress_done,
+            "progress_total": run.progress_total,
+            "error": run.error,
         }
         for run in db.scalars(select(Run).order_by(Run.id.desc()))
     ]
