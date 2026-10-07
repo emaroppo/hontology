@@ -33,6 +33,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from hontology.db.base import among
 from hontology.db.models import (
     CalendarReview,
     Candidate,
@@ -299,7 +300,7 @@ def judging_cost(session: Session, run_id: int, document_ids: set[int] | None = 
     if document_ids is not None:
         if not document_ids:
             return {"pairs": 0, "input_tokens": 0, "output_tokens": 0, "seconds": 0.0}
-        query = query.where(Verdict.document_id.in_(document_ids))
+        query = query.where(among(Verdict.document_id, document_ids))
     pairs, tokens_in, tokens_out, seconds = session.execute(query).one()
     return {
         "pairs": int(pairs),
@@ -334,7 +335,7 @@ def _matches(
     urls: dict[int, str] = {
         doc_id: url
         for doc_id, url in session.execute(
-            select(Document.id, Document.url).where(Document.id.in_(seen))
+            select(Document.id, Document.url).where(among(Document.id, seen))
         )
     }
     evidence: dict[int, str | None] = {
@@ -343,7 +344,7 @@ def _matches(
             select(Verdict.document_id, Verdict.evidence).where(
                 Verdict.run_id == run_id,
                 Verdict.concept_id == concept_id,
-                Verdict.document_id.in_(seen),
+                among(Verdict.document_id, seen),
             )
         )
     }
@@ -442,7 +443,7 @@ def evaluate(
             set(
                 session.scalars(
                     select(Document.id).where(
-                        Document.id.in_(filtered),
+                        among(Document.id, filtered),
                         Document.body_path.is_not(None),
                         Document.is_junk.is_(False),
                     )
@@ -461,7 +462,7 @@ def evaluate(
         retrieval_gate = [
             Candidate.run_id == run_id,
             Candidate.selected.is_(True),
-            Candidate.document_id.in_(set(reads.values())),
+            among(Candidate.document_id, set(reads.values())),
         ]
         if not hierarchical:
             retrieval_gate.append(Candidate.concept_id == concept_id)
@@ -475,7 +476,7 @@ def evaluate(
                 select(Verdict.document_id, Verdict.matched).where(
                     Verdict.run_id == run_id,
                     Verdict.concept_id == concept_id,
-                    Verdict.document_id.in_(retrieved_reps),
+                    among(Verdict.document_id, retrieved_reps),
                 )
             ).all()
             if retrieved_reps

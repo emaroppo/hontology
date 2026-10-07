@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from hontology.db.base import among
 from hontology.db.models import Candidate, Document
 from hontology.evalkit.calendar import Entry, loci_for, window_documents
 from hontology.ingest.dedup import representative_of
@@ -89,7 +90,7 @@ def frame(
         doc_id: url
         for doc_id, url in session.execute(
             select(Document.id, Document.url).where(
-                Document.id.in_(window_of),
+                among(Document.id, window_of),
                 Document.body_path.is_not(None),
                 Document.is_junk.is_(False),
                 Document.duplicate_of.is_(None),
@@ -100,7 +101,7 @@ def frame(
         doc_id: float(score)
         for doc_id, score in session.execute(
             select(Candidate.document_id, func.max(Candidate.score))
-            .where(Candidate.run_id == run_id, Candidate.document_id.in_(usable))
+            .where(Candidate.run_id == run_id, among(Candidate.document_id, usable))
             .group_by(Candidate.document_id)
         )
     }

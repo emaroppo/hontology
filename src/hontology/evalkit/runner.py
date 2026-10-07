@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from hontology.config import get_settings
+from hontology.db.base import among
 from hontology.db.models import Candidate, Document, Ontology, Run
 from hontology.evalkit import config as run_config
 from hontology.judge import run as judge_run_module
@@ -127,7 +128,7 @@ def pending_documents(
         Document.duplicate_of.is_(None),
     )
     if document_ids is not None:
-        query = query.where(Document.id.in_(document_ids))
+        query = query.where(among(Document.id, document_ids))
     return list(session.scalars(query.order_by(Document.id.desc()).limit(limit)))
 
 

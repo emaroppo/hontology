@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from hontology.db.base import among
 from hontology.db.models import Verdict
 from hontology.evalkit.metrics import Confusion
 
@@ -38,7 +39,7 @@ def predictions(session: Session, run_id: int, keys: set[Key]) -> dict[Key, bool
         for doc_id, concept_id, matched in session.execute(
             select(Verdict.document_id, Verdict.concept_id, Verdict.matched).where(
                 Verdict.run_id == run_id,
-                Verdict.document_id.in_(documents),
+                among(Verdict.document_id, documents),
                 Verdict.error.is_(None),
                 Verdict.matched.is_not(None),
             )
@@ -54,7 +55,7 @@ def judged_keys(session: Session, run_id: int, keys: set[Key]) -> set[Key]:
         for doc_id, concept_id in session.execute(
             select(Verdict.document_id, Verdict.concept_id).where(
                 Verdict.run_id == run_id,
-                Verdict.document_id.in_(documents),
+                among(Verdict.document_id, documents),
                 Verdict.error.is_(None),
                 Verdict.matched.is_not(None),
             )

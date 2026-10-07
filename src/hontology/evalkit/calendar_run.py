@@ -25,6 +25,7 @@ from datetime import timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from hontology.db.base import among
 from hontology.db.models import Candidate, Concept, Document, FeedSlice, Run, Verdict
 from hontology.evalkit.calendar import Entry, window_documents
 from hontology.ingest import dedup, scrape, service
@@ -181,7 +182,7 @@ def process_entry(
         representatives = set(
             session.scalars(
                 select(Document.id).where(
-                    Document.id.in_(allowed),
+                    among(Document.id, allowed),
                     Document.body_path.is_not(None),
                     Document.is_junk.is_(False),
                     Document.duplicate_of.is_(None),
@@ -191,12 +192,16 @@ def process_entry(
         already = set(
             session.scalars(
                 select(Candidate.document_id)
-                .where(Candidate.run_id == run.id, Candidate.document_id.in_(representatives))
+                .where(
+                    Candidate.run_id == run.id, among(Candidate.document_id, representatives)
+                )
                 .distinct()
             )
         )
         new = list(
-            session.scalars(select(Document).where(Document.id.in_(representatives - already)))
+            session.scalars(
+                select(Document).where(among(Document.id, representatives - already))
+            )
         )
         retrieval = None
         if new:
@@ -215,7 +220,7 @@ def process_entry(
         judged = (
             session.scalar(
                 select(func.count(Verdict.id)).where(
-                    Verdict.run_id == run.id, Verdict.document_id.in_(representatives)
+                    Verdict.run_id == run.id, among(Verdict.document_id, representatives)
                 )
             )
             or 0
@@ -226,7 +231,7 @@ def process_entry(
             select(func.count(Candidate.id)).where(
                 Candidate.run_id == run.id,
                 Candidate.selected.is_(True),
-                Candidate.document_id.in_(representatives),
+                among(Candidate.document_id, representatives),
             )
         )
         or 0
@@ -280,7 +285,7 @@ def copy_window_candidates(
             select(Candidate.document_id)
             .where(
                 Candidate.run_id == source_run_id,
-                Candidate.document_id.in_(representatives),
+                among(Candidate.document_id, representatives),
             )
             .distinct()
         )
@@ -288,13 +293,13 @@ def copy_window_candidates(
     present = set(
         session.scalars(
             select(Candidate.document_id)
-            .where(Candidate.run_id == target_run_id, Candidate.document_id.in_(retrieved))
+            .where(Candidate.run_id == target_run_id, among(Candidate.document_id, retrieved))
             .distinct()
         )
     )
     for row in session.scalars(
         select(Candidate).where(
-            Candidate.run_id == source_run_id, Candidate.document_id.in_(retrieved - present)
+            Candidate.run_id == source_run_id, among(Candidate.document_id, retrieved - present)
         )
     ):
         session.add(

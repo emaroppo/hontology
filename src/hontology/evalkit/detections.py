@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from hontology.db.base import among
 from hontology.db.models import (
     TRUSTED_SOURCES,
     Concept,
@@ -170,7 +171,7 @@ def _document_dates(session: Session, document_ids: list[int]) -> dict[int, str]
         return dates
     for event in session.scalars(
         select(FeedEvent).where(
-            FeedEvent.document_id.in_(document_ids), FeedEvent.occurred_on.is_not(None)
+            among(FeedEvent.document_id, document_ids), FeedEvent.occurred_on.is_not(None)
         )
     ):
         if event.document_id is None or not event.occurred_on:

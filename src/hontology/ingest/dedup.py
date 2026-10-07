@@ -36,6 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hontology.config import get_settings
+from hontology.db.base import among
 from hontology.db.models import Document
 
 log = logging.getLogger(__name__)
@@ -137,7 +138,7 @@ def deduplicate(
     documents = list(
         session.scalars(
             select(Document).where(
-                Document.id.in_(document_ids),
+                among(Document.id, document_ids),
                 Document.body_path.is_not(None),
                 Document.is_junk.is_(False),
             )
@@ -146,7 +147,7 @@ def deduplicate(
     existing = {d.id: d.duplicate_of for d in documents if d.duplicate_of is not None}
     anchors = set(existing.values()) - {d.id for d in documents}
     if anchors:
-        documents += list(session.scalars(select(Document).where(Document.id.in_(anchors))))
+        documents += list(session.scalars(select(Document).where(among(Document.id, anchors))))
 
     signatures: dict[int, np.ndarray] = {}
     too_short = 0
@@ -199,6 +200,6 @@ def representative_of(session: Session, document_ids: list[int]) -> dict[int, in
     return {
         doc_id: duplicate_of or doc_id
         for doc_id, duplicate_of in session.execute(
-            select(Document.id, Document.duplicate_of).where(Document.id.in_(document_ids))
+            select(Document.id, Document.duplicate_of).where(among(Document.id, document_ids))
         )
     }

@@ -21,6 +21,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from hontology.db.base import among
 from hontology.db.models import Candidate, Run, Verdict
 from hontology.evalkit import article, calendar
 from hontology.evalkit.evaluate import label_map
@@ -186,7 +187,7 @@ def hierarchy_diagnostics(
         for doc_id, concept_id, matched in session.execute(
             select(Verdict.document_id, Verdict.concept_id, Verdict.matched).where(
                 Verdict.run_id == run_id,
-                Verdict.document_id.in_(documents),
+                among(Verdict.document_id, documents),
                 Verdict.error.is_(None),
                 Verdict.matched.is_not(None),
             )
@@ -212,7 +213,7 @@ def hierarchy_diagnostics(
             select(Candidate.document_id, Candidate.concept_id).where(
                 Candidate.run_id == baseline_id,
                 Candidate.selected.is_(True),
-                Candidate.document_id.in_(documents),
+                among(Candidate.document_id, documents),
             )
         ).all()
     )
