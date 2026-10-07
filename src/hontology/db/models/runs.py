@@ -22,6 +22,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    ARRAY,
     Boolean,
     DateTime,
     Float,
@@ -144,3 +145,44 @@ class Verdict(Base, TimestampMixin):
     error: Mapped[str | None] = mapped_column(Text)
 
     run: Mapped[Run] = relationship()
+
+
+class ExtractedEvent(Base, TimestampMixin):
+    """One event a judge found in an article, for runs that judge events.
+
+    An extract-then-classify run first lists an article's distinct events, then
+    gives each at most one leaf class, so one event cannot be spread across
+    sibling classes while an article reporting several events keeps them all.
+    The article's verdicts are derived from its events; the events are kept as
+    the evidence for them, and as the first form of the event records that
+    dates, phases and relations will later attach to.
+    """
+
+    __tablename__ = "extracted_events"
+    __table_args__ = (UniqueConstraint("run_id", "document_id", "ordinal"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence: Mapped[str | None] = mapped_column(Text)
+    # happened | threatened | ended, as the extraction call reported it.
+    status: Mapped[str | None] = mapped_column(String)
+    country: Mapped[str | None] = mapped_column(String(2))
+    # The leaf it was classified as, if any; parents it was routed through.
+    concept_id: Mapped[int | None] = mapped_column(
+        ForeignKey("concepts.id", ondelete="SET NULL"), index=True
+    )
+    routed_through: Mapped[list[int]] = mapped_column(
+        ARRAY(Integer), nullable=False, default=list
+    )
+    confidence: Mapped[float | None] = mapped_column(Float)
+    # classified | unclassified (weighed, no leaf fitted) | rejected (only
+    # "other" accepted it at the top) | error
+    outcome: Mapped[str | None] = mapped_column(String, index=True)
+    error: Mapped[str | None] = mapped_column(Text)

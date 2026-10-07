@@ -421,7 +421,7 @@ def evaluate(
         else set()
     )
     hierarchical = (
-        prompts.get(run.config["judge"]["prompt_id"]).mode == prompts.HIERARCHICAL
+        prompts.get(run.config["judge"]["prompt_id"]).mode in prompts.TOP_DOWN_MODES
         if run.config.get("judge")
         else False
     )

@@ -265,6 +265,35 @@ def judge_run(
         if locus.iso2
     }
 
+    if template.mode == prompts.EXTRACT:
+        from hontology.judge.extract import judge_extract
+        from hontology.retrieve.embed import get_provider as get_embedder
+
+        run = session.get(Run, run_id)
+        assert run is not None
+        return judge_extract(
+            session,
+            run_id,
+            ontology_id=run.ontology_id,
+            candidates=candidates,
+            stats=stats,
+            template=template,
+            provider=provider,
+            judge_config=judge_config,
+            generation=generation,
+            judge_body_limit=judge_body_limit,
+            iso2_to_locus=iso2_to_locus,
+            limit=limit,
+            progress=progress,
+            body_of=_body,
+            share=_share,
+            embedder=(
+                get_embedder(config.get("candidates", {}).get("embed_provider", "ollama"))
+                if template.leaf_top_k is not None
+                else None
+            ),
+        )
+
     if template.mode == prompts.HIERARCHICAL:
         run = session.get(Run, run_id)
         assert run is not None

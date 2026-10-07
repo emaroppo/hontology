@@ -29,7 +29,7 @@ from hontology.db.models.ontology import (
     Ontology,
     Owner,
 )
-from hontology.db.models.runs import Candidate, Run, Verdict
+from hontology.db.models.runs import Candidate, ExtractedEvent, Run, Verdict
 from hontology.db.models.snapshot import OntologySnapshot
 from hontology.db.models.taxonomy import Code, CodeSystem, ConceptCode
 from hontology.db.models.vectors import (
@@ -57,6 +57,7 @@ __all__ = [
     "FeedArticle",
     "Embedding",
     "EmbeddingModel",
+    "ExtractedEvent",
     "FeedEvent",
     "FeedSlice",
     "IngestWatermark",

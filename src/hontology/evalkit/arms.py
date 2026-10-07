@@ -260,7 +260,7 @@ def hierarchy_diagnostics(
 
 def _is_hierarchical(run: Run) -> bool:
     prompt_id = (run.config or {}).get("judge", {}).get("prompt_id")
-    return bool(prompt_id) and prompts.get(prompt_id).mode == prompts.HIERARCHICAL
+    return bool(prompt_id) and prompts.get(prompt_id).mode in prompts.TOP_DOWN_MODES
 
 
 def load_manifest(path: Path | None) -> dict | None:

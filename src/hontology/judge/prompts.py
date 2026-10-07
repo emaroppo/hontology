@@ -26,6 +26,10 @@ PER_DOCUMENT = "per-document"
 # Top-down over a class hierarchy: one batched call per sibling set, descending
 # only into the children of classes judged positive.
 HIERARCHICAL = "hierarchical"
+# Extract an article's events, then classify each event down the hierarchy.
+EXTRACT = "extract"
+# Modes that judge top-down through the hierarchy, gated on any selected leaf.
+TOP_DOWN_MODES = (HIERARCHICAL, EXTRACT)
 
 RESPONSE_SHAPE = (
     "Output format, a single JSON object:\n"
@@ -56,6 +60,19 @@ class PromptTemplate:
     # routing questions in calls of their own rather than as concepts.
     route_system: str | None = None
     build_route: Callable[[Document, list[Concept], str, int], str] | None = None
+    # Extract only: listing an article's events, routing one event, and choosing
+    # at most one leaf for it.
+    extract_system: str | None = None
+    build_extract: Callable[[Document, list[Concept], str, int], str] | None = None
+    event_top_system: str | None = None
+    event_route_system: str | None = None
+    build_event_route: Callable[..., str] | None = None
+    choose_system: str | None = None
+    build_choose: Callable[[dict, list[Concept]], str] | None = None
+    # Extract only: below the top level, offer each event the leaves most
+    # similar to it under this embedding model instead of routing it further.
+    leaf_embed_model: str | None = None
+    leaf_top_k: int | None = None
 
     def __post_init__(self) -> None:
         if self.mode in (PER_DOCUMENT, HIERARCHICAL) and self.build_batch is None:
@@ -63,11 +80,29 @@ class PromptTemplate:
                 f"prompt {self.prompt_id!r} declares mode {self.mode!r} but "
                 "supplies no build_batch"
             )
-        if self.mode not in (PER_PAIR, PER_DOCUMENT, HIERARCHICAL):
+        if self.mode == EXTRACT and None in (
+            self.extract_system,
+            self.build_extract,
+            self.event_top_system,
+            self.event_route_system,
+            self.build_event_route,
+            self.choose_system,
+            self.build_choose,
+        ):
+            raise ValueError(f"prompt {self.prompt_id!r}: extract mode needs all its builders")
+        if self.mode not in (PER_PAIR, PER_DOCUMENT, HIERARCHICAL, EXTRACT):
             raise ValueError(f"prompt {self.prompt_id!r} has unknown mode {self.mode!r}")
         if (self.route_system is None) != (self.build_route is None):
             raise ValueError(
                 f"prompt {self.prompt_id!r} needs both route_system and build_route"
+            )
+        if (self.leaf_embed_model is None) != (self.leaf_top_k is None):
+            raise ValueError(
+                f"prompt {self.prompt_id!r} needs both leaf_embed_model and leaf_top_k"
+            )
+        if self.leaf_top_k is not None and self.mode != EXTRACT:
+            raise ValueError(
+                f"prompt {self.prompt_id!r}: ranking leaves by embedding needs mode {EXTRACT!r}"
             )
         if self.build_route is not None and self.mode != HIERARCHICAL:
             raise ValueError(
@@ -357,5 +392,196 @@ register(
         build_batch=_build_batch_strict,
         route_system=_ROUTE_SYSTEM,
         build_route=_build_route,
+    )
+)
+
+
+# ===========================================================================
+# extract_v1
+#
+# Arm E. A hierarchical judge asked about a whole article ticks several sibling
+# classes for one event (a pipeline strike as a shutdown, a production halt and
+# an industrial accident). Here the article's events are listed first, once,
+# and each event is then routed down the hierarchy and given at most one leaf:
+# one event, one class, any number of events. The article is read once; the
+# routing and choosing calls see only the event's description and evidence.
+# Leaf definitions are unchanged.
+# ===========================================================================
+
+MAX_EVENTS = 8
+
+_EXTRACT_SYSTEM = (
+    "You read a news article and list the distinct events it reports that could "
+    "disrupt the production, movement, supply or trade of goods, or that warn, "
+    "threaten or announce such a disruption.\n"
+    "List each event once. An occurrence reported several times, or confirmed or "
+    "described again later in the article, is one event. Different measures, "
+    "attacks, closures, strikes or warnings are different events, even when "
+    "related: a tariff imposed and further tariffs threatened are two events, and "
+    "a reaction to an event, such as a complaint, a retaliatory measure or a "
+    "closure in response, is an event of its own.\n"
+    "Include events that happened long ago if the article mentions them. Leave out "
+    "events with nothing to do with goods, and general commentary that reports no "
+    "specific event.\n"
+    "For each event give: description, one or two sentences saying what happened, "
+    "to what, by whom and where, stating only what the article reports and never "
+    "adding what the event might affect; evidence, the passage reporting it copied "
+    "exactly from the article; status, one of happened (it has taken effect or is "
+    "under way), threatened (it is announced, proposed, threatened, warned of or "
+    "expected), ended; country, the two-letter ISO code of the country where the "
+    "event physically takes place, not of whoever causes it, or empty.\n"
+    f"List at most {MAX_EVENTS} events, the most specific first. If there are none, "
+    "return an empty list.\n"
+    "Output one JSON object and nothing else."
+)
+
+EXTRACT_RESPONSE_SHAPE = (
+    "Output format, a single JSON object:\n"
+    '{"events": [\n'
+    '  {"description": "<one or two sentences>", "evidence": "<exact passage>", '
+    '"status": "<happened|threatened|ended>", "country": "<ISO code or empty>"},\n'
+    "  ...\n"
+    "]}"
+)
+
+
+def _build_extract(document: Document, top: list[Concept], body: str, body_limit: int) -> str:
+    # The top-level classes say what is in scope, so the list stays on topic.
+    kinds = "\n".join(f"- {c.name}: {c.definition or c.name}" for c in top)
+    return (
+        f"=== Article ===\n"
+        f"url: {document.url}\n"
+        f"title: {document.title or ''}\n"
+        f"body: {_trim(body, body_limit)}\n\n"
+        f"=== Kinds of event in scope ===\n{kinds}\n\n"
+        f"{EXTRACT_RESPONSE_SHAPE}\n"
+    )
+
+
+def _event_block(event: dict) -> str:
+    return (
+        f"description: {event.get('description', '')}\n"
+        f"status: {event.get('status', '')}\n"
+        f"country: {event.get('country', '')}\n"
+        f"evidence: {event.get('evidence', '')}"
+    )
+
+
+# The top of the hierarchy separates the event's kind from "other", so it
+# leans neither way; below it, a routing step leans to yes (see hier_batch_v2).
+_EVENT_TOP_SYSTEM = (
+    "You classify one event, found in a news article, by its kind. For each "
+    "question, decide whether the event is an instance of what the question asks "
+    "about, whether it has happened, is under way or is only expected. Answer each "
+    "question independently.\n"
+    "Output one JSON object and nothing else."
+)
+
+_EVENT_ROUTE_SYSTEM = (
+    "You route one event, found in a news article, through a classification of "
+    "supply-chain events. For each question, decide whether the event could be an "
+    "instance of what the question asks about.\n"
+    "Answer matched=true if it plausibly could, whether it has happened, is under "
+    "way or is only expected. More specific classes are judged strictly after this "
+    "step, so when in doubt, answer true. Answer matched=false only when the event "
+    "has nothing to do with the question.\n"
+    "Output one JSON object and nothing else."
+)
+
+# At the top level an event may also be "other": none of the classes. An event
+# that nothing but this accepts is rejected there, with no further calls.
+OTHER_ID = 0
+OTHER_QUESTION = (
+    "Is the event none of the above: something that does not disrupt, threaten or "
+    "warn of disruption to producing, moving, supplying or trading goods?"
+)
+
+# Routing needs only the answer: no evidence, no country, no confidence.
+ROUTE_RESPONSE_SHAPE = (
+    "Output format, a single JSON object:\n"
+    '{"verdicts": [{"concept_id": <int>, "matched": <true|false>}, '
+    "... one entry for EVERY question listed above ...]}"
+)
+
+
+def _build_event_route(event: dict, concepts: list[Concept], other: bool = False) -> str:
+    entries = [(c.id, c.definition or c.name) for c in concepts]
+    if other:
+        entries.append((OTHER_ID, OTHER_QUESTION))
+    blocks = "\n\n".join(f"[concept_id {i}]\nquestion: {q}" for i, q in entries)
+    return (
+        f"=== Event ===\n{_event_block(event)}\n\n"
+        f"Answer EACH of the following {len(entries)} questions independently "
+        f"for the event above.\n\n"
+        f"=== Questions ===\n{blocks}\n\n"
+        f"{ROUTE_RESPONSE_SHAPE}\n"
+    )
+
+
+_CHOOSE_SYSTEM = (
+    "You decide which one concept, if any, an event is a real occurrence of. The "
+    "event was found in a news article; its description, status and the passage "
+    "reporting it are given.\n"
+    "The concepts' definitions and their counts-when / does-not-count-when "
+    "criteria are authoritative. Their names are only labels.\n"
+    "Choose the single concept the event is an instance of. One event is one "
+    "occurrence: never choose a concept for a consequence or a side of the event "
+    "rather than the event itself. If no concept fits the definitions, choose none.\n"
+    "Copy the evidence exactly from the passage given; do not summarise it. Give "
+    "confidence as how likely your answer is to be right, from 0 to 1.\n"
+    "Output one JSON object and nothing else."
+)
+
+CHOOSE_RESPONSE_SHAPE = (
+    "Output format, a single JSON object:\n"
+    '{"concept_id": <the chosen concept_id, or null for none>, '
+    '"confidence": <0..1>, "evidence": "<exact passage, or empty>"}'
+)
+
+
+def _build_choose(event: dict, concepts: list[Concept]) -> str:
+    blocks = "\n\n".join(f"[concept_id {c.id}]\n{_concept_block(c)}" for c in concepts)
+    return (
+        f"=== Event ===\n{_event_block(event)}\n\n"
+        f"=== Concepts: choose at most one ===\n{blocks}\n\n"
+        f"{CHOOSE_RESPONSE_SHAPE}\n"
+    )
+
+
+register(
+    PromptTemplate(
+        prompt_id="extract_v1",
+        mode=EXTRACT,
+        system=_STRICT_SYSTEM,
+        build_pair=_build_strict,
+        extract_system=_EXTRACT_SYSTEM,
+        build_extract=_build_extract,
+        event_top_system=_EVENT_TOP_SYSTEM,
+        event_route_system=_EVENT_ROUTE_SYSTEM,
+        build_event_route=_build_event_route,
+        choose_system=_CHOOSE_SYSTEM,
+        build_choose=_build_choose,
+    )
+)
+
+# extract_embed_v1: extract_v1 with the routing below the top level replaced.
+# An event the top level accepts is offered the leaves under the classes it
+# answered yes to that sit closest to it in embedding space, and nothing more is
+# asked before the choosing call. Every text the judge reads is extract_v1's.
+register(
+    PromptTemplate(
+        prompt_id="extract_embed_v1",
+        mode=EXTRACT,
+        system=_STRICT_SYSTEM,
+        build_pair=_build_strict,
+        extract_system=_EXTRACT_SYSTEM,
+        build_extract=_build_extract,
+        event_top_system=_EVENT_TOP_SYSTEM,
+        event_route_system=_EVENT_ROUTE_SYSTEM,
+        build_event_route=_build_event_route,
+        choose_system=_CHOOSE_SYSTEM,
+        build_choose=_build_choose,
+        leaf_embed_model="mxbai-embed-large",
+        leaf_top_k=3,
     )
 )
