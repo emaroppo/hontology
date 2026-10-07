@@ -123,7 +123,15 @@ try:
     )
 
     if found["rows"]:
-        st.dataframe(found["rows"], use_container_width=True)
+        # The rows are CSV-shaped, with "" for a missing number; a table needs None.
+        shown = [
+            {
+                k: (None if v == "" and k in ("confidence", "vote_fraction") else v)
+                for k, v in row.items()
+            }
+            for row in found["rows"]
+        ]
+        st.dataframe(shown, use_container_width=True)
         export_cols = st.columns(2)
         export_cols[0].download_button(
             "Download detections (CSV)",

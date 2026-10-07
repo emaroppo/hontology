@@ -155,12 +155,19 @@ def confusion_bar(judge: dict, *, title: str = "outcomes") -> alt.Chart:
         .encode(
             y=alt.Y("outcome:N", sort=None, title=None),
             x=alt.X("count:Q", title="pairs"),
-            color=alt.condition(
-                alt.datum.outcome == "false positive",
-                alt.value(WARN),
-                alt.condition(
-                    alt.datum.outcome == "false negative", alt.value(WARN), alt.value(ACCENT)
+            # Errors in the warning colour, correct answers in the accent.
+            color=alt.Color(
+                "outcome:N",
+                scale=alt.Scale(
+                    domain=[
+                        "true positive",
+                        "true negative",
+                        "false positive",
+                        "false negative",
+                    ],
+                    range=[ACCENT, ACCENT, WARN, WARN],
                 ),
+                legend=None,
             ),
             tooltip=["outcome:N", "count:Q"],
         )
