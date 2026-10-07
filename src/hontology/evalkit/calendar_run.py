@@ -43,10 +43,13 @@ SCRAPE_BATCH = 200
 def window_status(
     session: Session, entry: Entry, places: list[int], *, before: int, after: int
 ) -> tuple[bool, list[tuple[str, str]]]:
-    """Whether the window is fully ingested, and which slices failed.
+    """Whether the window is fully ingested, and which slices to ingest again.
 
     A GKG slice counts only if its scope covers the entry's places: a slice kept
-    for another country is no evidence about this one.
+    for another country is no evidence about this one. Such a slice is returned
+    for ingesting again with this entry's places, as a failed one is; otherwise
+    nothing would ever widen it, and the window would wait for good. (Backfills
+    running side by side can leave one: each keeps its own countries.)
     """
     start, end = entry.window(before, after)
     needed = int((end - start) / timedelta(days=1)) * SLICES_PER_DAY
@@ -65,7 +68,7 @@ def window_status(
             covers = feed != service.FEED_GKG or scope is None or set(places) <= set(scope)
             if status in service.TERMINAL and covers:
                 done += 1
-            elif status == "failed":
+            elif status == "failed" or status in service.TERMINAL:
                 failed.append((feed, key))
         if done < needed:
             complete = False

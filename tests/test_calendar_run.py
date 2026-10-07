@@ -64,6 +64,16 @@ def test_a_graph_slice_kept_for_another_country_does_not_count():
     assert status()[0] is False
 
 
+def test_a_graph_slice_kept_for_another_country_is_ingested_again():
+    """Left alone, nothing would widen its scope and the window would wait
+    forever; it is handed back for ingesting with this entry's places."""
+    fill(gkg_scope=[PLACE + 1])
+    ready, again = status()
+    assert ready is False
+    assert len(again) == SLICES_PER_DAY
+    assert {feed for feed, _ in again} == {service.FEED_GKG}
+
+
 def test_a_full_graph_slice_counts():
     fill(gkg_scope=None)
     assert status()[0] is True
