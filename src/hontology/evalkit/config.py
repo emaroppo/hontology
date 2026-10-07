@@ -127,6 +127,7 @@ def normalize(config: dict) -> dict:
             f"unknown judge.aggregation {judge['aggregation']!r}; "
             f"expected one of {AGGREGATIONS}"
         )
+    _check_routing(judge)
 
     # A single body_limit is the usual knob; the per-stage ones override it.
     base = common["body_limit"]
@@ -142,6 +143,35 @@ def normalize(config: dict) -> dict:
         "candidates": candidates,
         "judge": judge,
     }
+
+
+ROUTING_KEYS = {"provider", "quantizations", "allow_fallbacks", "data_collection"}
+
+
+def _check_routing(judge: dict) -> None:
+    """A hosted judge must say which host serves it; nothing else may route.
+
+    Routing is behavior: hosts of one model run it at different precisions, and
+    their answers can differ. It is absent from configs that do not use it, so
+    their hashes are unchanged.
+    """
+    routing = judge.get("routing")
+    if judge["provider"] == "openrouter":
+        if not routing or not routing.get("provider"):
+            raise ConfigError(
+                "judge.routing.provider is required for openrouter: pin the host, "
+                "or calls in one run may be served by different setups"
+            )
+    elif routing is not None:
+        raise ConfigError(
+            f"judge.routing applies only to openrouter, not {judge['provider']!r}"
+        )
+    if routing is not None:
+        unknown = set(routing) - ROUTING_KEYS
+        if unknown:
+            raise ConfigError(f"unknown judge.routing keys: {sorted(unknown)}")
+        if routing.get("data_collection", "deny") not in ("deny", "allow"):
+            raise ConfigError("judge.routing.data_collection must be deny or allow")
 
 
 def _hash(payload: dict) -> str:

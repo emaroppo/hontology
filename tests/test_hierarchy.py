@@ -229,7 +229,7 @@ def test_flat_retrieval_only_ever_ranks_leaves(tmp_path, monkeypatch):
 
     settings = get_settings()
     monkeypatch.setattr(type(settings), "scrape_cache_dir", property(lambda self: tmp_path))
-    monkeypatch.setattr(embed, "get_provider", lambda name: FakeEmbedder())
+    monkeypatch.setattr(embed, "get_provider", lambda name, **kw: FakeEmbedder())
     (tmp_path / "leaf.txt").write_text(
         "Dockworkers walked out and a government banned exports."
     )

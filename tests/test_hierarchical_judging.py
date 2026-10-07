@@ -111,7 +111,7 @@ def world(tmp_path, monkeypatch):
 
 
 def judge(world, provider, monkeypatch, **kwargs):
-    monkeypatch.setattr(judge_module, "get_provider", lambda name: provider)
+    monkeypatch.setattr(judge_module, "get_provider", lambda name, **kw: provider)
     with session_scope() as session:
         return judge_module.judge_run(
             session,
@@ -311,7 +311,9 @@ def test_a_sample_is_judged_with_reused_retrieval_once(world, monkeypatch):
     from hontology.evalkit.calendar_run import judge_documents
 
     monkeypatch.setattr(
-        judge_module, "get_provider", lambda name: FakeJudge(world["names"], yes={"Trade"})
+        judge_module,
+        "get_provider",
+        lambda name, **kw: FakeJudge(world["names"], yes={"Trade"}),
     )
     with session_scope() as session:
         source = session.get(Run, world["run"])
@@ -367,7 +369,7 @@ class RecordingJudge(FakeJudge):
 
 
 def judge_v2(world, provider, monkeypatch):
-    monkeypatch.setattr(judge_module, "get_provider", lambda name: provider)
+    monkeypatch.setattr(judge_module, "get_provider", lambda name, **kw: provider)
     with session_scope() as session:
         return judge_module.judge_run(
             session,

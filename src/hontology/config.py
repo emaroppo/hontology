@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     llamacpp_host: str = "http://localhost:8080"
     llamacpp_embed_host: str | None = None
     llamacpp_api_key: str | None = None
+    # Hosted models through OpenRouter. The key never belongs in a config.
+    openrouter_api_key: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     # --- Provider defaults (behavior: hashed when a run adopts them) --------
     default_judge_provider: str = "ollama"

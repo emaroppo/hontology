@@ -151,7 +151,7 @@ class TestBatchExecution:
             }
         )
         provider = FakeProvider([response])
-        monkeypatch.setattr(judge_module, "get_provider", lambda name: provider)
+        monkeypatch.setattr(judge_module, "get_provider", lambda name, **kw: provider)
 
         with session_scope() as session:
             result = judge_module.judge_run(
@@ -169,7 +169,7 @@ class TestBatchExecution:
     def test_the_prompt_lists_every_concept_once(self, batchable_run, monkeypatch):
         response = json.dumps({"verdicts": []})
         provider = FakeProvider([response])
-        monkeypatch.setattr(judge_module, "get_provider", lambda name: provider)
+        monkeypatch.setattr(judge_module, "get_provider", lambda name, **kw: provider)
 
         with session_scope() as session:
             judge_module.judge_run(
@@ -189,7 +189,7 @@ class TestBatchExecution:
             {"verdicts": [{"concept_id": batchable_run["concepts"][0], "matched": True}]}
         )
         provider = FakeProvider([response])
-        monkeypatch.setattr(judge_module, "get_provider", lambda name: provider)
+        monkeypatch.setattr(judge_module, "get_provider", lambda name, **kw: provider)
 
         with session_scope() as session:
             result = judge_module.judge_run(
@@ -202,7 +202,7 @@ class TestBatchExecution:
     def test_a_failed_call_errors_every_pair_in_the_document(self, batchable_run, monkeypatch):
         """Batching trades isolation: one bad response costs the whole group."""
         provider = FakeProvider(ProviderError("model exploded"))
-        monkeypatch.setattr(judge_module, "get_provider", lambda name: provider)
+        monkeypatch.setattr(judge_module, "get_provider", lambda name, **kw: provider)
 
         with session_scope() as session:
             result = judge_module.judge_run(
@@ -226,7 +226,9 @@ class TestBatchExecution:
                 ]
             }
         )
-        monkeypatch.setattr(judge_module, "get_provider", lambda name: FakeProvider([response]))
+        monkeypatch.setattr(
+            judge_module, "get_provider", lambda name, **kw: FakeProvider([response])
+        )
 
         with session_scope() as session:
             judge_module.judge_run(
@@ -246,7 +248,9 @@ class TestBatchExecution:
                 ]
             }
         )
-        monkeypatch.setattr(judge_module, "get_provider", lambda name: FakeProvider([response]))
+        monkeypatch.setattr(
+            judge_module, "get_provider", lambda name, **kw: FakeProvider([response])
+        )
 
         with session_scope() as session:
             judge_module.judge_run(
@@ -269,7 +273,9 @@ class TestBatchExecution:
                 ]
             }
         )
-        monkeypatch.setattr(judge_module, "get_provider", lambda name: FakeProvider([response]))
+        monkeypatch.setattr(
+            judge_module, "get_provider", lambda name, **kw: FakeProvider([response])
+        )
 
         config = normalize({"judge": {"prompt_id": "strict_batch_v1", "samples": 5}})
         with session_scope() as session:
@@ -399,7 +405,7 @@ class TestNarrowedJudging:
         first, second, third = batchable_run["concepts"]
         self._score(batchable_run["run"], {first: 0.5, second: 0.9, third: 0.7})
         provider = FakeProvider(['{"matched": false, "confidence": 0.5}'])
-        monkeypatch.setattr(judge_module, "get_provider", lambda name: provider)
+        monkeypatch.setattr(judge_module, "get_provider", lambda name, **kw: provider)
 
         with session_scope() as session:
             judge_module.judge_run(
@@ -420,7 +426,7 @@ class TestNarrowedJudging:
 
     def test_other_documents_are_left_alone(self, batchable_run, monkeypatch):
         provider = FakeProvider(['{"matched": false, "confidence": 0.5}'])
-        monkeypatch.setattr(judge_module, "get_provider", lambda name: provider)
+        monkeypatch.setattr(judge_module, "get_provider", lambda name, **kw: provider)
         with session_scope() as session:
             result = judge_module.judge_run(
                 session,
@@ -436,7 +442,7 @@ class TestNarrowedJudging:
 class TestCostRecorded:
     def test_per_pair_verdicts_carry_their_tokens(self, batchable_run, monkeypatch):
         provider = FakeProvider(['{"matched": false, "confidence": 0.5}'])
-        monkeypatch.setattr(judge_module, "get_provider", lambda name: provider)
+        monkeypatch.setattr(judge_module, "get_provider", lambda name, **kw: provider)
         with session_scope() as session:
             judge_module.judge_run(
                 session, batchable_run["run"], config=normalize({}), judge_body_limit=2000
@@ -458,7 +464,9 @@ class TestCostRecorded:
                 ]
             }
         )
-        monkeypatch.setattr(judge_module, "get_provider", lambda name: FakeProvider([response]))
+        monkeypatch.setattr(
+            judge_module, "get_provider", lambda name, **kw: FakeProvider([response])
+        )
         with session_scope() as session:
             judge_module.judge_run(
                 session, batchable_run["run"], config=batch_config(), judge_body_limit=2000

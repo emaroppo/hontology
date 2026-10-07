@@ -30,6 +30,7 @@ from hontology.judge import prompts
 from hontology.judge.providers.base import GenerationConfig, ProviderError
 from hontology.judge.providers.llamacpp import LlamaCppChatProvider
 from hontology.judge.providers.ollama import OllamaChatProvider
+from hontology.judge.providers.openrouter import OpenRouterChatProvider
 from hontology.ontology import hierarchy
 
 log = logging.getLogger(__name__)
@@ -57,12 +58,16 @@ class JudgeStats:
         }
 
 
-def get_provider(name: str):
+def get_provider(name: str, routing: dict | None = None):
     settings = get_settings()
     if name == "ollama":
         return OllamaChatProvider(settings.ollama_host)
     if name == "llamacpp":
         return LlamaCppChatProvider(settings.llamacpp_host, settings.llamacpp_api_key)
+    if name == "openrouter":
+        return OpenRouterChatProvider(
+            settings.openrouter_api_key, routing, base_url=settings.openrouter_base_url
+        )
     raise ProviderError(f"unknown judge provider {name!r}")
 
 
@@ -231,7 +236,7 @@ def judge_run(
     """
     judge_config = config["judge"]
     template = prompts.get(judge_config["prompt_id"])
-    provider = get_provider(judge_config["provider"])
+    provider = get_provider(judge_config["provider"], routing=judge_config.get("routing"))
     model = judge_config["model"]
     samples = max(1, judge_config["samples"])
 
