@@ -109,6 +109,25 @@ class TestBreakdown:
             assert row["n"] > 0
             assert "precision_ci" in row
 
+    def test_a_family_pools_the_classes_under_it(self, scored_run):
+        from hontology.ontology import hierarchy
+
+        with session_scope() as session:
+            unrest = service.create_concept(
+                session, scored_run["ontology"], name="Unrest", definition="Civil unrest."
+            )
+            hierarchy.set_relations(
+                session,
+                scored_run["ontology"],
+                [
+                    (scored_run["good"], hierarchy.SUBCLASS_OF, unrest.id),
+                    (scored_run["bad"], hierarchy.SUBCLASS_OF, unrest.id),
+                ],
+            )
+        with session_scope() as session:
+            rows = breakdown.breakdown(session, scored_run["run"], dimension="family")
+        assert [(r["label"], r["tp"], r["fp"], r["fn"]) for r in rows] == [("Unrest", 2, 2, 2)]
+
     def test_an_unknown_dimension_is_rejected(self, scored_run):
         with session_scope() as session, pytest.raises(ValueError):
             breakdown.breakdown(session, scored_run["run"], dimension="vibes")

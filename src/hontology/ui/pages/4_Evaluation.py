@@ -221,14 +221,14 @@ st.caption(
     "Systematic failures only show up sliced: a pooled F1 cannot tell "
     '"uniformly mediocre" from "excellent except on one concept".'
 )
-dimension = st.radio("Slice by", ["concept", "category", "locus"], horizontal=True)
+dimension = st.radio("Slice by", ["concept", "family", "category", "locus"], horizontal=True)
 try:
     rows = api.run_breakdown(
         selected["id"], dimension=dimension, include_machine=include_machine
     )
     if rows:
         st.altair_chart(
-            charts.metric_with_interval(rows, metric="f1", title=f"F1 by {dimension}"),
+            charts.rates_with_intervals(rows, title=f"Precision and recall by {dimension}"),
             use_container_width=True,
         )
         st.dataframe(
@@ -300,6 +300,10 @@ run_a = pair[0].selectbox("Run A", list(run_labels), key="cmp_a")
 run_b = pair[1].selectbox(
     "Run B", list(run_labels), key="cmp_b", index=min(1, len(run_labels) - 1)
 )
+        st.caption(
+            "A slice with no labelled positive and no positive verdict has no precision "
+            "or recall to draw; it is still counted in the table below."
+        )
 
 if st.button("Compare"):
     try:

@@ -1,4 +1,4 @@
-"""Metrics sliced by concept, category or locus.
+"""Metrics sliced by concept, family, category or locus.
 
 Systematic failures only show up sliced. A pooled F1 of 0.7 can mean the judge is
 uniformly mediocre, or that it is near-perfect on nine concepts and hopeless on a
@@ -20,8 +20,11 @@ from sqlalchemy.orm import Session
 from hontology.db.models import Category, Concept, Locus, Run, Verdict
 from hontology.evalkit import evaluate as evaluate_module
 from hontology.evalkit import metrics as metric_lib
+from hontology.ontology import hierarchy
 
-DIMENSIONS = ("concept", "category", "locus")
+# "family" is a class's top-level ancestor in the hierarchy; "category" is the
+# flat grouping concepts carry independently of it.
+DIMENSIONS = ("concept", "family", "category", "locus")
 
 
 @dataclass
@@ -78,6 +81,12 @@ def breakdown(
     }
     categories = {c.id: c.name for c in session.scalars(select(Category))}
     loci = {locus.id: locus.name for locus in session.scalars(select(Locus))}
+    parent_map = hierarchy.parents(session, run.ontology_id)
+
+    def families(concept_id: int) -> list[tuple[str, str]]:
+        # A class under two families counts in both; a top-level class is its own.
+        tops = [a for a in hierarchy.ancestors(parent_map, concept_id) if a not in parent_map]
+        return [(str(t), concepts[t].name) for t in sorted(tops or [concept_id])]
 
     slices: dict[str, Slice] = {}
     for verdict in session.scalars(
@@ -92,18 +101,29 @@ def breakdown(
             continue
 
         if dimension == "concept":
-            slice_key, label = str(concept.id), concept.name
+            keys = [(str(concept.id), concept.name)]
+        elif dimension == "family":
+            keys = families(concept.id)
         elif dimension == "category":
-            slice_key = str(concept.category_id or "none")
-            label = categories.get(concept.category_id or -1, "(uncategorised)")
+            keys = [
+                (
+                    str(concept.category_id or "none"),
+                    categories.get(concept.category_id or -1, "(uncategorised)"),
+                )
+            ]
         else:
-            slice_key = str(verdict.locus_id or "none")
-            label = loci.get(verdict.locus_id or -1, "(no locus)")
+            keys = [
+                (
+                    str(verdict.locus_id or "none"),
+                    loci.get(verdict.locus_id or -1, "(no locus)"),
+                )
+            ]
 
-        entry = slices.setdefault(
-            slice_key, Slice(key=slice_key, label=label, confusion=metric_lib.Confusion())
-        )
-        entry.confusion.add(expected=truth[key], predicted=bool(verdict.matched))
+        for slice_key, label in keys:
+            entry = slices.setdefault(
+                slice_key, Slice(key=slice_key, label=label, confusion=metric_lib.Confusion())
+            )
+            entry.confusion.add(expected=truth[key], predicted=bool(verdict.matched))
 
     rows = [s.as_dict() for s in slices.values() if s.confusion.total >= min_labels]
     # Worst first: the point of slicing is to find what is dragging the pool down.

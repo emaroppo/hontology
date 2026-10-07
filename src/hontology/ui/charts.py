@@ -35,44 +35,60 @@ def _empty(message: str) -> alt.Chart:
     )
 
 
-def metric_with_interval(rows: list[dict], *, metric: str = "f1", title: str = "") -> alt.Chart:
-    """Per-slice metric as bars with their confidence intervals.
+def rates_with_intervals(rows: list[dict], *, title: str = "") -> alt.Chart:
+    """Per-slice precision and recall, each a point with its Wilson interval.
 
-    Used for breakdowns, where the whole point is that some slices are measured
-    far more thinly than others.
+    Points rather than bars, so a rate of zero is as visible as a rate of one;
+    and the count on every label, because sliced samples are small and a 1.00
+    from two pairs should look no surer than its interval says. F1 is left out:
+    it has no closed-form interval, and a bare F1 bar reads as a fact.
     """
-    usable = [r for r in rows if r.get(metric) is not None]
-    if not usable:
-        return _empty(f"no slice has a measurable {metric}")
-
-    ci_key = f"{metric}_ci"
     frame = pd.DataFrame(
         [
             {
-                "label": r["label"],
+                "slice": f"{r['label']} (n={r.get('n', 0)})",
+                "rate": metric,
                 "value": r[metric],
-                "n": r.get("n", 0),
-                "low": (r.get(ci_key) or (None, None))[0],
-                "high": (r.get(ci_key) or (None, None))[1],
+                "low": (r.get(f"{metric}_ci") or (None, None))[0],
+                "high": (r.get(f"{metric}_ci") or (None, None))[1],
+                "counts": f"tp {r.get('tp', 0)} · fp {r.get('fp', 0)} · fn {r.get('fn', 0)}",
             }
-            for r in usable
+            for r in rows
+            for metric in ("precision", "recall")
+            if r.get(metric) is not None
         ]
     )
+    if frame.empty:
+        return _empty("no slice has a labelled positive or a positive verdict yet")
 
+    order = list(dict.fromkeys(frame["slice"]))
     base = alt.Chart(frame).encode(
-        y=alt.Y("label:N", sort="-x", title=None),
-        tooltip=["label:N", "value:Q", "n:Q", "low:Q", "high:Q"],
+        y=alt.Y("slice:N", sort=order, title=None, axis=alt.Axis(labelLimit=360)),
+        yOffset=alt.YOffset("rate:N", sort=["precision", "recall"]),
+        color=alt.Color(
+            "rate:N",
+            scale=alt.Scale(domain=["precision", "recall"], range=[ACCENT, WARN]),
+            legend=alt.Legend(title=None, orient="top"),
+        ),
+        tooltip=["slice:N", "rate:N", "value:Q", "low:Q", "high:Q", "counts:N"],
     )
-    bars = base.mark_bar(color=ACCENT, size=14).encode(
-        x=alt.X("value:Q", title=metric, scale=alt.Scale(domain=[0, 1]))
+    interval = base.mark_rule(strokeWidth=2, opacity=0.6).encode(
+        # Padding keeps a point at exactly 0 or 1 from being cut in half by the edge.
+        x=alt.X(
+            "low:Q",
+            title="rate (95% interval)",
+            scale=alt.Scale(domain=[0, 1], padding=8),
+            axis=alt.Axis(values=[0, 0.2, 0.4, 0.6, 0.8, 1], format=".1f"),
+        ),
+        x2="high:Q",
     )
-    if frame["low"].notna().any():
-        error = base.mark_rule(color=MUTED, strokeWidth=2).encode(x="low:Q", x2="high:Q")
-        chart = bars + error
-    else:
-        chart = bars
-    return chart.properties(
-        title=title or f"{metric} by slice", height=max(120, 24 * len(frame))
+    points = base.mark_point(filled=True, size=70).encode(x="value:Q")
+    return (interval + points).properties(
+        title=title or "precision and recall by slice",
+        height=max(120, 34 * len(order)),
+        # Fit the width only. Streamlit otherwise fits height too, which squeezes
+        # every slice onto one row: a category axis has no height to give back.
+        autosize=alt.AutoSizeParams(type="fit-x", contains="padding"),
     )
 
 

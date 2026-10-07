@@ -1147,7 +1147,7 @@ def eval_run(
 @eval_app.command("breakdown")
 def eval_breakdown(
     run_id: int,
-    dimension: str = typer.Option("concept", help="concept | category | locus"),
+    dimension: str = typer.Option("concept", help="concept | family | category | locus"),
     include_machine: bool = typer.Option(False, help="Count machine labels."),
 ) -> None:
     """Metrics sliced, so a systematic failure is visible rather than pooled away."""

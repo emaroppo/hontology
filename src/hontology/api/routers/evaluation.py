@@ -91,7 +91,7 @@ def run_breakdown(
     include_machine: bool = False,
     db: Session = Depends(get_db),
 ):
-    """Metrics sliced by concept, category or locus, each with its own interval."""
+    """Metrics sliced by concept, family, category or locus, each with its own interval."""
     from hontology.evalkit import breakdown
 
     try:
