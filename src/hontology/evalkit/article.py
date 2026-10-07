@@ -92,7 +92,7 @@ def _per_document(truth: dict[Key, bool], predicted: dict[Key, bool]) -> dict[in
     return counts
 
 
-def _scores(tp: int, fp: int, fn: int) -> tuple[float | None, float | None, float | None]:
+def _scores(tp: float, fp: float, fn: float) -> tuple[float | None, float | None, float | None]:
     precision = tp / (tp + fp) if tp + fp else None
     recall = tp / (tp + fn) if tp + fn else None
     f1 = 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else None
@@ -108,40 +108,74 @@ def _interval(values: list[float]) -> list[float | None]:
     return [round(low, 4), round(high, 4)]
 
 
+def _totals(
+    documents, counts: dict[int, _DocCounts], weights: dict[int, float] | None
+) -> tuple[float, float, float]:
+    tp = fp = fn = 0.0
+    for doc_id in documents:
+        cell = counts.get(doc_id)
+        if cell is None:
+            continue
+        w = 1.0 if weights is None else weights.get(doc_id, 1.0)
+        tp, fp, fn = tp + w * cell.tp, fp + w * cell.fp, fn + w * cell.fn
+    return tp, fp, fn
+
+
+def _resample(
+    documents: list[int], groups: dict[int, str] | None, rng: random.Random
+) -> list[int]:
+    """One bootstrap draw of documents; within each group when *groups* is given.
+
+    Resampling within groups matches a sample stratified by them: each group
+    keeps its labelled count, so the weights that count on it stay fixed.
+    """
+    if groups is None:
+        return rng.choices(documents, k=len(documents))
+    by_group: dict[str, list[int]] = defaultdict(list)
+    for doc_id in documents:
+        by_group[groups.get(doc_id, "")].append(doc_id)
+    draw: list[int] = []
+    for group in sorted(by_group):
+        members = by_group[group]
+        draw.extend(rng.choices(members, k=len(members)))
+    return draw
+
+
 def document_bootstrap(
     truth: dict[Key, bool],
     predicted: dict[Key, bool],
     *,
     n_boot: int = DEFAULT_BOOTSTRAP,
     seed: int = 0,
+    weights: dict[int, float] | None = None,
+    groups: dict[int, str] | None = None,
 ) -> dict:
-    """Precision, recall and F1 with 95% intervals from resampling documents."""
+    """Precision, recall and F1 with 95% intervals from resampling documents.
+
+    With *weights*, each document's counts are scaled by its weight, so a sample
+    that over-represents small calendar windows still estimates the whole frame;
+    *groups* makes the bootstrap resample within each window, as it was drawn.
+    The tp/fp/fn reported are the unweighted counts.
+    """
     counts = _per_document(truth, predicted)
     documents = sorted(counts)
-    total = _DocCounts()
-    for cell in counts.values():
-        total.tp, total.fp, total.fn = (
-            total.tp + cell.tp,
-            total.fp + cell.fp,
-            total.fn + cell.fn,
-        )
-    precision, recall, f1 = _scores(total.tp, total.fp, total.fn)
+    raw = _totals(documents, counts, None)
+    precision, recall, f1 = _scores(*_totals(documents, counts, weights))
 
     rng = random.Random(seed)
     draws: dict[str, list[float]] = {"precision": [], "recall": [], "f1": []}
     for _ in range(n_boot if documents else 0):
-        tp = fp = fn = 0
-        for doc_id in rng.choices(documents, k=len(documents)):
-            cell = counts[doc_id]
-            tp, fp, fn = tp + cell.tp, fp + cell.fp, fn + cell.fn
-        for name, value in zip(("precision", "recall", "f1"), _scores(tp, fp, fn), strict=True):
+        draw = _resample(documents, groups, rng)
+        scores = _scores(*_totals(draw, counts, weights))
+        for name, value in zip(("precision", "recall", "f1"), scores, strict=True):
             if value is not None:
                 draws[name].append(value)
     return {
         "documents": len(documents),
-        "tp": total.tp,
-        "fp": total.fp,
-        "fn": total.fn,
+        "weighted": weights is not None,
+        "tp": int(raw[0]),
+        "fp": int(raw[1]),
+        "fn": int(raw[2]),
         "precision": precision,
         "recall": recall,
         "f1": f1,
@@ -158,35 +192,36 @@ def paired_document_bootstrap(
     *,
     n_boot: int = DEFAULT_BOOTSTRAP,
     seed: int = 0,
+    weights: dict[int, float] | None = None,
+    groups: dict[int, str] | None = None,
 ) -> dict:
     """F1 of *arm* minus F1 of *baseline*, with a 95% interval over documents.
 
     Both are scored on the same resampled documents in every draw, so the
     interval reflects the difference between the systems, not the luck of which
-    documents happened to be labelled.
+    documents happened to be labelled. *weights* and *groups* work as in
+    `document_bootstrap`.
     """
     base_counts = _per_document(truth, baseline)
     arm_counts = _per_document(truth, arm)
     documents = sorted(set(base_counts) | set(arm_counts))
 
     def f1_over(docs, counts) -> float | None:
-        tp = sum(counts[d].tp for d in docs if d in counts)
-        fp = sum(counts[d].fp for d in docs if d in counts)
-        fn = sum(counts[d].fn for d in docs if d in counts)
-        return _scores(tp, fp, fn)[2]
+        return _scores(*_totals(docs, counts, weights))[2]
 
     observed_base = f1_over(documents, base_counts)
     observed_arm = f1_over(documents, arm_counts)
     rng = random.Random(seed)
     differences: list[float] = []
     for _ in range(n_boot if documents else 0):
-        draw = rng.choices(documents, k=len(documents))
+        draw = _resample(documents, groups, rng)
         a, b = f1_over(draw, base_counts), f1_over(draw, arm_counts)
         if a is not None and b is not None:
             differences.append(b - a)
     interval = _interval(differences)
     return {
         "documents": len(documents),
+        "weighted": weights is not None,
         "baseline_f1": observed_base,
         "arm_f1": observed_arm,
         "difference": (
@@ -199,6 +234,31 @@ def paired_document_bootstrap(
         # lies entirely above zero.
         "improvement": interval[0] is not None and interval[0] > 0,
     }
+
+
+def window_weights(
+    manifest: dict, documents: set[int]
+) -> tuple[dict[int, float], dict[int, str]]:
+    """Each labelled document's weight and window, for an equal-per-window sample.
+
+    A document's weight is its window's size in the frame over the number of
+    labelled documents from that window, so pooled scores estimate the frame.
+    """
+    window_of = {
+        row["document_id"]: row["stratum"].split("/", 1)[0] for row in manifest["order"]
+    }
+    sizes = manifest.get("window_sizes") or {}
+    if not sizes:
+        sizes = defaultdict(int)
+        for window in window_of.values():
+            sizes[window] += 1
+    labelled: dict[str, int] = defaultdict(int)
+    for doc_id in documents:
+        labelled[window_of[doc_id]] += 1
+    weights = {
+        doc_id: sizes[window_of[doc_id]] / labelled[window_of[doc_id]] for doc_id in documents
+    }
+    return weights, {doc_id: window_of[doc_id] for doc_id in documents}
 
 
 def half_width(ci: list[float | None]) -> float | None:

@@ -26,6 +26,7 @@ from hontology.db.models import Candidate, Run, Verdict
 from hontology.evalkit import article, calendar
 from hontology.evalkit.evaluate import label_map
 from hontology.evalkit.metrics import mcnemar
+from hontology.evalkit.sample import EQUAL_PER_WINDOW
 from hontology.judge import prompts
 from hontology.ontology import hierarchy
 
@@ -102,13 +103,26 @@ def compare_arms(
         return report
 
     keys = set(truth)
+    # An equal-per-window sample over-represents small windows; weighting each
+    # document by its window's size keeps pooled scores an estimate of the frame.
+    weights: dict[int, float] | None = None
+    groups: dict[int, str] | None = None
+    if manifest.get("allocation") == EQUAL_PER_WINDOW:
+        weights, groups = article.window_weights(manifest, {doc_id for doc_id, _ in keys})
+    report["sample"]["allocation"] = manifest.get("allocation", "proportional")
     predicted = {run_id: article.predictions(session, run_id, keys) for run_id in run_ids}
     for run_id in run_ids:
         judged = article.judged_keys(session, run_id, keys)
         report["runs"][run_id]["article"] = {
-            "end_to_end": article.document_bootstrap(truth, predicted[run_id], seed=seed),
+            "end_to_end": article.document_bootstrap(
+                truth, predicted[run_id], seed=seed, weights=weights, groups=groups
+            ),
             "judge_only": article.document_bootstrap(
-                {k: truth[k] for k in judged}, predicted[run_id], seed=seed
+                {k: truth[k] for k in judged},
+                predicted[run_id],
+                seed=seed,
+                weights=weights,
+                groups=groups,
             ),
             "pairs_judged": len(judged),
             # On the labelled documents only, so arms that judged different
@@ -124,7 +138,12 @@ def compare_arms(
         paired = mcnemar(truth, predicted[baseline_id], predicted[arm_id])
         report["comparisons"][arm_id] = {
             "f1": article.paired_document_bootstrap(
-                truth, predicted[baseline_id], predicted[arm_id], seed=seed
+                truth,
+                predicted[baseline_id],
+                predicted[arm_id],
+                seed=seed,
+                weights=weights,
+                groups=groups,
             ),
             "mcnemar": paired.as_dict(),
         }
@@ -290,6 +309,14 @@ def render_markdown(report: dict) -> str:
             f"(manifest {str(sample.get('manifest_sha256'))[:12]}). "
             "Intervals are 95%, resampling whole documents. End to end, a pair never "
             "judged counts as no; judge only scores the pairs each run judged."
+            + (
+                " Every calendar window has an equal share of the sample, so each "
+                "document is weighted by its window's size over the number labelled "
+                "from it, and the bootstrap resamples within windows; the McNemar "
+                "counts below are unweighted."
+                if sample.get("allocation") == EQUAL_PER_WINDOW
+                else ""
+            )
         )
         out.append(
             "\n| Run | Precision | Recall | F1 | Judge-only precision | Judge-only recall "

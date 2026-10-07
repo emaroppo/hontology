@@ -954,6 +954,11 @@ def labels_sample(
     calendar_path: Path,
     out: Path = typer.Option(..., help="Manifest JSON to write."),
     seed: int = typer.Option(20261006, help="Fixes the order; record it with the sample."),
+    allocation: str = typer.Option(
+        "equal-per-window",
+        help="equal-per-window (each window an equal share, metrics weighted by "
+        "window size) or proportional.",
+    ),
     before: int = typer.Option(1),
     after: int = typer.Option(2),
 ) -> None:
@@ -968,8 +973,10 @@ def labels_sample(
     digest = hashlib.sha256(calendar_path.read_bytes()).hexdigest()
     with session_scope() as session:
         documents, late = sample.frame(session, run_id, entries, before=before, after=after)
-    ordered = sample.frozen_order(documents, seed)
-    record = sample.manifest(run_id, digest, seed, ordered, late_arrivals=late)
+    ordered = sample.frozen_order(documents, seed, allocation)
+    record = sample.manifest(
+        run_id, digest, seed, ordered, late_arrivals=late, allocation=allocation
+    )
     out.write_text(json.dumps(record, indent=1), encoding="utf-8")
     typer.echo(
         f"{record['size']} document(s) in {len(record['strata'])} strata; "

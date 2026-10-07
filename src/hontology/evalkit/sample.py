@@ -24,6 +24,13 @@ Stopping after 120 documents, or 470, gives the same design either way.
 **Strata** are the window a document first appears in, crossed with how well
 retrieval scored it (no candidate, low, middle, high), so a prefix cannot fill up
 with one busy window or with only easy, high-scoring articles.
+
+**Allocation.** *Proportional* gives each stratum its share of the frame.
+*Equal per window* gives every calendar window the same share of each prefix,
+score bands still in proportion within it, so a crisis window with thousands of
+articles cannot fill most of the sample; the metrics then weight each labelled
+document by its window's size over the number labelled from it, so pooled
+precision and recall still estimate the whole frame.
 """
 
 from __future__ import annotations
@@ -45,6 +52,10 @@ from hontology.ingest.dedup import representative_of
 # Best retrieval score per document, banded. Fixed bands rather than quantiles,
 # so the strata mean the same thing for every run they are drawn from.
 SCORE_BANDS = ((0.6, "low"), (0.7, "middle"), (float("inf"), "high"))
+
+PROPORTIONAL = "proportional"
+EQUAL_PER_WINDOW = "equal-per-window"
+ALLOCATIONS = (PROPORTIONAL, EQUAL_PER_WINDOW)
 
 
 @dataclass(frozen=True)
@@ -113,9 +124,31 @@ def frame(
     return documents, len(usable) - len(documents)
 
 
-def frozen_order(documents: list[SampledDocument], seed: int) -> list[SampledDocument]:
-    """An order in which every prefix is a proportional stratified sample."""
+def frozen_order(
+    documents: list[SampledDocument], seed: int, allocation: str = PROPORTIONAL
+) -> list[SampledDocument]:
+    """An order in which every prefix is a stratified sample, by *allocation*."""
+    if allocation not in ALLOCATIONS:
+        raise ValueError(f"unknown allocation {allocation!r}; one of {ALLOCATIONS}")
     rng = random.Random(seed)
+    if allocation == PROPORTIONAL:
+        return _proportional(documents, rng)
+    # Equal per window: each window ordered as its own proportional sample, then
+    # the windows interleaved one position at a time.
+    by_window: dict[str, list[SampledDocument]] = defaultdict(list)
+    for document in documents:
+        by_window[document.window].append(document)
+    keyed: list[tuple[float, str, int, SampledDocument]] = []
+    for window in sorted(by_window):
+        for position, document in enumerate(_proportional(by_window[window], rng)):
+            keyed.append((position + rng.random(), window, document.document_id, document))
+    keyed.sort(key=lambda item: item[:3])
+    return [document for *_, document in keyed]
+
+
+def _proportional(
+    documents: list[SampledDocument], rng: random.Random
+) -> list[SampledDocument]:
     by_stratum: dict[str, list[SampledDocument]] = defaultdict(list)
     for document in documents:
         by_stratum[document.stratum].append(document)
@@ -138,19 +171,25 @@ def manifest(
     ordered: list[SampledDocument],
     *,
     late_arrivals: int = 0,
+    allocation: str = PROPORTIONAL,
 ) -> dict:
     """The frozen sample: everything needed to reproduce or audit it."""
     order = [
         {"document_id": d.document_id, "url": d.url, "stratum": d.stratum} for d in ordered
     ]
     strata: dict[str, int] = defaultdict(int)
+    windows: dict[str, int] = defaultdict(int)
     for d in ordered:
         strata[d.stratum] += 1
+        windows[d.window] += 1
     body = {
         "run_id": run_id,
         "calendar_sha256": calendar_sha256,
         "seed": seed,
         "size": len(order),
+        "allocation": allocation,
+        # Frame size per window: the weights' numerators under equal allocation.
+        "window_sizes": dict(sorted(windows.items())),
         # Fetched after the run processed their window: out of the frame.
         "left_out_late_arrivals": late_arrivals,
         "strata": dict(sorted(strata.items())),

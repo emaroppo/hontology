@@ -228,3 +228,64 @@ def test_only_a_labelled_prefix_of_the_frozen_order_counts():
     assert result["prefix"] == 1
     assert result["out_of_turn"] == [documents[2]]
     assert set(result["truth"]) == {(documents[0], c) for c in concepts}
+
+
+class TestEqualPerWindow:
+    """A crisis window with thousands of articles must not fill the sample."""
+
+    FRAME = docs(90, "big", "high") + docs(10, "small", "high", 500)
+
+    def test_every_prefix_shares_itself_equally_between_windows(self):
+        ordered = sample.frozen_order(self.FRAME, seed=4, allocation=sample.EQUAL_PER_WINDOW)
+        for size in (2, 10, 20):
+            counts = Counter(d.window for d in ordered[:size])
+            assert counts["big"] == counts["small"] == size // 2
+
+    def test_a_small_window_running_out_leaves_the_rest_to_the_others(self):
+        ordered = sample.frozen_order(self.FRAME, seed=4, allocation=sample.EQUAL_PER_WINDOW)
+        assert sorted(d.document_id for d in ordered) == sorted(
+            d.document_id for d in self.FRAME
+        )
+        assert Counter(d.window for d in ordered[20:]) == {"big": 80}
+
+    def test_the_manifest_records_allocation_and_window_sizes(self):
+        ordered = sample.frozen_order(self.FRAME, seed=4, allocation=sample.EQUAL_PER_WINDOW)
+        record = sample.manifest(1, "abc", 4, ordered, allocation=sample.EQUAL_PER_WINDOW)
+        assert record["allocation"] == sample.EQUAL_PER_WINDOW
+        assert record["window_sizes"] == {"big": 90, "small": 10}
+
+    def test_a_document_counts_for_its_window_in_the_frame(self):
+        """Two labelled from a window of 90 count 45 each; two of 10 count 5."""
+        ordered = sample.frozen_order(self.FRAME, seed=4, allocation=sample.EQUAL_PER_WINDOW)
+        record = sample.manifest(1, "abc", 4, ordered, allocation=sample.EQUAL_PER_WINDOW)
+        labelled = {d.document_id for d in ordered[:4]}
+        weights, groups = article.window_weights(record, labelled)
+        assert sorted(weights.values()) == [5.0, 5.0, 45.0, 45.0]
+        assert set(groups.values()) == {"big", "small"}
+
+    def test_weighted_scores_estimate_the_frame_not_the_sample(self):
+        """The big window's document is right, the small one's wrong: unweighted
+        precision is a half, weighted it follows the big window."""
+        truth = {(1, 10): True, (2, 10): False}
+        predicted = {(1, 10): True, (2, 10): True}
+        plain = article.document_bootstrap(truth, predicted, n_boot=50)
+        weighted = article.document_bootstrap(
+            truth,
+            predicted,
+            n_boot=50,
+            weights={1: 9.0, 2: 1.0},
+            groups={1: "big", 2: "small"},
+        )
+        assert plain["precision"] == 0.5
+        assert weighted["precision"] == 0.9
+        assert weighted["weighted"] is True
+        assert weighted["tp"] == 1 and weighted["fp"] == 1  # counts stay unweighted
+
+    def test_resampling_within_windows_keeps_each_windows_count(self):
+        import random
+
+        documents = [1, 2, 3, 4]
+        groups = {1: "a", 2: "a", 3: "b", 4: "b"}
+        for seed in range(5):
+            draw = article._resample(documents, groups, random.Random(seed))
+            assert Counter(groups[d] for d in draw) == {"a": 2, "b": 2}
