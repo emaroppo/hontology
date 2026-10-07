@@ -314,3 +314,73 @@ class TestEqualPerWindow:
             draw = article._resample(documents, groups, random.Random(seed))
             assert sum(1 for d in draw if groups[d] == "a") == 2
             assert len(draw) == 5
+
+
+@pytest.mark.requires_db
+def test_one_run_is_scored_on_the_sample_with_its_mistakes():
+    """A run judged alone gets the scores the arms report gives it, and every pair
+    it got wrong, in the sample's order."""
+    from hontology.evalkit.arms import run_on_sample
+    from hontology.evalkit.labels import upsert_label
+
+    with session_scope() as session:
+        ontology = service.create_ontology(session, slug="test-one-run", name="One run")
+        riot, flood = (
+            service.create_concept(session, ontology.id, name=n, definition=f"{n}.").id
+            for n in ("Riot", "Flood")
+        )
+        run = Run(
+            name="r",
+            ontology_id=ontology.id,
+            ontology_version="v1",
+            config={},
+            candidates_key="c",
+            judge_key="j_c",
+            status="done",
+        )
+        documents = [
+            Document(url=f"https://or.test/{i}", url_hash=f"ortest00000{i}") for i in range(2)
+        ]
+        session.add_all([run, *documents])
+        session.flush()
+        first, second = (d.id for d in documents)
+        truth = {
+            (first, riot): True,
+            (first, flood): False,
+            (second, riot): False,
+            (second, flood): True,
+        }
+        for (doc_id, concept_id), matched in truth.items():
+            upsert_label(
+                session,
+                document_id=doc_id,
+                concept_id=concept_id,
+                matched=matched,
+                ontology_id=ontology.id,
+            )
+        # Right on the first document; on the second, Riot wrongly yes and Flood never judged.
+        for doc_id, concept_id, matched in (
+            (first, riot, True),
+            (first, flood, False),
+            (second, riot, True),
+        ):
+            session.add(
+                Verdict(
+                    run_id=run.id,
+                    document_id=doc_id,
+                    concept_id=concept_id,
+                    matched=matched,
+                    samples=1,
+                )
+            )
+        session.flush()
+        manifest = {"order": [{"document_id": second}, {"document_id": first}]}
+        result = run_on_sample(session, run.id, manifest)
+
+    scores = result["article"]["end_to_end"]
+    assert (scores["tp"], scores["fp"], scores["fn"]) == (1, 1, 1)
+    assert result["article"]["pairs_judged"] == 3
+    assert [(e["position"], e["concept_id"], e["kind"]) for e in result["errors"]] == [
+        (1, riot, "false positive"),
+        (1, flood, "false negative"),
+    ]

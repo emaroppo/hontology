@@ -31,15 +31,19 @@ from hontology.judge import prompts
 from hontology.ontology import hierarchy
 
 
-def labelled_sample(session: Session, ontology_id: int, manifest: dict) -> dict:
+def labelled_sample(
+    session: Session, ontology_id: int, manifest: dict, labels: dict | None = None
+) -> dict:
     """The manifest's documents a person has labelled on every concept.
 
     Returns the truth map over those documents and how the labelled set sits in
     the frozen order: the contiguous prefix, and any labelled out of turn.
+    *labels* replaces the label bank, as a ``(document, concept) -> matched`` map.
     """
     # Documents are labelled on leaves; internal classes are derived from them.
     concept_ids = hierarchy.leaves(session, ontology_id)
-    labels = label_map(session, ontology_id)
+    if labels is None:
+        labels = label_map(session, ontology_id)
     per_document: dict[int, dict[int, bool]] = {}
     for (doc_id, concept_id), matched in labels.items():
         per_document.setdefault(doc_id, {})[concept_id] = matched
@@ -68,6 +72,7 @@ def compare_arms(
     before: int = calendar.DEFAULT_BEFORE,
     after: int = calendar.DEFAULT_AFTER,
     seed: int = 0,
+    labels: dict | None = None,
 ) -> dict:
     baseline = session.get(Run, baseline_id)
     if baseline is None:
@@ -92,7 +97,7 @@ def compare_arms(
     if manifest is None:
         return report
 
-    sample = labelled_sample(session, baseline.ontology_id, manifest)
+    sample = labelled_sample(session, baseline.ontology_id, manifest, labels)
     truth = sample["truth"]
     report["sample"] = {
         "manifest_sha256": manifest.get("order_sha256"),
@@ -103,34 +108,13 @@ def compare_arms(
         return report
 
     keys = set(truth)
-    # An equal-per-window sample over-represents small windows; weighting each
-    # document by its window's size keeps pooled scores an estimate of the frame.
-    weights: dict[int, float] | None = None
-    groups: dict[int, str] | None = None
-    if manifest.get("allocation") == EQUAL_PER_WINDOW:
-        weights, groups = article.window_weights(manifest, {doc_id for doc_id, _ in keys})
+    weights, groups = _weighting(manifest, keys)
     report["sample"]["allocation"] = manifest.get("allocation", "proportional")
     predicted = {run_id: article.predictions(session, run_id, keys) for run_id in run_ids}
     for run_id in run_ids:
-        judged = article.judged_keys(session, run_id, keys)
-        report["runs"][run_id]["article"] = {
-            "end_to_end": article.document_bootstrap(
-                truth, predicted[run_id], seed=seed, weights=weights, groups=groups
-            ),
-            "judge_only": article.document_bootstrap(
-                {k: truth[k] for k in judged},
-                predicted[run_id],
-                seed=seed,
-                weights=weights,
-                groups=groups,
-            ),
-            "pairs_judged": len(judged),
-            # On the labelled documents only, so arms that judged different
-            # amounts of the calendar are compared on the same articles.
-            "cost_on_sample": calendar.judging_cost(
-                session, run_id, {doc_id for doc_id, _ in keys}
-            ),
-        }
+        report["runs"][run_id]["article"] = _article_scores(
+            session, run_id, truth, predicted[run_id], weights, groups, seed
+        )
     report["sample"]["status"] = article.sample_status(
         report["runs"][baseline_id]["article"]["end_to_end"]
     )
@@ -153,6 +137,84 @@ def compare_arms(
                 session, arm_id, baseline_id, baseline.ontology_id, truth
             )
     return report
+
+
+def _weighting(
+    manifest: dict, keys: set
+) -> tuple[dict[int, float] | None, dict[int, str] | None]:
+    # An equal-per-window sample over-represents small windows; weighting each
+    # document by its window's size keeps pooled scores an estimate of the frame.
+    if manifest.get("allocation") == EQUAL_PER_WINDOW:
+        return article.window_weights(manifest, {doc_id for doc_id, _ in keys})
+    return None, None
+
+
+def _article_scores(
+    session: Session,
+    run_id: int,
+    truth: dict,
+    predicted: dict,
+    weights: dict[int, float] | None,
+    groups: dict[int, str] | None,
+    seed: int,
+) -> dict:
+    judged = article.judged_keys(session, run_id, set(truth))
+    return {
+        "end_to_end": article.document_bootstrap(
+            truth, predicted, seed=seed, weights=weights, groups=groups
+        ),
+        "judge_only": article.document_bootstrap(
+            {k: truth[k] for k in judged}, predicted, seed=seed, weights=weights, groups=groups
+        ),
+        "pairs_judged": len(judged),
+        # On the labelled documents only, so arms that judged different
+        # amounts of the calendar are compared on the same articles.
+        "cost_on_sample": calendar.judging_cost(
+            session, run_id, {doc_id for doc_id, _ in truth}
+        ),
+    }
+
+
+def run_on_sample(
+    session: Session, run_id: int, manifest: dict, *, seed: int = 0, labels: dict | None = None
+) -> dict:
+    """One run's article-level scores on the labelled sample, as `compare_arms` gives
+    them, with every pair it got wrong.
+
+    Scored against the labels of the run's own ontology, over the labelled prefix
+    of the frozen order.
+    """
+    run = session.get(Run, run_id)
+    if run is None:
+        raise LookupError(f"run {run_id} does not exist")
+    sample = labelled_sample(session, run.ontology_id, manifest, labels)
+    truth = sample["truth"]
+    out: dict = {
+        "run_id": run_id,
+        "labelled_prefix": sample["prefix"],
+        "out_of_turn": sample["out_of_turn"],
+    }
+    if not truth:
+        return out
+    weights, groups = _weighting(manifest, set(truth))
+    predicted = article.predictions(session, run_id, set(truth))
+    out["article"] = _article_scores(session, run_id, truth, predicted, weights, groups, seed)
+    position = {row["document_id"]: i + 1 for i, row in enumerate(manifest["order"])}
+    out["errors"] = [
+        {
+            "position": position[doc_id],
+            "document_id": doc_id,
+            "concept_id": concept_id,
+            "kind": "false positive"
+            if predicted.get((doc_id, concept_id))
+            else "false negative",
+        }
+        for (doc_id, concept_id), expected in sorted(
+            truth.items(), key=lambda item: (position[item[0][0]], item[0][1])
+        )
+        if bool(predicted.get((doc_id, concept_id))) != expected
+    ]
+    return out
 
 
 def hierarchy_diagnostics(

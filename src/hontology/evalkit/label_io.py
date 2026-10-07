@@ -415,24 +415,20 @@ def document_label_status(
     }
 
 
-def import_document_labels(
+def parse_document_labels(
     session: Session,
     ontology_id: int,
     csv_text: str,
     *,
     concept_names: set[str] | None = None,
 ) -> dict:
-    """Load whole-document labels: the concepts that apply, all others negative.
+    """Read whole-document label rows without writing them.
 
-    One row per document. ``concepts`` lists the names that apply separated by
-    ``;``; the word ``none`` means none does; blank means not labelled yet and the
-    row is skipped. Every concept in *concept_names* (default: the ontology's leaves)
-    that the row does not list is written as a negative, which is what makes
-    recall measurable: a pair the system never surfaced still has a label.
-
-    Written as ``human`` labels stamped with the current version, since a person
-    read the current wording. An unknown name rejects the whole row rather than
-    silently labelling the rest of it.
+    Each labelled row becomes its document's id, the ids of the concepts it lists,
+    and its note; ``universe`` is every concept a row answers (default: the
+    ontology's leaves), so the ones a row does not list are its negatives. Blank
+    rows are not yet labelled and are counted, not read. A row naming an unknown
+    concept or document is reported in ``errors`` and left out whole.
     """
     known = {
         c.name: c.id
@@ -446,9 +442,9 @@ def import_document_labels(
         if concept_names is not None
         else {name for name, cid in known.items() if cid in leaf_ids}
     )
-    documents = positives = negatives = skipped_blank = 0
+    rows: list[dict] = []
+    skipped_blank = 0
     errors: list[str] = []
-
     for line_number, row in enumerate(csv.DictReader(io.StringIO(csv_text)), start=2):
         url = (row.get("document_url") or "").strip()
         listed = (row.get("concepts") or "").strip()
@@ -471,19 +467,68 @@ def import_document_labels(
         if document is None:
             errors.append(f"line {line_number}: unknown document {url}")
             continue
+        rows.append(
+            {
+                "document_id": document.id,
+                "positives": {known[name] for name in chosen},
+                "note": (row.get("note") or "").strip() or None,
+            }
+        )
+    return {
+        "rows": rows,
+        "universe": {known[name] for name in names},
+        "skipped_blank": skipped_blank,
+        "errors": errors,
+    }
 
-        note = (row.get("note") or "").strip() or None
+
+def document_label_map(session: Session, ontology_id: int, csv_text: str) -> dict:
+    """A whole-document labels file as a ``(document, concept) -> matched`` map,
+    in place of the label bank; refuses a file with any unreadable row."""
+    parsed = parse_document_labels(session, ontology_id, csv_text)
+    if parsed["errors"]:
+        raise ValueError("; ".join(parsed["errors"][:5]))
+    return {
+        (row["document_id"], concept_id): concept_id in row["positives"]
+        for row in parsed["rows"]
+        for concept_id in parsed["universe"]
+    }
+
+
+def import_document_labels(
+    session: Session,
+    ontology_id: int,
+    csv_text: str,
+    *,
+    concept_names: set[str] | None = None,
+) -> dict:
+    """Load whole-document labels: the concepts that apply, all others negative.
+
+    One row per document. ``concepts`` lists the names that apply separated by
+    ``;``; the word ``none`` means none does; blank means not labelled yet and the
+    row is skipped. Every concept in *concept_names* (default: the ontology's leaves)
+    that the row does not list is written as a negative, which is what makes
+    recall measurable: a pair the system never surfaced still has a label.
+
+    Written as ``human`` labels stamped with the current version, since a person
+    read the current wording. An unknown name rejects the whole row rather than
+    silently labelling the rest of it.
+    """
+    parsed = parse_document_labels(session, ontology_id, csv_text, concept_names=concept_names)
+    documents = positives = negatives = 0
+    for row in parsed["rows"]:
         label_document(
             session,
             ontology_id,
-            document.id,
-            {known[name] for name in chosen},
-            note=note,
-            universe={known[name] for name in names},
+            row["document_id"],
+            row["positives"],
+            note=row["note"],
+            universe=parsed["universe"],
         )
         documents += 1
-        positives += len(chosen)
-        negatives += len(names) - len(chosen)
+        positives += len(row["positives"])
+        negatives += len(parsed["universe"]) - len(row["positives"])
+    skipped_blank, errors = parsed["skipped_blank"], parsed["errors"]
 
     session.flush()
     return {

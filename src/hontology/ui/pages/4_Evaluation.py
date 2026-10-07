@@ -43,6 +43,11 @@ with st.sidebar:
         value=False,
         help="Labels whose concept was reworded after they were made.",
     )
+    manifest_path = st.text_input(
+        "Sample manifest",
+        value="data/samples/sample-run566.json",
+        help="The labelled sample the first section scores this run on.",
+    )
 
 try:
     evaluation = api.evaluate_run(
@@ -69,6 +74,70 @@ if judge["n"] == 0:
         "Nothing below is measured — label some pairs on the **Labelling** page."
     )
 
+st.subheader("Labelled sample")
+st.caption(
+    "This run against your whole-article labels, end to end: a leaf the run never "
+    "judged counts as no, so every run is scored on the same articles. These are "
+    "the numbers the arms comparison uses; intervals are 95%, resampling articles."
+)
+try:
+    on_sample = api.run_on_sample(selected["id"], manifest_path)
+    if "article" not in on_sample:
+        st.info("No article in this sample is labelled yet.")
+    else:
+        scores = on_sample["article"]["end_to_end"]
+        judge_only = on_sample["article"]["judge_only"]
+        cost = on_sample["article"]["cost_on_sample"]
+
+        def rate_text(value: float | None, ci: list) -> tuple[str, str]:
+            if value is None:
+                return "—", "not measured yet"
+            low, high = ci
+            return f"{value:.2f}", f"95%: {low:.2f}–{high:.2f}" if low is not None else ""
+
+        cols = st.columns(5)
+        for col, name in zip(cols, ("precision", "recall", "f1"), strict=False):
+            value, interval = rate_text(scores[name], scores[f"{name}_ci"])
+            col.metric(name.title() if name != "f1" else "F1", value)
+            col.caption(interval)
+        cols[3].metric("Articles labelled", on_sample["labelled_prefix"])
+        cols[3].caption(f"tp {scores['tp']} · fp {scores['fp']} · fn {scores['fn']}")
+        tokens = cost["input_tokens"] + cost["output_tokens"]
+        cols[4].metric("Tokens on these articles", f"{tokens:,}")
+        cols[4].caption(f"{cost['seconds']:.0f} s judging")
+        if on_sample["out_of_turn"]:
+            st.warning(
+                f"{len(on_sample['out_of_turn'])} article(s) labelled out of order are left "
+                "out: the sample is random only as a prefix of its order."
+            )
+        jp, _ = rate_text(judge_only["precision"], judge_only["precision_ci"])
+        jr, _ = rate_text(judge_only["recall"], judge_only["recall_ci"])
+        st.caption(
+            f"Judge only, over the {on_sample['article']['pairs_judged']} labelled pairs "
+            f"this run judged: precision {jp}, recall {jr}."
+        )
+        if on_sample["errors"]:
+            with st.expander(
+                f"Where it disagrees with your labels ({len(on_sample['errors'])})"
+            ):
+                st.dataframe(
+                    [
+                        {
+                            "position": e["position"],
+                            "kind": e["kind"],
+                            "leaf": e["concept"],
+                            "article": e["document_title"] or e["document_url"],
+                            "url": e["document_url"],
+                        }
+                        for e in on_sample["errors"]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+except ApiError as exc:
+    st.error(exc.detail)
+
+st.divider()
 st.subheader("Funnel")
 st.caption(
     "Where the volume went. Needs no labels — this is the first thing to read "
@@ -231,6 +300,10 @@ try:
             charts.rates_with_intervals(rows, title=f"Precision and recall by {dimension}"),
             use_container_width=True,
         )
+        st.caption(
+            "A slice with no labelled positive and no positive verdict has no precision "
+            "or recall to draw; it is still counted in the table below."
+        )
         st.dataframe(
             [
                 {
@@ -300,10 +373,6 @@ run_a = pair[0].selectbox("Run A", list(run_labels), key="cmp_a")
 run_b = pair[1].selectbox(
     "Run B", list(run_labels), key="cmp_b", index=min(1, len(run_labels) - 1)
 )
-        st.caption(
-            "A slice with no labelled positive and no positive verdict has no precision "
-            "or recall to draw; it is still counted in the table below."
-        )
 
 if st.button("Compare"):
     try:

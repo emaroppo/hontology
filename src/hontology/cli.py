@@ -1365,13 +1365,28 @@ def eval_arms(
     markdown: Path | None = typer.Option(
         None, "--markdown", help="Write the report as Markdown tables, for the write-up."
     ),
+    labels_path: Path | None = typer.Option(
+        None,
+        "--labels",
+        help="Score against this whole-document labels CSV instead of the label bank.",
+    ),
     before: int = typer.Option(1),
     after: int = typer.Option(2),
 ) -> None:
     """The pre-registered comparison: every arm against the baseline, both levels."""
+    from hontology.db.models import Run
     from hontology.evalkit import arms, calendar
+    from hontology.evalkit.label_io import document_label_map
 
     with session_scope() as session:
+        labels = None
+        if labels_path is not None:
+            baseline_run = session.get(Run, baseline)
+            if baseline_run is None:
+                raise typer.BadParameter(f"run {baseline} does not exist")
+            labels = document_label_map(
+                session, baseline_run.ontology_id, labels_path.read_text(encoding="utf-8")
+            )
         report = arms.compare_arms(
             session,
             baseline,
@@ -1380,6 +1395,7 @@ def eval_arms(
             arms.load_manifest(manifest_path),
             before=before,
             after=after,
+            labels=labels,
         )
     if out is not None:
         out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")

@@ -262,6 +262,11 @@ class Api:
             json={"ontology_id": ontology_id, "csv": csv_text, "overwrite": overwrite},
         )
 
+    def run_on_sample(self, run_id: int, manifest: str) -> dict:
+        return self._request(
+            "GET", f"/eval/runs/{run_id}/sample", params={"manifest": manifest}
+        )
+
     def run_breakdown(
         self, run_id: int, *, dimension: str = "concept", include_machine: bool = False
     ) -> list[dict]:

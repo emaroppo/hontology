@@ -84,6 +84,37 @@ def leaderboard(limit: int = 50):
     return warehouse.leaderboard(limit=limit)
 
 
+@router.get("/runs/{run_id}/sample")
+def run_on_sample(run_id: int, manifest: str, db: Session = Depends(get_db)):
+    """One run's end-to-end scores on a labelled sample, with the pairs it got wrong.
+
+    *manifest* is the sample manifest's path on the API's machine.
+    """
+    import json
+    from pathlib import Path
+
+    from hontology.db.models import Concept, Document
+    from hontology.evalkit import arms
+
+    try:
+        record = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"cannot read manifest: {exc}"
+        ) from exc
+    try:
+        result = arms.run_on_sample(db, run_id, record)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    for error in result.get("errors", []):
+        concept = db.get(Concept, error["concept_id"])
+        document = db.get(Document, error["document_id"])
+        error["concept"] = concept.name if concept else None
+        error["document_url"] = document.url if document else None
+        error["document_title"] = document.title if document else None
+    return result
+
+
 @router.get("/runs/{run_id}/breakdown")
 def run_breakdown(
     run_id: int,
