@@ -220,6 +220,30 @@ class Api:
             json={"config": config, "ontology_version": ontology_version},
         )
 
+    def leaves(self, ontology_id: int) -> list[dict]:
+        return self._request("GET", "/labels/leaves", params={"ontology_id": ontology_id})
+
+    def documents_status(self, ontology_id: int, document_ids: list[int]) -> list[dict]:
+        return self._request(
+            "POST",
+            "/labels/documents/status",
+            json={"ontology_id": ontology_id, "document_ids": document_ids},
+        )
+
+    def document_for_labelling(self, ontology_id: int, document_id: int) -> dict:
+        return self._request(
+            "GET", f"/labels/documents/{document_id}", params={"ontology_id": ontology_id}
+        )
+
+    def label_document(
+        self, ontology_id: int, document_id: int, concept_ids: list[int], note: str | None
+    ) -> dict:
+        return self._request(
+            "PUT",
+            f"/labels/documents/{document_id}",
+            json={"ontology_id": ontology_id, "concept_ids": concept_ids, "note": note},
+        )
+
     def export_labels(self, ontology_id: int) -> str:
         response = httpx.get(
             f"{self.base_url}/labels/export",

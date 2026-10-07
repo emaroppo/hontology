@@ -38,7 +38,15 @@ from datetime import date as _date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hontology.db.models import Concept, Document, Locus, Observation, PairLabel
+from hontology.db.base import among
+from hontology.db.models import (
+    TRUSTED_SOURCES,
+    Concept,
+    Document,
+    Locus,
+    Observation,
+    PairLabel,
+)
 from hontology.evalkit import labels as label_service
 from hontology.ontology import hierarchy
 
@@ -339,6 +347,74 @@ DOCUMENT_LABEL_COLUMNS = ("position", "document_url", "title", "excerpt", "conce
 NO_CONCEPT = "none"
 
 
+def label_document(
+    session: Session,
+    ontology_id: int,
+    document_id: int,
+    chosen: set[int],
+    *,
+    note: str | None = None,
+    universe: set[int] | None = None,
+) -> dict:
+    """Label one whole document: *chosen* positive, every other leaf negative.
+
+    *universe* defaults to the ontology's leaves. Written as ``human`` labels
+    stamped with the current version, since a person read the current wording;
+    labelling the document again replaces its labels.
+    """
+    leaves = universe if universe is not None else hierarchy.leaves(session, ontology_id)
+    outside = sorted(set(chosen) - leaves)
+    if outside:
+        raise ValueError(f"not leaves of ontology {ontology_id}: {outside}")
+    for concept_id in sorted(leaves):
+        label_service.upsert_label(
+            session,
+            document_id=document_id,
+            concept_id=concept_id,
+            matched=concept_id in chosen,
+            source=label_service.HUMAN,
+            note=note,
+            ontology_id=ontology_id,
+        )
+    return {"positives": len(chosen), "negatives": len(leaves) - len(chosen)}
+
+
+def document_label_status(
+    session: Session, ontology_id: int, document_ids: list[int]
+) -> dict[int, dict]:
+    """Per document: whether every leaf has a counted label, its positives, its note.
+
+    Only trusted labels count, so a machine proposal never marks a document as
+    labelled.
+    """
+    leaves = hierarchy.leaves(session, ontology_id)
+    covered: dict[int, set[int]] = {d: set() for d in document_ids}
+    positives: dict[int, list[int]] = {d: [] for d in document_ids}
+    notes: dict[int, str | None] = dict.fromkeys(document_ids)
+    rows = session.execute(
+        select(PairLabel.document_id, PairLabel.concept_id, PairLabel.matched, PairLabel.note)
+        .where(
+            among(PairLabel.document_id, document_ids),
+            among(PairLabel.concept_id, leaves),
+            PairLabel.source.in_(TRUSTED_SOURCES),
+        )
+        .order_by(PairLabel.document_id, PairLabel.concept_id)
+    )
+    for document_id, concept_id, matched, note in rows:
+        covered[document_id].add(concept_id)
+        if matched:
+            positives[document_id].append(concept_id)
+        notes[document_id] = notes[document_id] or note
+    return {
+        d: {
+            "labelled": bool(leaves) and covered[d] >= leaves,
+            "positives": positives[d],
+            "note": notes[d],
+        }
+        for d in document_ids
+    }
+
+
 def import_document_labels(
     session: Session,
     ontology_id: int,
@@ -397,16 +473,14 @@ def import_document_labels(
             continue
 
         note = (row.get("note") or "").strip() or None
-        for name in sorted(names):
-            label_service.upsert_label(
-                session,
-                document_id=document.id,
-                concept_id=known[name],
-                matched=name in chosen,
-                source=label_service.HUMAN,
-                note=note,
-                ontology_id=ontology_id,
-            )
+        label_document(
+            session,
+            ontology_id,
+            document.id,
+            {known[name] for name in chosen},
+            note=note,
+            universe={known[name] for name in names},
+        )
         documents += 1
         positives += len(chosen)
         negatives += len(names) - len(chosen)
