@@ -20,6 +20,7 @@ from hontology.config import get_settings
 from hontology.db.base import among
 from hontology.db.models import Candidate, Document, Ontology, Run
 from hontology.evalkit import config as run_config
+from hontology.evalkit import versions
 from hontology.judge import run as judge_run_module
 from hontology.ontology import snapshots
 from hontology.retrieve import candidates as candidates_module
@@ -74,6 +75,9 @@ def create_run(
         judge_key=keys["judge"],
         status="pending",
     )
+    # Fingerprints of the code and prompt text in force now, so the run's stage
+    # versions stay right if either is edited later.
+    run.manifest = (run.manifest or {}) | {"versions": versions.recorded(run)}
     session.add(run)
     session.flush()
     return run

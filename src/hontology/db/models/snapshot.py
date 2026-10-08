@@ -47,3 +47,30 @@ class OntologySnapshot(Base, TimestampMixin):
     edges: Mapped[str | None] = mapped_column(Text)
 
     ontology: Mapped[Ontology] = relationship()
+
+
+class LinkSnapshot(Base, TimestampMixin):
+    """The pre-download filter's code links at a point in time.
+
+    Links are live rows a tick changes, so a run that applied the filter would
+    otherwise leave no record of which links were in force. Minted only when the
+    set changes, like ontology versions: "f1", "f2", ... per ontology.
+    """
+
+    __tablename__ = "link_snapshots"
+    __table_args__ = (
+        UniqueConstraint("ontology_id", "version"),
+        UniqueConstraint("ontology_id", "content_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ontology_id: Mapped[int] = mapped_column(
+        ForeignKey("ontologies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    version: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    n_links: Mapped[int] = mapped_column(Integer, default=0)
+    # [[concept id, system slug, code], ...], sorted.
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+
+    ontology: Mapped[Ontology] = relationship()

@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from hontology.db.base import among
 from hontology.db.models import Candidate, Concept, Document, FeedSlice, Run, Verdict
+from hontology.evalkit import versions
 from hontology.evalkit.calendar import Entry, window_documents
 from hontology.ingest import dedup, scrape, service
 from hontology.ingest import filter as ingest_filter
@@ -156,6 +157,11 @@ def process_entry(
                 session, ontology_id, document_ids=sorted(window)
             )
             allowed = window & set(matches)
+            # Which links fetched this window: live rows change, so record the
+            # snapshot on the run.
+            snapshot = versions.resolve_links(session, ontology_id)
+            if snapshot is not None:
+                versions.note_filter(run, snapshot.version)
         else:
             allowed = window  # no links at all: the filter cannot distinguish anything
 

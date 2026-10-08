@@ -30,7 +30,7 @@ from hontology.db.models.ontology import (
     Owner,
 )
 from hontology.db.models.runs import Candidate, ExtractedEvent, Run, Verdict
-from hontology.db.models.snapshot import OntologySnapshot
+from hontology.db.models.snapshot import LinkSnapshot, OntologySnapshot
 from hontology.db.models.taxonomy import Code, CodeSystem, ConceptCode
 from hontology.db.models.vectors import (
     Embedding,
@@ -64,6 +64,7 @@ __all__ = [
     "Locus",
     "Observation",
     "Ontology",
+    "LinkSnapshot",
     "OntologySnapshot",
     "Owner",
     "PairLabel",
