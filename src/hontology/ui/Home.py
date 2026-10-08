@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from hontology.ui import truth
+from hontology.ui import shared
 from hontology.ui.client import Api, ApiError
 
 st.set_page_config(page_title="hontology", page_icon="🧭", layout="wide")
@@ -60,15 +60,10 @@ if not ontologies:
     how_it_fits()
     st.stop()
 
-with st.sidebar:
-    by_label = {f"{o['name']} ({o['slug']})": o for o in ontologies}
-    ontology = by_label[st.selectbox("Ontology", list(by_label), key="home_ontology")]
-    manifest_path = st.text_input(
-        "Sample manifest",
-        value="data/samples/sample-run566.json",
-        help="The labelled sample every run is scored on, in its frozen order.",
-    )
-    annotator = truth.pick(api, ontology["id"], st, key="home_truth")
+params = shared.current(api)
+ontology = next((o for o in ontologies if o["id"] == params.ontology_id), ontologies[0])
+manifest_path = params.sample
+annotator = params.annotator
 
 
 def ci_text(value: float | None, ci: list | None) -> str:
@@ -101,7 +96,7 @@ def show_leaderboard() -> None:
         st.info(
             "No article of this sample is labelled yet, so nothing can be scored. Label "
             "some on the **Labelling** page, or score against a machine annotation set "
-            "(sidebar)."
+            "(Truth, in Settings at the top right)."
         )
         return
     show_partial = st.toggle(
@@ -223,14 +218,11 @@ def show_comparison() -> None:
 
 def show_single() -> None:
     labels = {r["run_id"]: f"{r['run_id']} · {r['name']} ({r['status']})" for r in runs}
-    if not labels:
-        st.info("No run of this ontology has judged anything yet.")
+    run_id = params.run_id
+    if run_id is None or run_id not in labels:
+        st.info("Pick a run that has judged something in Settings, at the top right.")
         return
-    run_id = st.selectbox(
-        "Run", list(labels), format_func=lambda i: labels[i], key="single_run"
-    )
-    if run_id is None:
-        return
+    st.markdown(f"**{labels[run_id]}**")
     row = next(r for r in runs if r["run_id"] == run_id)
 
     st.markdown("**End to end**")

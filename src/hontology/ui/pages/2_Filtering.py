@@ -18,7 +18,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from hontology.ui import truth
+from hontology.ui import shared
 from hontology.ui.client import Api, ApiError
 
 st.set_page_config(page_title="Filtering", page_icon="🧹", layout="wide")
@@ -42,9 +42,7 @@ if not ontologies:
     st.info("No ontologies yet. Create one on the **Ontology** page first.")
     st.stop()
 
-with st.sidebar:
-    by_label = {f"{o['name']} ({o['slug']})": o for o in ontologies}
-    ontology = by_label[st.selectbox("Ontology", list(by_label), key="filter_ontology")]
+ontology = shared.ontology(api, ontologies)
 ontology_id = ontology["id"]
 
 SYSTEMS = {"cameo": "CAMEO event codes", "gkg-themes": "GKG themes"}
@@ -362,7 +360,7 @@ def show_evaluation() -> None:
         except ApiError as exc:
             st.error(exc.detail)
 
-    annotator = truth.pick(api, ontology_id, st, key="fe_truth")
+    annotator = shared.current(api).annotator
     payload = {"ontology_id": ontology_id, "version": version, "annotator": annotator}
     try:
         labels = api.filtering_evaluate("labels", **payload)

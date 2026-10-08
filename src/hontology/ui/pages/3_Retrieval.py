@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from hontology.ui import charts, truth
+from hontology.ui import charts, shared
 from hontology.ui.client import Api, ApiError
 
 st.set_page_config(page_title="Retrieval", page_icon="🔎", layout="wide")
@@ -42,91 +42,102 @@ if not ontologies:
 
 
 # ---------------------------------------------------------------------------
-# Sidebar: ontology, run, truth, cutoff
+# The ontology, run and truth chosen in Settings; the cutoff, in the page
 # ---------------------------------------------------------------------------
 
-with st.sidebar:
-    by_label = {f"{o['name']} ({o['slug']})": o for o in ontologies}
-    ontology = by_label[st.selectbox("Ontology", list(by_label), key="retrieval_ontology")]
-    runs = api.retrieval_runs(ontology["id"])
-    if not runs:
-        st.info("No run of this ontology has retrieved anything yet.")
-        st.stop()
-    by_run = {f"{r['id']} · {r['name']} · {r['documents']:,} articles": r for r in runs}
-    run = by_run[st.selectbox("Run", list(by_run), key="retrieval_run")]
+ontology = shared.ontology(api, ontologies)
+params = shared.current(api)
+annotator = params.annotator
+runs = api.retrieval_runs(ontology["id"])
+run = next((r for r in runs if r["id"] == params.run_id), None)
 
-    st.divider()
-    annotator = truth.pick(api, ontology["id"], st, key="retrieval_truth")
+CUT_KEYS = ("cut_selection", "cut_top_k", "cut_min_score", "cut_rel_margin", "cut_max_k")
 
-    st.divider()
-    st.subheader("Cutoff")
+
+def cutoff_controls() -> dict:
+    """The cutoff Tune and Explore apply, starting from the run's own."""
+    assert run is not None
     own = run["cutoff"]
-    # A different run starts from its own cutoff.
-    if st.session_state.get("retrieval_cutoff_for") != run["id"] or st.button(
-        "Reset to the run's own"
-    ):
+    # The controls are drawn on two tabs and neither while Evaluation is open,
+    # and a keyed widget left undrawn loses its value: keep a copy.
+    for key in CUT_KEYS:
+        if key not in st.session_state and f"keep:{key}" in st.session_state:
+            st.session_state[key] = st.session_state[f"keep:{key}"]
+    if st.session_state.get("retrieval_cutoff_for") != run["id"]:
         st.session_state["retrieval_cutoff_for"] = run["id"]
         st.session_state["cut_selection"] = own["selection"]
         st.session_state["cut_top_k"] = own["top_k"]
         st.session_state["cut_min_score"] = float(own["min_score"])
         st.session_state["cut_rel_margin"] = float(own["rel_margin"])
         st.session_state["cut_max_k"] = own["max_k"]
-    selection = st.radio(
-        "Selection",
-        ["adaptive", "top-k"],
-        key="cut_selection",
-        horizontal=True,
-        help="Adaptive keeps the classes within a margin of the article's best score; "
-        "top-k keeps a fixed number per article.",
-    )
-    # Every control is always drawn, disabled when it does not apply: a keyed
-    # widget left undrawn loses its value on the next rerun.
-    adaptive = selection == "adaptive"
-    st.slider("Classes per article", 1, 20, key="cut_top_k", disabled=adaptive)
-    st.slider(
-        "Minimum score",
-        0.0,
-        1.0,
-        step=0.01,
-        key="cut_min_score",
-        disabled=not adaptive,
-        help="Nothing below this is kept, however close to the best.",
-    )
-    st.slider(
-        "Margin below the best",
-        0.0,
-        0.5,
-        step=0.01,
-        key="cut_rel_margin",
-        disabled=not adaptive,
-        help="Keep classes scoring within this much of the article's best.",
-    )
-    st.slider(
-        "At most",
-        1,
-        20,
-        key="cut_max_k",
-        disabled=not adaptive,
-        help="Classes kept per article, at most.",
-    )
-    st.caption(
-        f"The run's own: {own['selection']}"
-        + (
-            f", top {own['top_k']}"
-            if own["selection"] == "top-k"
-            else f", min {own['min_score']}, margin {own['rel_margin']}, at most {own['max_k']}"
+    with st.container(border=True):
+        cols = st.columns([2, 2, 2, 2, 2, 1])
+        selection = cols[0].radio(
+            "Cutoff",
+            ["adaptive", "top-k"],
+            key="cut_selection",
+            help="Adaptive keeps the classes within a margin of the article's best score; "
+            "top-k keeps a fixed number per article.",
         )
-        + ". Its pool holds the top 20 per article; a cutoff can only draw from that."
-    )
+        # Every control is always drawn, disabled when it does not apply.
+        adaptive = selection == "adaptive"
+        cols[1].slider("Classes per article", 1, 20, key="cut_top_k", disabled=adaptive)
+        cols[2].slider(
+            "Minimum score",
+            0.0,
+            1.0,
+            step=0.01,
+            key="cut_min_score",
+            disabled=not adaptive,
+            help="Nothing below this is kept, however close to the best.",
+        )
+        cols[3].slider(
+            "Margin below the best",
+            0.0,
+            0.5,
+            step=0.01,
+            key="cut_rel_margin",
+            disabled=not adaptive,
+            help="Keep classes scoring within this much of the article's best.",
+        )
+        cols[4].slider(
+            "At most", 1, 20, key="cut_max_k", disabled=not adaptive, help="Per article."
+        )
+        if cols[5].button("Reset", help="Back to the run's own cutoff."):
+            st.session_state.pop("retrieval_cutoff_for", None)
+            for key in CUT_KEYS:
+                st.session_state.pop(f"keep:{key}", None)
+            st.rerun()
+        st.caption(
+            f"Run {run['id']}'s own: {own['selection']}"
+            + (
+                f", top {own['top_k']}"
+                if own["selection"] == "top-k"
+                else f", min {own['min_score']}, margin {own['rel_margin']}, "
+                f"at most {own['max_k']}"
+            )
+            + ". Its pool holds the top 20 per article; a cutoff can only draw from that."
+        )
+    for key in CUT_KEYS:
+        st.session_state[f"keep:{key}"] = st.session_state[key]
+    return {
+        "selection": st.session_state["cut_selection"],
+        "top_k": st.session_state["cut_top_k"],
+        "min_score": st.session_state["cut_min_score"],
+        "rel_margin": st.session_state["cut_rel_margin"],
+        "max_k": st.session_state["cut_max_k"],
+    }
 
-cutoff = {
-    "selection": st.session_state["cut_selection"],
-    "top_k": st.session_state["cut_top_k"],
-    "min_score": st.session_state["cut_min_score"],
-    "rel_margin": st.session_state["cut_rel_margin"],
-    "max_k": st.session_state["cut_max_k"],
-}
-changed = cutoff != own
+
+def no_run() -> bool:
+    if run is None:
+        st.info(
+            "Pick a run that has retrieved something in Settings (top right): Tune and "
+            "Explore "
+            "work on a run's stored ranking."
+        )
+        return True
+    return False
 
 
 def mark(value: bool | None) -> str:
@@ -143,6 +154,11 @@ def label_mark(value: bool | None) -> str:
 
 
 def show_tune() -> None:
+    if no_run():
+        return
+    assert run is not None
+    cutoff = cutoff_controls()
+    changed = cutoff != run["cutoff"]
     try:
         result = api.retrieval_report(run["id"], cutoff, annotator)
     except ApiError as exc:
@@ -177,7 +193,7 @@ def show_tune() -> None:
     if not labels["positives"]:
         st.info(
             "No labelled true matches on this run's articles, so recall cannot be "
-            "measured. Try a machine annotation set as truth (sidebar)."
+            "measured. Try a machine annotation set as truth (Settings, top right)."
         )
     else:
         cols = st.columns(4)
@@ -224,7 +240,8 @@ def show_tune() -> None:
 # ---------------------------------------------------------------------------
 
 
-def show_article(document_id: int) -> None:
+def show_article(document_id: int, cutoff: dict) -> None:
+    assert run is not None
     try:
         pool = api.retrieval_document(run["id"], document_id, cutoff, annotator)
     except ApiError as exc:
@@ -253,6 +270,10 @@ def show_article(document_id: int) -> None:
 
 
 def show_explore() -> None:
+    if no_run():
+        return
+    assert run is not None
+    cutoff = cutoff_controls()
     mode = st.radio("Look at", ["One article", "One class"], horizontal=True)
     if mode == "One article":
         try:
@@ -279,7 +300,7 @@ def show_explore() -> None:
         if document_id is None:
             st.info("No labelled article in this run. Enter an article id.")
             return
-        show_article(document_id)
+        show_article(document_id, cutoff)
         return
 
     try:
@@ -418,7 +439,8 @@ def show_evaluation() -> None:
     if not result["positives"]:
         st.info(
             f"No labelled true match among the {docs['labelled']} labelled article(s) on "
-            "this version's leaves. Try a machine annotation set as truth (sidebar)."
+            "this version's leaves. Try a machine annotation set as truth (Settings, "
+            "top right)."
         )
         return
 

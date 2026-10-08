@@ -17,7 +17,12 @@ is in the [design notes](design-notes.md); what comes next is in the
 
 Install and start the services as in the [quick start](../README.md#quick-start), then:
 
-The UI is seven pages, each a pure HTTP client of the API:
+The UI is seven pages, each a pure HTTP client of the API, listed in the sidebar.
+The settings several pages share, the ontology, the run, the truth scores are
+computed against and the labelled sample, are in a panel that opens from the top
+right corner of every page; its button shows the current choice, and a choice
+made on one page holds on the others. Everything else a page needs is in its
+body.
 
 | Page | What it is for |
 |---|---|

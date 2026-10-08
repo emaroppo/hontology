@@ -12,6 +12,7 @@ import json
 
 import streamlit as st
 
+from hontology.ui import shared
 from hontology.ui.client import Api, ApiError
 
 st.set_page_config(page_title="Runs", page_icon="⚙️", layout="wide")
@@ -42,15 +43,14 @@ DEFAULT_CONFIG = {
     "common": {"body_limit": 2500},
 }
 
-with st.sidebar:
-    labels = {f"{o['name']} ({o['slug']})": o for o in ontologies}
-    ontology = labels[st.selectbox("Ontology", list(labels))]
-    name = st.text_input("Run name", "baseline")
-    document_limit = st.number_input("Documents", 1, 5000, 50)
-    judge_limit = st.number_input("Max pairs to judge", 0, 5000, 25, help="0 means no cap.")
-    skip_judge = st.toggle("Candidates only", value=False)
+ontology = shared.ontology(api, ontologies)
 
 st.subheader("Configuration")
+cols = st.columns(4)
+name = cols[0].text_input("Run name", "baseline")
+document_limit = cols[1].number_input("Documents", 1, 5000, 50)
+judge_limit = cols[2].number_input("Max pairs to judge", 0, 5000, 25, help="0 means no cap.")
+skip_judge = cols[3].toggle("Candidates only", value=False)
 config_text = st.text_area(
     "Run config (JSON)", json.dumps(DEFAULT_CONFIG, indent=2), height=280
 )

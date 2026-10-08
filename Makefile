@@ -39,7 +39,7 @@ api: ## Run the API with reload
 
 .PHONY: ui
 ui: ## Run the Streamlit UI (needs the API running)
-	$(VENV)/bin/streamlit run src/hontology/ui/Home.py
+	$(VENV)/bin/streamlit run src/hontology/ui/app.py
 
 .PHONY: test
 test: ## Run the test suite

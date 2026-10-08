@@ -22,7 +22,7 @@ import json
 
 import streamlit as st
 
-from hontology.ui import charts, truth
+from hontology.ui import charts, shared
 from hontology.ui.client import Api, ApiError
 
 st.set_page_config(page_title="Judgement", page_icon="⚖️", layout="wide")
@@ -48,49 +48,42 @@ WORDING = {
 
 
 # ---------------------------------------------------------------------------
-# Sidebar: ontology, run (the model and settings), prompt, truth
+# The ontology, run and truth chosen in Settings
 # ---------------------------------------------------------------------------
 
-with st.sidebar:
-    by_label = {f"{o['name']} ({o['slug']})": o for o in ontologies}
-    ontology = by_label[st.selectbox("Ontology", list(by_label), key="judgement_ontology")]
-    runs = api.judgement_runs(ontology["id"])
-    if not runs:
-        st.info("No run of this ontology has judged anything yet.")
-        st.stop()
-    by_run = {f"{r['id']} · {r['name']} ({r['prompt_id']})": r for r in runs}
-    # A per-pair run compares like with like, so it is the default when there is one.
-    templates = {t["prompt_id"]: t for t in api.judgement_templates()}
-    default_run = next((i for i, r in enumerate(runs) if r["prompt_id"] in templates), 0)
-    run = by_run[
-        st.selectbox(
-            "Ask as run",
-            list(by_run),
-            index=default_run,
-            key="judgement_run",
-            help="The model, decoding settings and article text limit come from this "
-            "run, and its recorded verdicts are shown beside each trial.",
-        )
-    ]
-    st.caption(f"{run['provider']} · {run['model']}")
-    prompt_ids = list(templates)
-    prompt_id = st.selectbox(
-        "Prompt",
-        prompt_ids,
-        index=prompt_ids.index(run["prompt_id"]) if run["prompt_id"] in templates else 0,
-        key="judgement_prompt",
-    )
-    if run["prompt_id"] not in templates:
-        st.caption(
-            f"Run {run['id']} used {run['prompt_id']}, which is not a per-pair prompt; "
-            "its verdicts are shown for reference, and the trial asks per pair."
-        )
-
-    st.divider()
-    annotator = truth.pick(api, ontology["id"], st, key="judgement_truth")
+ontology = shared.ontology(api, ontologies)
+params = shared.current(api)
+annotator = params.annotator
+runs = api.judgement_runs(ontology["id"])
+run = next((r for r in runs if r["id"] == params.run_id), None)
+templates = {t["prompt_id"]: t for t in api.judgement_templates()}
 
 
 def show_trials() -> None:
+    if run is None:
+        st.info(
+            "Pick a run that has judged something in Settings (top right): a trial is asked as "
+            "that run asks, with its model, decoding settings and article text limit, "
+            "and its recorded verdicts are shown beside each answer."
+        )
+        return
+    cols = st.columns([2, 3])
+    prompt_ids = list(templates)
+    prompt_id = cols[0].selectbox(
+        "Prompt",
+        prompt_ids,
+        index=prompt_ids.index(run["prompt_id"]) if run["prompt_id"] in templates else 0,
+        key=f"judgement_prompt_{run['id']}",
+    )
+    cols[1].caption(
+        f"Asked as run {run['id']}: {run['provider']} · {run['model']}."
+        + (
+            ""
+            if run["prompt_id"] in templates
+            else f" It used {run['prompt_id']}, which is not a per-pair prompt; its "
+            "verdicts are shown for reference, and the trial asks per pair."
+        )
+    )
     # ---------------------------------------------------------------------------
     # Class and prompt
     # ---------------------------------------------------------------------------
@@ -353,7 +346,7 @@ def show_evaluation() -> None:
     if not pooled["pairs"]:
         st.info(
             "No labelled pair among what these runs judged. Try a machine annotation set "
-            "as truth (sidebar)."
+            "as truth (Settings, top right)."
         )
         return
 

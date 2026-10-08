@@ -26,6 +26,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from hontology.ui import shared
 from hontology.ui.client import Api, ApiError
 
 st.set_page_config(page_title="Labelling", page_icon="🏷️", layout="wide")
@@ -45,27 +46,27 @@ if not ontologies:
 
 
 def sample_tab() -> None:
-    with st.sidebar:
-        manifest_path = st.text_input(
-            "Sample manifest", value="data/samples/sample-run566.json"
+    ontology = shared.ontology(api, ontologies)
+    manifest_path = shared.current(api).sample
+    try:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        st.error(f"Cannot read the sample manifest (Settings, top right): {exc}")
+        return
+    # A sample is labelled against the ontology of the run it was drawn from.
+    try:
+        drawn_from = api.get_run(manifest["run_id"])["ontology_id"]
+    except (ApiError, KeyError):
+        drawn_from = None
+    if drawn_from is not None and drawn_from != ontology["id"]:
+        st.warning(
+            f"This sample was drawn from run {manifest['run_id']}, of another ontology. "
+            "Pick that ontology in Settings (top right) to label it."
         )
-        try:
-            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            st.error(f"Cannot read the manifest: {exc}")
-            return
-        # The sample is labelled against the ontology of the run it was drawn from.
-        try:
-            drawn_from = api.get_run(manifest["run_id"])["ontology_id"]
-        except (ApiError, KeyError):
-            drawn_from = None
-        by_name = {f"{o['name']} ({o['slug']})": o for o in ontologies}
-        names = list(by_name)
-        default = next((i for i, o in enumerate(ontologies) if o["id"] == drawn_from), 0)
-        ontology = by_name[
-            st.selectbox("Ontology", names, index=default, key="sample_ontology")
-        ]
-        first = st.number_input("Label the first", min_value=1, value=120, step=10)
+        return
+    first = st.number_input(
+        "Label the first", min_value=1, value=120, step=10, key="sample_first"
+    )
 
     document_ids = [entry["document_id"] for entry in manifest["order"]][: int(first)]
     try:
@@ -175,26 +176,22 @@ def sample_tab() -> None:
 
 
 def queue_tab() -> None:
-    with st.sidebar:
-        labels_by_name = {f"{o['name']} ({o['slug']})": o for o in ontologies}
-        ontology = labels_by_name[
-            st.selectbox("Ontology", list(labels_by_name), key="queue_ontology")
-        ]
-        limit = st.slider("Queue size", 5, 100, 25, 5)
-        per_concept_cap = st.number_input(
-            "Max per concept",
-            min_value=0,
-            value=5,
-            help="0 means no cap. A cap stops the noisiest concept from filling the queue.",
-        )
-        include_unjudged = st.toggle(
-            "Include never-judged pairs",
-            value=True,
-            help="Retrieved but never judged. Nothing else surfaces these.",
-        )
+    ontology = shared.ontology(api, ontologies)
+    cols = st.columns(3)
+    limit = cols[0].slider("Queue size", 5, 100, 25, 5)
+    per_concept_cap = cols[1].number_input(
+        "Max per concept",
+        min_value=0,
+        value=5,
+        help="0 means no cap. A cap stops the noisiest concept from filling the queue.",
+    )
+    include_unjudged = cols[2].toggle(
+        "Include never-judged pairs",
+        value=True,
+        help="Retrieved but never judged. Nothing else surfaces these.",
+    )
 
-        st.divider()
-        st.subheader("Move the bank")
+    with st.expander("Move the bank"):
         st.caption("Keyed by document URL and concept name, so it travels between databases.")
         try:
             st.download_button(

@@ -18,6 +18,7 @@ import json
 
 import streamlit as st
 
+from hontology.ui import shared
 from hontology.ui.client import Api, ApiError
 
 st.set_page_config(page_title="Ontology", page_icon="🧭", layout="wide")
@@ -34,60 +35,53 @@ ontologies = api.list_ontologies()
 
 
 # ---------------------------------------------------------------------------
-# Empty state / selection
+# New and imported ontologies; the one shown is the one chosen in Settings
 # ---------------------------------------------------------------------------
 
-selected: dict | None = None
+new_col, import_col = st.columns(2)
+with new_col.expander("New ontology", expanded=not ontologies), st.form("create_ontology"):
+    new_slug = st.text_input("Slug", placeholder="supply-chain")
+    new_name = st.text_input("Name", placeholder="Supply chain disruption")
+    description = st.text_area("Description", placeholder="Optional.")
+    if st.form_submit_button("Create", type="primary"):
+        try:
+            created = api.create_ontology(
+                slug=new_slug.strip(), name=new_name.strip(), description=description or None
+            )
+            shared.request("ontology", created["id"])
+            st.rerun()
+        except ApiError as exc:
+            st.error(exc.detail)
 
-with st.sidebar:
-    st.subheader("Ontology")
-    if ontologies:
-        labels = {f"{o['name']} ({o['slug']})": o for o in ontologies}
-        selected = labels[st.selectbox("Select", list(labels))]
-    else:
-        st.caption("None yet — create one below.")
+with import_col.expander("Import", expanded=not ontologies):
+    st.caption(
+        "OWL (Turtle, `.ttl`) from Protégé, or a JSON export. Re-importing "
+        "merges by class name rather than duplicating."
+    )
+    uploaded = st.file_uploader("File", type=["ttl", "json"])
+    reword = st.checkbox(
+        "Allow rewording existing classes",
+        help="OWL only. Off by default, so a structural edit cannot silently "
+        "change the wording labels were made against.",
+    )
+    if uploaded is not None and st.button("Import"):
+        try:
+            raw = uploaded.read().decode("utf-8")
+            if uploaded.name.endswith(".ttl"):
+                imported = api.import_owl(raw, allow_text_change=reword)
+            else:
+                imported = api.import_ontology(json.loads(raw))
+            shared.request("ontology", imported["id"])
+            st.rerun()
+        except (ApiError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            st.error(str(exc))
 
-    with st.expander("Create new", expanded=not ontologies), st.form("create_ontology"):
-        slug = st.text_input("Slug", placeholder="supply-chain")
-        name = st.text_input("Name", placeholder="Supply chain disruption")
-        description = st.text_area("Description", placeholder="Optional.")
-        if st.form_submit_button("Create", type="primary"):
-            try:
-                api.create_ontology(
-                    slug=slug.strip(), name=name.strip(), description=description or None
-                )
-                st.success(f"Created {name!r}.")
-                st.rerun()
-            except ApiError as exc:
-                st.error(exc.detail)
-
-    with st.expander("Import"):
-        st.caption(
-            "OWL (Turtle, `.ttl`) from Protégé, or a JSON export. Re-importing "
-            "merges by class name rather than duplicating."
-        )
-        uploaded = st.file_uploader("File", type=["ttl", "json"])
-        reword = st.checkbox(
-            "Allow rewording existing classes",
-            help="OWL only. Off by default, so a structural edit cannot silently "
-            "change the wording labels were made against.",
-        )
-        if uploaded is not None and st.button("Import"):
-            try:
-                raw = uploaded.read().decode("utf-8")
-                if uploaded.name.endswith(".ttl"):
-                    api.import_owl(raw, allow_text_change=reword)
-                else:
-                    api.import_ontology(json.loads(raw))
-                st.success("Imported.")
-                st.rerun()
-            except (ApiError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-                st.error(str(exc))
-
+params = shared.current(api)
+selected = next((o for o in ontologies if o["id"] == params.ontology_id), None)
 if selected is None:
     st.info(
-        "**Nothing here yet.** Create an ontology in the sidebar and add a few "
-        "event classes, or import one from OWL or JSON."
+        "**Nothing here yet.** Create an ontology above and add a few event classes, "
+        "or import one from OWL or JSON."
     )
     st.stop()
 
@@ -266,7 +260,7 @@ def show_hierarchy() -> None:
             st.info(
                 "Internal classes, names, categories and the structure itself are "
                 "edited in Protégé: download the OWL file from **Export**, edit it, "
-                "and import it from the sidebar. Leaf wording can be edited here."
+                "and import it above. Leaf wording can be edited here."
             )
 
 
