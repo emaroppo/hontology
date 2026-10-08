@@ -54,6 +54,20 @@ Deferred deliberately, with the reason.
     spreading selections across families, and using a class's feed-code links as
     evidence, starting with retrieval's recall on the labelled sample;
   - *budgets*: a per-concept judging budget, and fixed budgets for every arm.
+- **One retrieval stage does different jobs in different arms**, which undercuts
+  comparing them. The batched and per-pair judges judge exactly the pairs
+  retrieval selected, so its ranking and cutoff bound their recall. The
+  hierarchical and extraction judges read only *which articles* retrieval
+  selected, any article with one class past the cutoff, and then reach classes
+  their own way; for them retrieval is an article filter, and with the adaptive
+  cutoff it passes nearly everything (24 of 38,151 articles excluded on run
+  566). The embedding variant of extraction also ranks leaves against each
+  event, a second retrieval the stage version does not cover. Yet every arm
+  shares one retrieval version and is scored with the same pair-level metrics.
+  To do: make retrieval's role explicit per arm (pair candidates, an article
+  gate, or none), version and score each role as what it is (an article gate by
+  articles passed and true-match articles kept), and decide whether arms should
+  share one article gate so that only the judging differs between them.
 - **US events wait for state-level places.** A US-wide window holds far too many
   articles to scrape, so US entries are left out of the evaluation calendar.
 - **`precursor_of` drives nothing yet.** Precursors are leaf classes under their
