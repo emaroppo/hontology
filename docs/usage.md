@@ -24,7 +24,7 @@ The UI is six pages, each a pure HTTP client of the API:
 | **Home** | The ontologies installed, where to start when there are none, and how the pieces fit together |
 | **Ontology** | Author a flat event set in place; for a hierarchy, view the tree and edit leaf wording (structure comes from Protégé via OWL import); import/export, version history, health checks |
 | **Code Links** | Curate concept↔CAMEO associations from similarity proposals |
-| **Labelling** | The queue, adjudication of machine proposals, bank import/export |
+| **Labelling** | Two tabs: **Sample**, blind whole-document labelling of a frozen sample, in order; **Queue**, single pairs ranked by what a label would teach, adjudication of machine proposals, bank import/export |
 | **Evaluation** | Funnel, detections, per-stage metrics, breakdowns, errors, leaderboard |
 | **Runs** | Start and watch runs; preview stage keys before paying for them |
 
