@@ -80,7 +80,7 @@ def select_adaptive(
     return [(cid, score) for cid, score in ranked if score >= cutoff][:max_k]
 
 
-def _document_body(document: Document, limit: int) -> str | None:
+def document_body(document: Document, limit: int) -> str | None:
     settings = get_settings()
     if not document.body_path:
         return None
@@ -162,7 +162,7 @@ def build_semantic(
     # ones cost a provider call.
     bodies: dict[int, str] = {}
     for document in documents:
-        body = _document_body(document, embed_body_limit)
+        body = document_body(document, embed_body_limit)
         if body:
             bodies[document.id] = body
     if not bodies:

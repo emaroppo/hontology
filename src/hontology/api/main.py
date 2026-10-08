@@ -17,6 +17,7 @@ from hontology.api.routers import (
     ingest,
     labels,
     ontology,
+    retrieval,
     runs,
     taxonomy,
 )
@@ -49,6 +50,7 @@ app.include_router(ingest.router)
 app.include_router(labels.router)
 app.include_router(evaluation.router)
 app.include_router(runs.router)
+app.include_router(retrieval.router)
 
 
 @app.get("/health", tags=["meta"])

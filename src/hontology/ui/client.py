@@ -163,6 +163,51 @@ class Api:
         # The first run over a codebook embeds every code, which takes a while.
         return self._request("POST", "/taxonomy/similarity", json=payload, timeout=600)
 
+    # --- retrieval ----------------------------------------------------------
+    # Each call carries the cutoff (None: the run's own) and, optionally, a
+    # whole-document labels file to use as truth in place of the label bank.
+
+    def retrieval_runs(self, ontology_id: int) -> list[dict]:
+        return self._request("GET", "/retrieval/runs", params={"ontology_id": ontology_id})
+
+    def retrieval_report(
+        self, run_id: int, cutoff: dict | None, labels_csv: str | None = None
+    ) -> dict:
+        return self._request(
+            "POST",
+            f"/retrieval/runs/{run_id}/report",
+            json={"cutoff": cutoff, "labels_csv": labels_csv},
+        )
+
+    def retrieval_labelled(self, run_id: int, labels_csv: str | None = None) -> list[dict]:
+        return self._request(
+            "POST", f"/retrieval/runs/{run_id}/labelled", json={"labels_csv": labels_csv}
+        )
+
+    def retrieval_document(
+        self, run_id: int, document_id: int, cutoff: dict | None, labels_csv: str | None = None
+    ) -> dict:
+        return self._request(
+            "POST",
+            f"/retrieval/runs/{run_id}/documents/{document_id}",
+            json={"cutoff": cutoff, "labels_csv": labels_csv},
+        )
+
+    def retrieval_concept(
+        self,
+        run_id: int,
+        concept_id: int,
+        cutoff: dict | None,
+        labels_csv: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        return self._request(
+            "POST",
+            f"/retrieval/runs/{run_id}/concepts/{concept_id}",
+            params={"limit": limit},
+            json={"cutoff": cutoff, "labels_csv": labels_csv},
+        )
+
     # --- labels -------------------------------------------------------------
 
     def labelling_queue(

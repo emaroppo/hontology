@@ -17,13 +17,14 @@ is in the [design notes](design-notes.md); what comes next is in the
 
 Install and start the services as in the [quick start](../README.md#quick-start), then:
 
-The UI is six pages, each a pure HTTP client of the API:
+The UI is seven pages, each a pure HTTP client of the API:
 
 | Page | What it is for |
 |---|---|
 | **Home** | The ontologies installed, where to start when there are none, and how the pieces fit together |
 | **Ontology** | Author a flat event set in place; for a hierarchy, view the tree and edit leaf wording (structure comes from Protégé via OWL import); import/export, version history, health checks |
 | **Filtering** | Link classes to feed codes (CAMEO, GKG themes), ticking similarity candidates; preview what the pre-download filter would keep; per-code report of what each link admitted and what it was worth once labelled |
+| **Retrieval** | A finished run's ranked pool under a cutoff of choice: what it sends to the judge and which labelled true matches it keeps, split into those the pool never ranked and those the cutoff dropped; one article's or one class's ranking. No re-embedding |
 | **Labelling** | Two tabs: **Sample**, blind whole-document labelling of a frozen sample, in order; **Queue**, single pairs ranked by what a label would teach, adjudication of machine proposals, bank import/export |
 | **Evaluation** | Funnel, detections, per-stage metrics, breakdowns, errors, leaderboard |
 | **Runs** | Start and watch runs; preview stage keys before paying for them |
