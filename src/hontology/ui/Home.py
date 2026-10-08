@@ -275,7 +275,7 @@ def show_single() -> None:
             )
         except ApiError as exc:
             st.error(exc.detail)
-        st.page_link("pages/2_Filtering.py", label="Filtering evaluation", icon="🧹")
+        st.page_link("views/2_Filtering.py", label="Filtering evaluation", icon="🧹")
     with cols[1], st.container(border=True):
         st.markdown("Retrieval")
         source = versions["retrieval_source_run"]
@@ -295,7 +295,7 @@ def show_single() -> None:
             st.caption(f"{cut['pairs_per_document']:.2f} pairs per article to the judge")
         except ApiError as exc:
             st.error(exc.detail)
-        st.page_link("pages/3_Retrieval.py", label="Retrieval evaluation", icon="🔎")
+        st.page_link("views/3_Retrieval.py", label="Retrieval evaluation", icon="🔎")
     with cols[2], st.container(border=True):
         st.markdown("Judgement")
         st.caption(f"Version {versions['judge']} · {versions['prompt_id']}")
@@ -306,7 +306,7 @@ def show_single() -> None:
             help="On the labelled pairs this run judged: what retrieval passed it.",
         )
         st.caption(f"{row['pairs_judged'] or 0} labelled pairs judged")
-        st.page_link("pages/4_Judgement.py", label="Judgement evaluation", icon="⚖️")
+        st.page_link("views/4_Judgement.py", label="Judgement evaluation", icon="⚖️")
 
     with st.expander("Where it disagrees with the labels"):
         try:
