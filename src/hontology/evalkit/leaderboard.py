@@ -69,7 +69,20 @@ def stage_versions(session: Session, run: Run) -> dict:
     }
 
 
-def rows(session: Session, ontology_id: int, manifest: dict, labels: dict | None) -> dict:
+def rows(
+    session: Session,
+    ontology_id: int,
+    manifest: dict,
+    labels: dict | None,
+    *,
+    include_partial: bool = False,
+) -> dict:
+    """Every judged run, scored on the sample if it worked on the whole of it.
+
+    A run that covered only part of the sample is listed with its coverage but
+    not scored unless *include_partial*: its scores there say nothing about it,
+    and the bootstrap behind each score is what makes this slow.
+    """
     sample = arms.labelled_sample(session, ontology_id, manifest, labels)
     documents = {doc for doc, _ in sample["truth"]}
     judged = set(
@@ -79,15 +92,22 @@ def rows(session: Session, ontology_id: int, manifest: dict, labels: dict | None
     )
     out = []
     for run in session.scalars(select(Run).where(Run.id.in_(judged)).order_by(Run.id.desc())):
-        scored = arms.run_on_sample(session, run.id, manifest, labels=labels)
-        article = scored.get("article") or {}
+        covered = coverage(session, run, documents)
+        article: dict = {}
+        if include_partial or covered == len(documents):
+            # Judge-only scores are left to the run's own view (`run_on_sample` in
+            # full): the table does not show them, and they cost as much again.
+            scored = arms.run_on_sample(
+                session, run.id, manifest, labels=labels, judge_only=False
+            )
+            article = scored.get("article") or {}
         out.append(
             {
                 "run_id": run.id,
                 "name": run.name,
                 "status": run.status,
                 "versions": stage_versions(session, run),
-                "covered": coverage(session, run, documents),
+                "covered": covered,
                 "end_to_end": article.get("end_to_end"),
                 "judge_only": article.get("judge_only"),
                 "pairs_judged": article.get("pairs_judged"),

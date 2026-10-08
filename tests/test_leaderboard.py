@@ -8,6 +8,7 @@ reused another's candidates for a different sample covers none of this one.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -149,3 +150,28 @@ def test_the_live_leaderboard_scores_every_judged_run(world):
     )
     assert own["versions"]["retrieval"].startswith("r-")
     assert world["runs"]["arm"] not in rows  # judged nothing
+
+
+def test_a_run_that_missed_the_sample_is_scored_only_when_asked(world):
+    from hontology.evalkit import annotations, leaderboard
+
+    with session_scope() as session:
+        annotations.import_set(
+            session,
+            world["ontology"],
+            "test-board-partial",
+            "document_url,concepts\n"
+            + "".join(f"https://lb.test/{i},Strike\n" for i in range(4)),
+        )
+        labels = annotations.truth(session, world["ontology"], "test-board-partial")
+        manifest = json.loads(Path(world["manifest"]).read_text())
+        quick = leaderboard.rows(session, world["ontology"], manifest, labels)
+        full = leaderboard.rows(
+            session, world["ontology"], manifest, labels, include_partial=True
+        )
+    dev = world["runs"]["dev"]
+    by_run = {r["run_id"]: r for r in quick["rows"]}
+    assert by_run[dev]["covered"] == 0 and by_run[dev]["end_to_end"] is None
+    assert {r["run_id"]: r for r in full["rows"]}[dev]["end_to_end"] is not None
+    # The table never shows judge-only scores, so the leaderboard skips them.
+    assert by_run[world["runs"]["own"]]["judge_only"] is None

@@ -157,15 +157,21 @@ def _article_scores(
     weights: dict[int, float] | None,
     groups: dict[int, str] | None,
     seed: int,
+    *,
+    judge_only: bool = True,
 ) -> dict:
     judged = article.judged_keys(session, run_id, set(truth))
     return {
         "end_to_end": article.document_bootstrap(
             truth, predicted, seed=seed, weights=weights, groups=groups
         ),
+        # Each bootstrap is seeded on its own, so leaving this one out moves no
+        # other number; it is half the cost of scoring a run.
         "judge_only": article.document_bootstrap(
             {k: truth[k] for k in judged}, predicted, seed=seed, weights=weights, groups=groups
-        ),
+        )
+        if judge_only
+        else None,
         "pairs_judged": len(judged),
         # On the labelled documents only, so arms that judged different
         # amounts of the calendar are compared on the same articles.
@@ -176,7 +182,13 @@ def _article_scores(
 
 
 def run_on_sample(
-    session: Session, run_id: int, manifest: dict, *, seed: int = 0, labels: dict | None = None
+    session: Session,
+    run_id: int,
+    manifest: dict,
+    *,
+    seed: int = 0,
+    labels: dict | None = None,
+    judge_only: bool = True,
 ) -> dict:
     """One run's article-level scores on the labelled sample, as `compare_arms` gives
     them, with every pair it got wrong.
@@ -198,7 +210,9 @@ def run_on_sample(
         return out
     weights, groups = _weighting(manifest, set(truth))
     predicted = article.predictions(session, run_id, set(truth))
-    out["article"] = _article_scores(session, run_id, truth, predicted, weights, groups, seed)
+    out["article"] = _article_scores(
+        session, run_id, truth, predicted, weights, groups, seed, judge_only=judge_only
+    )
     position = {row["document_id"]: i + 1 for i, row in enumerate(manifest["order"])}
     out["errors"] = [
         {

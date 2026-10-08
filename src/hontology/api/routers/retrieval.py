@@ -89,9 +89,12 @@ def cutoff_report(run_id: int, payload: ExploreIn, db: Session = Depends(get_db)
     """What a cutoff keeps and what it costs in recall, beside the run's own."""
     run = _run(db, run_id)
     labels = _truth(db, run, payload)
+    setting, own = _cutoff(run, payload), tuning.run_cutoff(run)
+    report = tuning.report(db, run_id, own, labels)
+    # The run's own cutoff is computed once when it is also the one asked about.
     return {
-        "setting": tuning.report(db, run_id, _cutoff(run, payload), labels),
-        "run": tuning.report(db, run_id, tuning.run_cutoff(run), labels),
+        "setting": report if setting == own else tuning.report(db, run_id, setting, labels),
+        "run": report,
     }
 
 

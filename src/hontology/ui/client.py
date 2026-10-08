@@ -430,7 +430,11 @@ class Api:
         )
 
     def live_leaderboard(
-        self, ontology_id: int, manifest_path: str, annotator: str | None = None
+        self,
+        ontology_id: int,
+        manifest_path: str,
+        annotator: str | None = None,
+        include_partial: bool = False,
     ) -> dict:
         return self._request(
             "POST",
@@ -439,6 +443,7 @@ class Api:
                 "ontology_id": ontology_id,
                 "manifest_path": manifest_path,
                 "annotator": annotator,
+                "include_partial": include_partial,
             },
             timeout=300,
         )

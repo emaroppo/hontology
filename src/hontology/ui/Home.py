@@ -14,6 +14,8 @@ the way the arms comparison scores it.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import streamlit as st
 
 from hontology.ui import shared
@@ -74,8 +76,51 @@ def ci_text(value: float | None, ci: list | None) -> str:
     return f"{value:.2f}"
 
 
+@st.cache_data(ttl=300, show_spinner="Scoring every run on the sample…")
+def scored_runs(
+    ontology_id: int, manifest_path: str, annotator: str | None, partial: bool, nonce: int
+) -> dict:
+    """The leaderboard, kept for five minutes per ontology, sample, truth and
+    partial-runs choice: it bootstraps every run's intervals, which takes seconds,
+    and this page reruns on every click. *nonce* changes to recompute at once."""
+    board = Api().live_leaderboard(ontology_id, manifest_path, annotator, partial)
+    return board | {"computed_at": datetime.now().strftime("%H:%M:%S")}
+
+
+# One run's own view: each call kept for five minutes, as the leaderboard is.
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def run_sample(run_id: int, manifest_path: str, annotator: str | None) -> dict:
+    """One run's own sample scores, judge-only and disagreements included."""
+    return Api().run_sample(run_id, manifest_path, annotator)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def run_funnel(run_id: int) -> dict:
+    return Api().run_funnel(run_id)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def run_cutoff_report(run_id: int, annotator: str | None) -> dict:
+    return Api().retrieval_report(run_id, None, annotator)["run"]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def run_detections(run_id: int) -> tuple[dict, str]:
+    api = Api()
+    return api.run_detections(run_id), api.detections_csv(run_id)
+
+
+include_partial = bool(st.session_state.get("home_partial", False))
 try:
-    board = api.live_leaderboard(ontology["id"], manifest_path, annotator)
+    board = scored_runs(
+        ontology["id"],
+        manifest_path,
+        annotator,
+        include_partial,
+        st.session_state.get("home_recompute", 0),
+    )
 except ApiError as exc:
     st.error(exc.detail)
     how_it_fits()
@@ -99,12 +144,19 @@ def show_leaderboard() -> None:
             "(Truth, in Settings at the top right)."
         )
         return
-    show_partial = st.toggle(
+    cols = st.columns([3, 2, 1])
+    show_partial = cols[0].toggle(
         "Include runs that did not cover the sample",
-        value=False,
+        key="home_partial",
         help="A run made for another calendar processed few of these articles, so its "
-        "recall here says nothing about it.",
+        "recall here says nothing about it. Scoring them takes longer.",
     )
+    cols[1].caption(f"Computed at {board['computed_at']}; kept for five minutes.")
+    if cols[2].button("Recompute", help="After new labels or runs."):
+        st.session_state["home_recompute"] = st.session_state.get("home_recompute", 0) + 1
+        for cached in (run_sample, run_funnel, run_cutoff_report, run_detections):
+            cached.clear()
+        st.rerun()
     shown = [r for r in runs if show_partial or r["covered"] == labelled]
     shown.sort(key=lambda r: -((r["end_to_end"] or {}).get("f1") or -1))
     if not shown:
@@ -224,6 +276,13 @@ def show_single() -> None:
         return
     st.markdown(f"**{labels[run_id]}**")
     row = next(r for r in runs if r["run_id"] == run_id)
+    if row["end_to_end"] is None and row["covered"] < board["labelled_articles"]:
+        st.info(
+            f"Run {run_id} worked on {row['covered']} of the {board['labelled_articles']} "
+            "labelled articles, so it is not scored on this sample. Turn on "
+            '"Include runs that did not cover the sample" on the Leaderboard tab to '
+            "score it anyway."
+        )
 
     st.markdown("**End to end**")
     e2e = row["end_to_end"] or {}
@@ -268,7 +327,7 @@ def show_single() -> None:
         st.markdown("Filtering")
         st.caption("Links " + (", ".join(versions["filter"]) or "not recorded for this run"))
         try:
-            flow = api.run_funnel(run_id)
+            flow = run_funnel(run_id)
             steps = {s["name"]: s["count"] for s in flow["documents"]}
             st.metric(
                 "Articles this run considered", f"{steps.get('considered by this run', 0):,}"
@@ -284,7 +343,7 @@ def show_single() -> None:
             + (f", reused from run {source}" if source != run_id else "")
         )
         try:
-            cut = api.retrieval_report(source, None, annotator)["run"]
+            cut = run_cutoff_report(source, annotator)
             labelled = cut["labels"]
             st.metric(
                 "True matches past the cutoff",
@@ -298,8 +357,13 @@ def show_single() -> None:
         st.page_link("views/3_Retrieval.py", label="Retrieval evaluation", icon="🔎")
     with cols[2], st.container(border=True):
         st.markdown("Judgement")
+        try:
+            sample = run_sample(run_id, manifest_path, annotator)
+        except ApiError as exc:
+            sample = {}
+            st.error(exc.detail)
         st.caption(f"Version {versions['judge']} · {versions['prompt_id']}")
-        judge = row["judge_only"] or {}
+        judge = (sample.get("article") or {}).get("judge_only") or {}
         st.metric(
             "Judge-only precision / recall",
             f"{ci_text(judge.get('precision'), None)} / {ci_text(judge.get('recall'), None)}",
@@ -310,7 +374,6 @@ def show_single() -> None:
 
     with st.expander("Where it disagrees with the labels"):
         try:
-            sample = api.run_sample(run_id, manifest_path, annotator)
             errors = sample.get("errors") or []
             st.dataframe(
                 [
@@ -330,7 +393,7 @@ def show_single() -> None:
             st.error(exc.detail)
     with st.expander("Funnel: where the volume went"):
         try:
-            flow = api.run_funnel(run_id)
+            flow = run_funnel(run_id)
             fcols = st.columns(2)
             for col, key in ((fcols[0], "documents"), (fcols[1], "pairs")):
                 for step in flow[key]:
@@ -344,7 +407,7 @@ def show_single() -> None:
             st.error(exc.detail)
     with st.expander("Detections"):
         try:
-            found = api.run_detections(run_id)
+            found, found_csv = run_detections(run_id)
             stats = found["summary"]
             dcols = st.columns(3)
             dcols[0].metric("Detections", stats["detections"])
@@ -353,7 +416,7 @@ def show_single() -> None:
             if found["rows"]:
                 st.download_button(
                     "Download detections (CSV)",
-                    data=api.detections_csv(run_id),
+                    data=found_csv,
                     file_name=f"detections-run{run_id}.csv",
                     mime="text/csv",
                 )

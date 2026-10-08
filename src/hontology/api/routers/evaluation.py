@@ -275,6 +275,8 @@ def run_detections_csv(
 class LeaderboardIn(BaseModel):
     ontology_id: int
     manifest_path: str
+    # Also score runs that worked on only part of the sample (slower).
+    include_partial: bool = False
     annotator: str | None = None
 
 
@@ -288,6 +290,7 @@ def live_leaderboard(payload: LeaderboardIn, db: Session = Depends(get_db)):
         payload.ontology_id,
         _manifest(payload.manifest_path),
         _labels(db, payload.ontology_id, payload.annotator),
+        include_partial=payload.include_partial,
     )
 
 
