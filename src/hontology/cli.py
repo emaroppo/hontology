@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import signal
 from pathlib import Path
 
 import typer
@@ -531,6 +532,30 @@ def ingest_watch(
 # ---------------------------------------------------------------------------
 
 
+def _sigterm_as_interrupt(signum, frame) -> None:
+    raise KeyboardInterrupt
+
+
+@run_app.callback()
+def run_signals() -> None:
+    """Configure and execute detection runs."""
+    # A run stopped with SIGTERM (`kill`, a process manager) would otherwise end
+    # without raising anything, skipping the handlers that record an interrupted
+    # run on its row, and leave it "running" forever. Raised as Ctrl-C is, it is
+    # recorded the same way.
+    signal.signal(signal.SIGTERM, _sigterm_as_interrupt)
+
+
+def _record_failure(run, exc: BaseException) -> None:
+    from datetime import UTC, datetime
+
+    run.status = "failed"
+    run.error = (
+        "interrupted" if isinstance(exc, KeyboardInterrupt) else str(exc)[:1000]
+    ) or type(exc).__name__
+    run.finished_at = datetime.now(UTC)
+
+
 def _load_run(session, run_id: int):
     """Fetch a run or exit with a clear message rather than a traceback."""
     from hontology.db.models import Run
@@ -706,6 +731,9 @@ def run_sample(
         )
         run.status = "running"
         run.started_at = run.started_at or datetime.now(UTC)
+        # A resumed run must not keep the finish time or error of its last pass.
+        run.finished_at = None
+        run.error = None
         run.manifest = (
             {"calendar_done": []}
             | (run.manifest or {})
@@ -720,9 +748,16 @@ def run_sample(
         )
         session.commit()
         typer.echo(f"run {run.id}: judging {len(document_ids)} sample document(s)")
-        result = calendar_run.judge_documents(
-            session, run, source_run_id=candidates_from, document_ids=document_ids
-        )
+        try:
+            result = calendar_run.judge_documents(
+                session, run, source_run_id=candidates_from, document_ids=document_ids
+            )
+        except BaseException as exc:
+            # Verdicts already committed per pair are kept, for the next resume.
+            session.rollback()
+            _record_failure(run, exc)
+            session.commit()
+            raise
         run.status = "done"
         run.finished_at = datetime.now(UTC)
         judge = result["judge"] or {}
@@ -780,6 +815,8 @@ def run_calendar(
         run.status = "running"
         run.stage = "calendar"
         run.started_at = run.started_at or datetime.now(UTC)
+        run.finished_at = None
+        run.error = None
         run.manifest = (run.manifest or {}) | {
             "documents": {
                 "calendar": str(calendar_path),
@@ -882,12 +919,7 @@ def run_calendar(
                 time.sleep(poll)
     except BaseException as exc:
         with session_scope() as session:
-            run = _load_run(session, run_id)
-            run.status = "failed"
-            run.error = (
-                "interrupted" if isinstance(exc, KeyboardInterrupt) else str(exc)[:1000]
-            ) or type(exc).__name__
-            run.finished_at = datetime.now(UTC)
+            _record_failure(_load_run(session, run_id), exc)
         raise
 
     with session_scope() as session:
