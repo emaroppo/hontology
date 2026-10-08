@@ -222,6 +222,17 @@ class Api:
             json={"cutoff": cutoff, "annotator": annotator},
         )
 
+    def retrieval_text(
+        self, run_id: int, text: str, cutoff: dict | None = None, pool_size: int = 20
+    ) -> dict:
+        """Pasted text ranked as *run_id*'s retrieval ranks an article; not stored."""
+        return self._request(
+            "POST",
+            "/retrieval/text",
+            json={"run_id": run_id, "text": text, "cutoff": cutoff, "pool_size": pool_size},
+            timeout=300,
+        )
+
     def retrieval_versions(self, ontology_id: int) -> list[dict]:
         return self._request("GET", "/retrieval/versions", params={"ontology_id": ontology_id})
 

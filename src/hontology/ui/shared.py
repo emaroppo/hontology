@@ -14,6 +14,7 @@ run on its own, as in a test, gets the defaults instead.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import streamlit as st
 
@@ -132,7 +133,10 @@ def settings(api: Api) -> None:
         if annotator is not None and descriptions.get(annotator):
             st.caption(descriptions[annotator])
 
-        if "settings_sample" not in st.session_state:
+        # A blank path is never meant (it reads as the current folder), so it falls
+        # back to the default; it can arrive blank from a session older than the
+        # panel's fixed key, whose rebuilt fields could send an empty value.
+        if not str(st.session_state.get("settings_sample") or "").strip():
             st.session_state["settings_sample"] = DEFAULT_SAMPLE
         sample = st.text_input(
             "Sample manifest",
@@ -140,6 +144,8 @@ def settings(api: Api) -> None:
             help="The labelled sample in its frozen order: what Home scores runs on and "
             "what Labelling works through.",
         )
+        if not Path(sample).is_file():
+            st.warning(f"No file at {sample}: Home and Labelling cannot read the sample.")
     st.session_state[_VALUES] = Params(ontology_id, run_id, annotator, sample)
 
 
@@ -158,3 +164,31 @@ def ontology(api: Api, ontologies: list[dict]) -> dict:
     """The chosen ontology, as the listing gives it."""
     wanted = current(api).ontology_id
     return next((o for o in ontologies if o["id"] == wanted), ontologies[0])
+
+
+def own_text(where_sent: str) -> tuple[str, str]:
+    """A pasted article: its title and text, kept across pages for the session,
+    so text pasted on Retrieval is there on Judgement. Returns (title, text)."""
+    keys = ("own:title", "own:text")
+    for key in keys:
+        if key not in st.session_state:
+            st.session_state[key] = st.session_state.get(f"keep:{key}", "")
+    st.text_input(
+        "Title",
+        key="own:title",
+        placeholder="Optional · sent to the judge, not used by retrieval",
+        help="Sent to the judge on the prompt's title line, as a corpus article's title "
+        "is. Retrieval ranks the text alone, as it does a corpus article's body, so "
+        "the title changes nothing there. Leave it empty if the headline is already "
+        "the first line of the text.",
+    )
+    st.text_area(
+        "Article text",
+        key="own:text",
+        height=220,
+        placeholder="Paste an article from anywhere.",
+    )
+    st.caption(f"Not stored anywhere. {where_sent}")
+    for key in keys:
+        st.session_state[f"keep:{key}"] = st.session_state[key]
+    return st.session_state["own:title"].strip(), st.session_state["own:text"]

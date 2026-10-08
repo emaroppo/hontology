@@ -13,6 +13,10 @@ are several calls whose shape depends on earlier answers.
 
 Edited class wording is a detached copy of the class, never added to the
 session, so trying a wording cannot change the ontology or mint a version.
+
+A trial can also ask about pasted text instead of a corpus article: the text
+goes in exactly where an article's would, cut to the same length, and is
+never stored.
 """
 
 from __future__ import annotations
@@ -35,12 +39,17 @@ WORDING_FIELDS = ("definition", "inclusion_criteria", "exclusion_criteria")
 @dataclass(frozen=True)
 class Trial:
     run_id: int
-    document_id: int
+    # A corpus article, or pasted text in its place (then document_id is None).
+    document_id: int | None
     concept_id: int
     prompt_id: str = prompts.DEFAULT_PROMPT_ID
     # None keeps the template's own system text and the class's saved wording.
     system: str | None = None
     wording: dict[str, str | None] | None = None
+    # Pasted text, asked about as an article would be; never stored.
+    text: str | None = None
+    title: str | None = None
+    url: str | None = None
 
 
 def per_pair_templates() -> list[dict]:
@@ -59,8 +68,17 @@ def _judge_config(run: Run) -> tuple[dict, int]:
 def render(session: Session, trial: Trial) -> dict:
     """The system text and message a trial would send."""
     run = session.get(Run, trial.run_id)
-    document = session.get(Document, trial.document_id)
     concept = session.get(Concept, trial.concept_id)
+    document: Document | None
+    if trial.text is not None:
+        if not trial.text.strip():
+            raise ValueError("there is no text to ask about")
+        # Detached, like edited wording: never added to the session.
+        document = Document(url=trial.url or "", title=trial.title)
+    elif trial.document_id is not None:
+        document = session.get(Document, trial.document_id)
+    else:
+        raise ValueError("give an article or some text")
     if run is None or document is None or concept is None:
         raise LookupError("unknown run, article or class")
     template = prompts.get(trial.prompt_id)
@@ -81,7 +99,10 @@ def render(session: Session, trial: Trial) -> dict:
             },
         )
     _, body_limit = _judge_config(run)
-    body = _body(document, body_limit) or ""
+    if trial.text is not None:
+        body = trial.text[:body_limit]
+    else:
+        body = _body(document, body_limit) or ""
     return {
         "system": trial.system if trial.system is not None else template.system,
         "prompt": template.build_pair(document, asked, body, body_limit),

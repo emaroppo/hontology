@@ -185,3 +185,41 @@ def test_the_ask_endpoint(world, judge):
     assert body["model"] == "gemma"
     bad = client.post("/judgement/ask", json=payload | {"wording": {"name": "x"}})
     assert bad.status_code == 422
+
+
+def test_pasted_text_is_asked_about_and_never_stored(world, judge):
+    from hontology.db.models import Document
+
+    with session_scope() as session:
+        documents = session.scalar(select(func.count(Document.id)))
+        verdicts = session.scalar(select(func.count(Verdict.id)))
+        answer = trial.ask(
+            session,
+            trial.Trial(
+                run_id=world["run"],
+                document_id=None,
+                concept_id=world["concept"],
+                text="Dockworkers walked out at the port. " * 200,
+                title="A strike",
+                wording={"exclusion_criteria": "vessels"},
+            ),
+        )
+        assert session.scalar(select(func.count(Document.id))) == documents
+        assert session.scalar(select(func.count(Verdict.id))) == verdicts
+    assert answer["matched"] is True
+    assert "title: A strike" in answer["prompt"]
+    # Cut to the run's article length, as a stored article's text would be.
+    body = answer["prompt"].split("body: ", 1)[1].split("\n\n=== Concept", 1)[0]
+    assert len(body) <= 3000
+
+
+def test_the_ask_endpoint_takes_pasted_text(world, judge):
+    client = TestClient(app)
+    payload = {"run_id": world["run"], "concept_id": world["concept"], "text": "A port strike."}
+    assert client.post("/judgement/ask", json=payload).status_code == 200
+    empty = client.post("/judgement/ask", json=payload | {"text": "   "})
+    assert empty.status_code == 422
+    neither = client.post(
+        "/judgement/ask", json={"run_id": world["run"], "concept_id": world["concept"]}
+    )
+    assert neither.status_code == 422

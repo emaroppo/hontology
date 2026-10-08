@@ -339,18 +339,30 @@ def editor(api: Api, ontology_id: int, versions: list[str]) -> tuple[dict, str |
     options = api.run_options()
     if _CONFIG not in st.session_state:
         load(options["defaults"] | {"name": "baseline", "description": ""})
+    # The view's one source is session state (a default too would make two), so
+    # the last view chosen comes back when the page is returned to.
+    if "cfg:view" not in st.session_state:
+        st.session_state["cfg:view"] = st.session_state.get("keep:cfg:view", FORM)
     view = (
         st.segmented_control(
             "Edit as",
             [FORM, JSON],
-            default=FORM,
             required=True,
             key="cfg:view",
             label_visibility="collapsed",
         )
         or FORM
     )
-    if st.session_state.get(_SHOWN) != view:
+    st.session_state["keep:cfg:view"] = view
+    # The fields are widget values, which Streamlit drops when the page is left;
+    # the config itself is kept. So a view is redrawn from the config on entering
+    # it, and also whenever its fields have been dropped.
+    dropped = (
+        _key("json") not in st.session_state
+        if view == JSON
+        else any(_key(path) not in st.session_state for path in ("name", "judge.model"))
+    )
+    if st.session_state.get(_SHOWN) != view or dropped:
         # Entering a view: draw it from the config as it stands.
         if view == FORM:
             _seed_form(st.session_state[_CONFIG])

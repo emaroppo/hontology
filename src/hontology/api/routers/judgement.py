@@ -23,12 +23,17 @@ router = APIRouter(prefix="/judgement", tags=["judgement"])
 
 class TrialIn(BaseModel):
     run_id: int
-    document_id: int
+    # A corpus article, or None with pasted text in its place.
+    document_id: int | None = None
     concept_id: int
     prompt_id: str = "strict_v1"
     system: str | None = None
     # Any of definition / inclusion_criteria / exclusion_criteria; not saved.
     wording: dict[str, str | None] | None = None
+    # Pasted text, asked about as an article would be; never stored.
+    text: str | None = None
+    title: str | None = None
+    url: str | None = None
 
 
 class ArticlesIn(BaseModel):

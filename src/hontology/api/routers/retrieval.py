@@ -172,3 +172,36 @@ def evaluate_version(payload: LiveIn, db: Session = Depends(get_db)):
         labels,
         pool_size=payload.pool_size,
     )
+
+
+# --- Pasted text, ranked as a run would rank an article -----------------------
+
+
+class TextIn(BaseModel):
+    run_id: int
+    text: str = Field(min_length=1)
+    cutoff: CutoffIn | None = None
+    pool_size: int = Field(20, ge=1, le=100)
+
+
+@router.post("/text")
+def rank_text(payload: TextIn, db: Session = Depends(get_db)):
+    """Rank the leaves against pasted text with *run_id*'s retrieval and cut it.
+    The text is embedded and dropped; nothing about it is stored."""
+    from hontology.judge.providers.base import ProviderError
+    from hontology.retrieve import adhoc
+
+    run = _run(db, payload.run_id)
+    cutoff = (
+        tuning.Cutoff(**payload.cutoff.model_dump())
+        if payload.cutoff is not None
+        else tuning.run_cutoff(versions.source_run(db, run))
+    )
+    try:
+        return adhoc.rank_text(db, run, payload.text, cutoff, pool_size=payload.pool_size)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    except ProviderError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, f"embedding model unavailable: {exc}"
+        ) from exc

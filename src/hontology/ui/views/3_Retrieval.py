@@ -494,8 +494,73 @@ def show_evaluation() -> None:
     )
 
 
-evaluation_tab, tune_tab, explore_tab = st.tabs(
-    ["Evaluation", "Tune a run's cutoff", "Explore the ranking"],
+# ---------------------------------------------------------------------------
+# Your text: pasted text ranked as the run ranks an article
+# ---------------------------------------------------------------------------
+
+
+def show_own_text() -> None:
+    if no_run():
+        return
+    assert run is not None
+    cutoff = cutoff_controls()
+    _, body = shared.own_text(
+        "The text is sent to this run's embedding model, ranked and dropped."
+    )
+    if not body.strip():
+        st.info(
+            "Paste an article to see how this run's retrieval ranks the classes against "
+            "it, and which the cutoff would send to the judge."
+        )
+        return
+    # Ranking costs an embedding call; keep each result for its text, run and cutoff.
+    cache = st.session_state.setdefault("own:rankings", {})
+    key = (run["id"], body, tuple(sorted(cutoff.items())))
+    if key not in cache:
+        try:
+            with st.spinner("Embedding and ranking…"):
+                cache[key] = api.retrieval_text(run["id"], body, cutoff)
+        except ApiError as exc:
+            st.error(exc.detail)
+            return
+    result = cache[key]
+    kept = [row["name"] for row in result["ranking"] if row["kept"]]
+    st.markdown(
+        f"**{len(kept)} class(es) would go to the judge**: " + (", ".join(kept) or "none")
+    )
+    cut_note = (
+        f", cut from {result['characters_given']:,}"
+        if result["characters_given"] > result["characters_used"]
+        else ""
+    )
+    st.caption(
+        f"Ranked with retrieval version {result['version']} (run {result['source_run']}'s), "
+        f"on the first {result['characters_used']:,} characters{cut_note}, as an "
+        "article would be."
+    )
+    st.dataframe(
+        [
+            {
+                "Rank": row["rank"],
+                "Class": row["name"],
+                "Score": row["score"],
+                "To the judge": "✓" if row["kept"] else "",
+            }
+            for row in result["ranking"]
+        ],
+        hide_index=True,
+        column_config={"Score": st.column_config.NumberColumn(format="%.3f")},
+    )
+    st.page_link(
+        "views/4_Judgement.py",
+        label="Ask the judge about this text",
+        icon="⚖️",
+        help="The text carries over: pick Your text in Try a prompt.",
+    )
+
+
+evaluation_tab, tune_tab, explore_tab, own_tab = st.tabs(
+    ["Evaluation", "Tune a run's cutoff", "Explore the ranking", "Your text"],
     key="retrieval_tab",
     on_change="rerun",
 )
@@ -508,3 +573,6 @@ if tune_tab.open:
 if explore_tab.open:
     with explore_tab:
         show_explore()
+if own_tab.open:
+    with own_tab:
+        show_own_text()

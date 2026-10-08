@@ -282,3 +282,43 @@ def test_a_shallow_pool_counts_as_never_ranked(embedded):
             pool_size=1,
         )
     assert (report["recall"]["found"], report["never_ranked"]) == (2, 1)
+
+
+def test_pasted_text_ranks_as_a_stored_article_would(embedded, monkeypatch):
+    """The text is embedded with the run's model and ranked against the same
+    class embeddings; its own vector is never stored."""
+    from sqlalchemy import func, select
+
+    from hontology.db.models import Embedding
+    from hontology.retrieve import adhoc, embed
+
+    class Provider:
+        name = "ollama"
+
+        def embed(self, texts, *, model):
+            # Leans towards Strike, like the "strike" article's stored vector.
+            return [[1.0, 0.1, 0.0] for _ in texts]
+
+        def dimension(self, model):
+            return 3
+
+    monkeypatch.setattr(embed, "get_provider", lambda name, **kw: Provider())
+    with session_scope() as session:
+        before = session.scalar(select(func.count(Embedding.id)))
+        run = session.get(Run, embedded["run"])
+        result = adhoc.rank_text(
+            session, run, "Dockworkers stopped work.", tuning.Cutoff(selection="top-k", top_k=1)
+        )
+        assert session.scalar(select(func.count(Embedding.id))) == before
+    assert [(r["name"], r["kept"]) for r in result["ranking"]] == [
+        ("Strike", True),
+        ("Flood", False),
+    ]
+    assert result["characters_used"] == len("Dockworkers stopped work.")
+
+
+def test_the_text_endpoint_refuses_nothing_to_rank(embedded):
+    response = TestClient(app).post(
+        "/retrieval/text", json={"run_id": embedded["run"], "text": ""}
+    )
+    assert response.status_code == 422

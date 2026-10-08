@@ -67,27 +67,6 @@ def show_trials() -> None:
             "and its recorded verdicts are shown beside each answer."
         )
         return
-    cols = st.columns([2, 3])
-    prompt_ids = list(templates)
-    prompt_id = cols[0].selectbox(
-        "Prompt",
-        prompt_ids,
-        index=prompt_ids.index(run["prompt_id"]) if run["prompt_id"] in templates else 0,
-        key=f"judgement_prompt_{run['id']}",
-    )
-    cols[1].caption(
-        f"Asked as run {run['id']}: {run['provider']} · {run['model']}."
-        + (
-            ""
-            if run["prompt_id"] in templates
-            else f" It used {run['prompt_id']}, which is not a per-pair prompt; its "
-            "verdicts are shown for reference, and the trial asks per pair."
-        )
-    )
-    # ---------------------------------------------------------------------------
-    # Class and prompt
-    # ---------------------------------------------------------------------------
-
     leaves = api.leaves(ontology["id"])
     if not leaves:
         st.info("This ontology has no classes yet.")
@@ -98,27 +77,44 @@ def show_trials() -> None:
         else leaf["name"]: leaf
         for leaf in leaves
     }
-    leaf = by_name[st.selectbox("Class", list(by_name), key="judgement_class")]
+    cols = st.columns([3, 2])
+    leaf = by_name[cols[0].selectbox("Class", list(by_name), key="judgement_class")]
+    source = cols[1].radio(
+        "Ask about",
+        ["Your text", "Corpus articles"],
+        horizontal=True,
+        key="judgement_source",
+        help="Your text: an article pasted in, asked about exactly as a corpus "
+        "article would be. It is shared with Retrieval's Your text tab.",
+    )
 
+    # ---------------------------------------------------------------------------
+    # The prompt, in one collapsible section
+    # ---------------------------------------------------------------------------
+
+    prompt_ids = list(templates)
+    prompt_key = f"judgement_prompt_{run['id']}"
+    # The template and the edits are widget values, which Streamlit drops when the
+    # page or tab that drew them is left: keep a copy, so they survive a visit
+    # elsewhere and are never read missing.
+    kept_keys = [prompt_key, "edit_system", *(f"edit_{field}" for field in WORDING)]
+    for key in kept_keys:
+        if key not in st.session_state and f"keep:{key}" in st.session_state:
+            st.session_state[key] = st.session_state[f"keep:{key}"]
+    if prompt_key not in st.session_state:
+        st.session_state[prompt_key] = (
+            run["prompt_id"] if run["prompt_id"] in templates else prompt_ids[0]
+        )
+    prompt_id = st.session_state[prompt_key]
     # Edits start from the template and the class as saved; a new class, prompt or
     # run starts over.
     context = (leaf["id"], prompt_id)
-    if st.session_state.get("judgement_context") != context:
+    missing = any(key not in st.session_state for key in kept_keys)
+    if st.session_state.get("judgement_context") != context or missing:
         st.session_state["judgement_context"] = context
         st.session_state["edit_system"] = templates[prompt_id]["system"]
         for field in WORDING:
             st.session_state[f"edit_{field}"] = leaf.get(field) or ""
-
-    prompt_col, articles_col = st.columns([1, 1])
-
-    with prompt_col:
-        st.markdown("**Prompt**")
-        st.text_area("System text", key="edit_system", height=300)
-        for field, label in WORDING.items():
-            st.text_area(label, key=f"edit_{field}", height=90)
-        if st.button("Undo my edits"):
-            st.session_state.pop("judgement_context", None)
-            st.rerun()
 
     system = st.session_state["edit_system"]
     wording = {field: st.session_state[f"edit_{field}"].strip() or None for field in WORDING}
@@ -126,73 +122,40 @@ def show_trials() -> None:
     system_edited = system != templates[prompt_id]["system"]
     wording_edited = wording != original_wording
     edited = system_edited or wording_edited
+    changes = [
+        part
+        for part, changed in (("system text", system_edited), ("class wording", wording_edited))
+        if changed
+    ]
+    state = f"edited: {' and '.join(changes)}" if changes else "as saved"
 
-    def trial(document_id: int, *, mine: bool) -> dict:
-        return {
-            "run_id": run["id"],
-            "document_id": document_id,
-            "concept_id": leaf["id"],
-            "prompt_id": prompt_id,
-            "system": system if mine else None,
-            "wording": wording if mine else None,
-        }
-
-    def cache_key(payload: dict) -> str:
-        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-
-    answers: dict[str, dict] = st.session_state.setdefault("judgement_answers", {})
-
-    # ---------------------------------------------------------------------------
-    # Articles
-    # ---------------------------------------------------------------------------
-
-    with articles_col:
-        st.markdown("**Articles**")
-        try:
-            articles = api.judgement_articles(run["id"], leaf["id"], annotator)
-        except ApiError as exc:
-            st.error(exc.detail)
-            return
-        if not articles:
-            st.info(
-                f"Run {run['id']} judged no article for this class, and none is labelled "
-                "for it. Pick another class or run."
-            )
-            return
-
-        def describe(article: dict) -> str:
-            label = {True: "label ✓", False: "label ✗", None: "unlabelled"}[article["label"]]
-            verdict = article["verdict"]
-            said = (
+    with st.expander(f"**Prompt** · {prompt_id} · {state}", key="judgement_prompt_panel"):
+        cols = st.columns([2, 3])
+        cols[0].selectbox("Template", prompt_ids, key=prompt_key)
+        cols[1].caption(
+            f"Asked as run {run['id']}: {run['provider']} · {run['model']}, with its "
+            "decoding settings and article text limit."
+            + (
                 ""
-                if verdict is None
-                else " · run "
-                + (
-                    "✓"
-                    if verdict["matched"]
-                    else "✗"
-                    if verdict["matched"] is False
-                    else "error"
-                )
+                if run["prompt_id"] in templates
+                else f" It used {run['prompt_id']}, which is not a per-pair prompt; its "
+                "verdicts are shown for reference, and the trial asks per pair."
             )
-            return f"{(article['title'] or article['url'])[:80]} · {label}{said}"
-
-        by_article = {describe(a): a for a in articles}
-        chosen = st.multiselect(
-            "Ask about",
-            list(by_article),
-            default=list(by_article)[:4],
-            key=f"judgement_articles_{leaf['id']}_{run['id']}",
-            help="Ordered most informative first: labelled true matches, then articles "
-            "the run said match, then labelled articles the run judged.",
         )
-        st.caption(
-            "Each article is asked with the original prompt"
-            + (" and with your edits" if edited else "")
-            + ". Answers are kept for this session, so asking again costs nothing."
+        st.text_area("System text", key="edit_system", height=260)
+        st.text_area(WORDING["definition"], key="edit_definition", height=80)
+        cols = st.columns(2)
+        cols[0].text_area(
+            WORDING["inclusion_criteria"], key="edit_inclusion_criteria", height=90
         )
-        ask = st.button("Ask the model", type="primary", disabled=not chosen)
-        if edited and st.button(
+        cols[1].text_area(
+            WORDING["exclusion_criteria"], key="edit_exclusion_criteria", height=90
+        )
+        cols = st.columns([1, 2, 3])
+        if cols[0].button("Undo my edits", disabled=not edited):
+            st.session_state.pop("judgement_context", None)
+            st.rerun()
+        if cols[1].button(
             "Save this wording to the class",
             disabled=not wording_edited,
             help="The class's saved definition and criteria become these; the next run "
@@ -206,10 +169,99 @@ def show_trials() -> None:
                     **{field: value or "" for field, value in wording.items()},
                 )
                 st.session_state.pop("judgement_context", None)
-                st.success("Saved to the class.")
                 st.rerun()
             except ApiError as exc:
                 st.error(exc.detail)
+
+    for key in kept_keys:
+        st.session_state[f"keep:{key}"] = st.session_state[key]
+
+    own: dict[str, str] = {}  # pasted text, when that is the source
+
+    def trial(document_id: int | None, *, mine: bool) -> dict:
+        return {
+            "run_id": run["id"],
+            "document_id": document_id,
+            "concept_id": leaf["id"],
+            "prompt_id": prompt_id,
+            "system": system if mine else None,
+            "wording": wording if mine else None,
+            **(
+                {"text": own["text"], "title": own["title"] or None}
+                if document_id is None
+                else {}
+            ),
+        }
+
+    def cache_key(payload: dict) -> str:
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    answers: dict[str, dict] = st.session_state.setdefault("judgement_answers", {})
+
+    # ---------------------------------------------------------------------------
+    # What to ask about
+    # ---------------------------------------------------------------------------
+
+    if source == "Your text":
+        title, body = shared.own_text(
+            f"The text is sent to this run's judge, {run['provider']} · {run['model']}."
+        )
+        if not body.strip():
+            st.info("Paste an article to ask the model about it.")
+            return
+        own.update(text=body, title=title)
+        articles: list[dict] = [
+            {
+                "document_id": None,
+                "url": "",
+                "title": title or "Your text",
+                "label": None,
+                "verdict": None,
+            }
+        ]
+    else:
+        try:
+            articles = api.judgement_articles(run["id"], leaf["id"], annotator)
+        except ApiError as exc:
+            st.error(exc.detail)
+            return
+        if not articles:
+            st.info(
+                f"Run {run['id']} judged no article for this class, and none is "
+                "labelled for it. Pick another class or run, or ask about your text."
+            )
+            return
+
+    def describe(article: dict) -> str:
+        label = {True: "label ✓", False: "label ✗", None: "unlabelled"}[article["label"]]
+        verdict = article["verdict"]
+        said = (
+            ""
+            if verdict is None
+            else " · run "
+            + ("✓" if verdict["matched"] else "✗" if verdict["matched"] is False else "error")
+        )
+        return f"{(article['title'] or article['url'])[:80]} · {label}{said}"
+
+    by_article = {describe(a): a for a in articles}
+    if source == "Your text":
+        chosen = list(by_article)
+    else:
+        chosen = st.multiselect(
+            "Articles",
+            list(by_article),
+            default=list(by_article)[:4],
+            key=f"judgement_articles_{leaf['id']}_{run['id']}",
+            help="Ordered most informative first: labelled true matches, then "
+            "articles the run said match, then labelled articles the run judged.",
+        )
+    cols = st.columns([1, 4])
+    ask = cols[0].button("Ask the model", type="primary", disabled=not chosen)
+    cols[1].caption(
+        "Each article is asked with the original prompt"
+        + (" and with your edits" if edited else "")
+        + ". Answers are kept for this session, so asking again costs nothing."
+    )
 
     if ask:
         todo = [
@@ -251,7 +303,10 @@ def show_trials() -> None:
             answers.get(cache_key(trial(article["document_id"], mine=True))) if edited else None
         )
         with st.container(border=True):
-            st.markdown(f"**[{article['title'] or article['url']}]({article['url']})**")
+            if article["url"]:
+                st.markdown(f"**[{article['title'] or article['url']}]({article['url']})**")
+            else:
+                st.markdown(f"**{article['title']}** (pasted)")
             cols = st.columns(4 if edited else 3)
             cols[0].caption("Label")
             cols[0].markdown(
@@ -377,7 +432,7 @@ def show_evaluation() -> None:
             "actually answered. Bars far from the diagonal mean the number is not a "
             "probability, however reasonable it looks."
         )
-        st.altair_chart(charts.calibration(result["calibration"]), use_container_width=True)
+        st.altair_chart(charts.calibration(result["calibration"]), width="stretch")
     st.markdown("**Per run**")
     st.dataframe(
         [
