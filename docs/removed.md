@@ -159,3 +159,14 @@ Gone without a replacement:
   - `label_io.document_label_map`, which reads a file into the same `(document, concept) -> matched` map;
   - the old pages, recoverable with `git show b9b94be^:<path>`.
 - **To reinstate:** give `tuning.truth` back a `labels_csv` branch that calls `document_label_map`, and add the field next to `annotator` on the request models.
+
+## Retrieval's Tune and Explore tabs
+
+- **Removed in** the commit after `4998d1b`: "Lay out the Retrieval page as Judgement is".
+- **What happened to each:**
+  - **Tune a run's cutoff** became Evaluation's cutoff section, which tunes on aggregate.
+  - **Explore the ranking** and **Your text** became one tab, **Try a cutoff**.
+- **Recover the old page with:** `git show 4998d1b:src/hontology/ui/views/3_Retrieval.py`, functions `show_tune` and `show_explore`.
+- **Gone without a replacement:**
+  - **Explore's "or article id" box.** It looked at any article of the run by its id. Try a cutoff offers the run's labelled articles only. The endpoint behind it, `POST /retrieval/runs/{id}/documents/{document_id}` (`Api.retrieval_document`), still takes any id, so it is a number input away from coming back.
+  - **Tune's recall on the run's stored pool.** That was recall on the labelled articles one run had retrieved for. Evaluation computes the same recall live on every labelled article, which gives the same numbers where both apply. The run-level report is still `POST /retrieval/runs/{id}/report` (`Api.retrieval_report`), and Evaluation uses it for the cost numbers.

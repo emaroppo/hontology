@@ -1,21 +1,21 @@
-"""Retrieval: what a run's search ranked, and where its cutoff should fall.
+"""Retrieval: what a run's search ranks, and where its cutoff should fall.
 
 Retrieval ranks an ontology's leaves against each article by embedding
-similarity, and a cutoff decides which pairs go on to the judge. Every run stores
-its whole ranked pool, so this page can move the cutoff after the fact without
-embedding anything: the same ranking, a different line through it.
+similarity, and a cutoff decides which pairs go on to the judge. Laid out as
+Judgement is:
 
-**Tune** compares a cutoff with the one the run was built with: how many pairs
-it sends to the judge, and how many labelled true matches it keeps, split into
-those the pool never ranked (no cutoff can recover them) and those the cutoff
-dropped. **Explore** shows the ranking itself, one article or one class at a
-time, under both cutoffs.
+**Try a cutoff** shows the ranking for one thing at a time, your own pasted
+text first, or a corpus article, or the articles that rank one class highest,
+as the run chosen in Settings ranks them. The cutoff sits in a collapsible
+section, starting from that run's own. Corpus articles need no embedding: every
+run stores its whole ranked pool, so a cutoff is a different line through a
+ranking that already exists.
 
 **Evaluation** scores a retrieval *version* rather than a run: the embedding
 settings, the leaves' wording and the ranking code. A cutoff is a parameter, set
-by hand or loaded from a run that used the version, and every labelled article
-is ranked afresh from cached embeddings, so the score covers all labelled
-articles, not only those one run happened to retrieve for.
+by hand or loaded from a run that used the version. Recall is computed live over
+every labelled article; cost, the pairs sent to the judge, over the articles of
+the run whose ranking the version is.
 """
 
 from __future__ import annotations
@@ -52,14 +52,24 @@ runs = api.retrieval_runs(ontology["id"])
 run = next((r for r in runs if r["id"] == params.run_id), None)
 
 CUT_KEYS = ("cut_selection", "cut_top_k", "cut_min_score", "cut_rel_margin", "cut_max_k")
+CUTOFF_FIELDS = ("selection", "top_k", "min_score", "rel_margin", "max_k")
+EV_CUT_KEYS = tuple(f"ev_{field}" for field in CUTOFF_FIELDS)
+
+
+def describe_cutoff(cutoff: dict) -> str:
+    if cutoff["selection"] == "top-k":
+        return f"top {cutoff['top_k']}"
+    return (
+        f"adaptive, min {cutoff['min_score']:g}, margin {cutoff['rel_margin']:g}, "
+        f"at most {cutoff['max_k']}"
+    )
 
 
 def cutoff_controls() -> dict:
-    """The cutoff Tune and Explore apply, starting from the run's own."""
+    """The cutoff Try applies, in a collapsible section, starting from the run's own."""
     assert run is not None
     own = run["cutoff"]
-    # The controls are drawn on two tabs and neither while Evaluation is open,
-    # and a keyed widget left undrawn loses its value: keep a copy.
+    # A keyed widget left undrawn (Evaluation open, say) loses its value: keep a copy.
     for key in CUT_KEYS:
         if key not in st.session_state and f"keep:{key}" in st.session_state:
             st.session_state[key] = st.session_state[f"keep:{key}"]
@@ -70,10 +80,14 @@ def cutoff_controls() -> dict:
         st.session_state["cut_min_score"] = float(own["min_score"])
         st.session_state["cut_rel_margin"] = float(own["rel_margin"])
         st.session_state["cut_max_k"] = own["max_k"]
-    with st.container(border=True):
-        cols = st.columns([2, 2, 2, 2, 2, 1])
+    current = {key.removeprefix("cut_"): st.session_state[key] for key in CUT_KEYS}
+    edited = current != {k: own[k] for k in current}
+    state = "edited" if edited else f"run {run['id']}'s own"
+    header = f"**Cutoff** · {describe_cutoff(current)} · {state}"
+    with st.expander(header, key="retrieval_cutoff_panel"):
+        cols = st.columns(5)
         selection = cols[0].radio(
-            "Cutoff",
+            "Selection",
             ["adaptive", "top-k"],
             key="cut_selection",
             help="Adaptive keeps the classes within a margin of the article's best score; "
@@ -103,30 +117,19 @@ def cutoff_controls() -> dict:
         cols[4].slider(
             "At most", 1, 20, key="cut_max_k", disabled=not adaptive, help="Per article."
         )
-        if cols[5].button("Reset", help="Back to the run's own cutoff."):
+        cols = st.columns([1, 4])
+        if cols[0].button("Back to the run's own", disabled=not edited):
             st.session_state.pop("retrieval_cutoff_for", None)
             for key in CUT_KEYS:
                 st.session_state.pop(f"keep:{key}", None)
             st.rerun()
-        st.caption(
-            f"Run {run['id']}'s own: {own['selection']}"
-            + (
-                f", top {own['top_k']}"
-                if own["selection"] == "top-k"
-                else f", min {own['min_score']}, margin {own['rel_margin']}, "
-                f"at most {own['max_k']}"
-            )
-            + ". Its pool holds the top 20 per article; a cutoff can only draw from that."
+        cols[1].caption(
+            f"Run {run['id']}'s own: {describe_cutoff(own)}. Its pool holds the top 20 "
+            "classes per article; a cutoff can only draw from that."
         )
     for key in CUT_KEYS:
         st.session_state[f"keep:{key}"] = st.session_state[key]
-    return {
-        "selection": st.session_state["cut_selection"],
-        "top_k": st.session_state["cut_top_k"],
-        "min_score": st.session_state["cut_min_score"],
-        "rel_margin": st.session_state["cut_rel_margin"],
-        "max_k": st.session_state["cut_max_k"],
-    }
+    return {key.removeprefix("cut_"): st.session_state[key] for key in CUT_KEYS}
 
 
 def no_run() -> bool:
@@ -149,94 +152,7 @@ def label_mark(value: bool | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tune
-# ---------------------------------------------------------------------------
-
-
-def show_tune() -> None:
-    if no_run():
-        return
-    assert run is not None
-    cutoff = cutoff_controls()
-    changed = cutoff != run["cutoff"]
-    try:
-        result = api.retrieval_report(run["id"], cutoff, annotator)
-    except ApiError as exc:
-        st.error(exc.detail)
-        return
-    mine, theirs = result["setting"], result["run"]
-
-    st.markdown("**Cost: pairs sent to the judge**")
-    cols = st.columns(3)
-    cols[0].metric(
-        "Pairs kept",
-        f"{mine['pairs_kept']:,}",
-        delta=f"{mine['pairs_kept'] - theirs['pairs_kept']:+,}" if changed else None,
-        delta_color="inverse",
-    )
-    cols[1].metric(
-        "Per article",
-        f"{mine['pairs_per_document']:.2f}",
-        delta=f"{mine['pairs_per_document'] - theirs['pairs_per_document']:+.2f}"
-        if changed
-        else None,
-        delta_color="inverse",
-    )
-    cols[2].metric(
-        "Articles with none kept",
-        f"{mine['documents_with_none']:,}",
-        help="Never judged at all under this cutoff.",
-    )
-
-    labels, run_labels = mine["labels"], theirs["labels"]
-    st.markdown("**Recall: labelled true matches that reach the judge**")
-    if not labels["positives"]:
-        st.info(
-            "No labelled true matches on this run's articles, so recall cannot be "
-            "measured. Try a machine annotation set as truth (Settings, top right)."
-        )
-    else:
-        cols = st.columns(4)
-        positives = labels["positives"]
-        cols[0].metric(
-            "Kept",
-            f"{labels['positives_kept']} of {positives}",
-            delta=(labels["positives_kept"] - run_labels["positives_kept"])
-            if changed
-            else None,
-        )
-        cols[1].metric("Recall at the cutoff", f"{labels['positives_kept'] / positives:.0%}")
-        cols[2].metric(
-            "Lost to the cutoff",
-            labels["positives_in_pool"] - labels["positives_kept"],
-            help="Ranked in the pool, but below the line. A looser cutoff recovers these.",
-        )
-        cols[3].metric(
-            "Never ranked",
-            positives - labels["positives_in_pool"],
-            help="Not in the article's top 20 at all. No cutoff recovers these; only a "
-            "better ranking (model, class wording, article text) does.",
-        )
-        kept_labelled = labels["kept_labelled"]
-        st.caption(
-            f"Over {labels['documents']} labelled article(s). Of the {kept_labelled} kept "
-            f"pairs on them, {labels['kept_positive']} are true matches"
-            + (f" ({labels['kept_positive'] / kept_labelled:.0%})." if kept_labelled else ".")
-            + " A small labelled set moves in whole steps: read changes of one or two "
-            "as noise."
-        )
-
-    st.markdown("**Classes kept per article**")
-    histogram = {int(k): v for k, v in mine["kept_per_document"].items()}
-    st.bar_chart(
-        {"articles": [histogram.get(k, 0) for k in range(max(histogram, default=0) + 1)]},
-        x_label="classes kept",
-        y_label="articles",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Explore
+# Try a cutoff: your text, a corpus article, or one class's articles
 # ---------------------------------------------------------------------------
 
 
@@ -269,241 +185,8 @@ def show_article(document_id: int, cutoff: dict) -> None:
         st.text(pool["body"] or "No text stored for this article.")
 
 
-def show_explore() -> None:
-    if no_run():
-        return
+def show_own_text(cutoff: dict) -> None:
     assert run is not None
-    cutoff = cutoff_controls()
-    mode = st.radio("Look at", ["One article", "One class"], horizontal=True)
-    if mode == "One article":
-        try:
-            labelled = api.retrieval_labelled(run["id"], annotator)
-        except ApiError as exc:
-            st.error(exc.detail)
-            return
-        cols = st.columns([3, 1])
-        options = {
-            f"{d['title'] or d['url'][:90]}"
-            + (f"  ({d['positives']} match)" if d["positives"] == 1 else "")
-            + (f"  ({d['positives']} matches)" if d["positives"] > 1 else ""): d["document_id"]
-            for d in labelled
-        }
-        picked = (
-            cols[0].selectbox(
-                f"Labelled article ({len(labelled)})", list(options), key="retrieval_article"
-            )
-            if options
-            else None
-        )
-        typed = cols[1].number_input("or article id", min_value=0, value=0, step=1)
-        document_id = int(typed) if typed else (options[picked] if picked else None)
-        if document_id is None:
-            st.info("No labelled article in this run. Enter an article id.")
-            return
-        show_article(document_id, cutoff)
-        return
-
-    try:
-        leaves = api.leaves(ontology["id"])
-    except ApiError as exc:
-        st.error(exc.detail)
-        return
-    by_name = {
-        f"{leaf['families'][0]} › {leaf['name']}"
-        if leaf["families"][0] != leaf["name"]
-        else leaf["name"]: leaf
-        for leaf in leaves
-    }
-    leaf = by_name[st.selectbox("Class", list(by_name), key="retrieval_class")]
-    if leaf.get("definition"):
-        st.caption(leaf["definition"])
-    try:
-        rows = api.retrieval_concept(run["id"], leaf["id"], cutoff, annotator, limit=50)
-    except ApiError as exc:
-        st.error(exc.detail)
-        return
-    st.caption(
-        "The 50 articles that score this class highest. Rank is the class's place "
-        "among the article's own classes, which is what the cutoff looks at."
-    )
-    st.dataframe(
-        [
-            {
-                "Score": row["score"],
-                "Rank in article": row["rank"],
-                "Run kept": mark(row["selected"]),
-                "This cutoff": mark(row["kept"]),
-                "Label": label_mark(row["label"]),
-                "Article": row["title"] or row["url"],
-                "Link": row["url"],
-                "Id": row["document_id"],
-            }
-            for row in rows
-        ],
-        hide_index=True,
-        column_config={
-            "Score": st.column_config.NumberColumn(format="%.3f"),
-            "Link": st.column_config.LinkColumn(display_text="open"),
-        },
-    )
-
-
-# ---------------------------------------------------------------------------
-# Evaluation: a retrieval version, scored live
-# ---------------------------------------------------------------------------
-
-
-def show_evaluation() -> None:
-    try:
-        versions = api.retrieval_versions(ontology["id"])
-    except ApiError as exc:
-        st.error(exc.detail)
-        return
-    if not versions:
-        st.info("No run of this ontology yet, so there is no retrieval version to score.")
-        return
-
-    def describe(v: dict) -> str:
-        s_ = v["settings"]
-        return (
-            f"{v['version']} · {s_['embed_model']} · {s_['concept_fields']} · "
-            f"{s_['embed_body_limit']:,} chars · {v['leaves']} leaves at "
-            f"{v['ontology_version']} · {len(v['runs'])} run(s)"
-        )
-
-    by_version = {describe(v): v for v in versions}
-    version = by_version[st.selectbox("Retrieval version", list(by_version), key="ev_version")]
-    st.caption(
-        f"Ranking code {version['code']}. Runs that used it: "
-        + ", ".join(str(r["id"]) for r in version["runs"])
-        + "."
-    )
-
-    # Presets: one per distinct cutoff among the version's runs.
-    presets: dict[str, dict] = {}
-    for r in version["runs"]:
-        c = r["cutoff"]
-        detail = (
-            f"top {c['top_k']}"
-            if c["selection"] == "top-k"
-            else f"min {c['min_score']}, margin {c['rel_margin']}, at most {c['max_k']}"
-        )
-        presets.setdefault(f"{c['selection']}: {detail}", c | {"runs": []})["runs"].append(
-            r["id"]
-        )
-    cols = st.columns([3, 1])
-    preset_label = cols[0].selectbox(
-        "Preset from a run",
-        list(presets),
-        format_func=lambda k: f"{k}  (runs {', '.join(map(str, presets[k]['runs']))})",
-        key="ev_preset",
-    )
-    if cols[1].button("Load preset") or "ev_selection" not in st.session_state:
-        preset = presets[preset_label]
-        st.session_state["ev_selection"] = preset["selection"]
-        st.session_state["ev_top_k"] = preset["top_k"]
-        st.session_state["ev_min_score"] = float(preset["min_score"])
-        st.session_state["ev_rel_margin"] = float(preset["rel_margin"])
-        st.session_state["ev_max_k"] = preset["max_k"]
-
-    cols = st.columns(6)
-    selection = cols[0].radio("Selection", ["adaptive", "top-k"], key="ev_selection")
-    adaptive = selection == "adaptive"
-    cols[1].number_input("Top k", 1, 50, key="ev_top_k", disabled=adaptive)
-    cols[2].number_input(
-        "Min score", 0.0, 1.0, step=0.01, key="ev_min_score", disabled=not adaptive
-    )
-    cols[3].number_input(
-        "Margin", 0.0, 1.0, step=0.01, key="ev_rel_margin", disabled=not adaptive
-    )
-    cols[4].number_input("At most", 1, 50, key="ev_max_k", disabled=not adaptive)
-    pool_size = cols[5].number_input(
-        "Pool depth", 1, 100, value=20, help="How far down each article's ranking to look."
-    )
-    cutoff = {
-        "selection": selection,
-        "top_k": int(st.session_state["ev_top_k"]),
-        "min_score": float(st.session_state["ev_min_score"]),
-        "rel_margin": float(st.session_state["ev_rel_margin"]),
-        "max_k": int(st.session_state["ev_max_k"]),
-    }
-    try:
-        result = api.retrieval_evaluate(
-            version["runs"][0]["id"], cutoff, int(pool_size), annotator
-        )
-    except ApiError as exc:
-        st.error(exc.detail)
-        return
-
-    docs = result["documents"]
-    if not result["positives"]:
-        st.info(
-            f"No labelled true match among the {docs['labelled']} labelled article(s) on "
-            "this version's leaves. Try a machine annotation set as truth (Settings, "
-            "top right)."
-        )
-        return
-
-    def interval(block: dict) -> str:
-        low, high = block["ci"]
-        return f"{block['rate']:.0%} ({low:.0%}–{high:.0%})" if low is not None else "—"
-
-    cols = st.columns(5)
-    cols[0].metric(
-        "Recall at the cutoff",
-        interval(result["recall"]),
-        help="Labelled true matches kept, with a 95% Wilson interval.",
-    )
-    cols[1].metric("Recall in the pool", interval(result["pool_recall"]))
-    cols[2].metric("Lost to the cutoff", result["lost_to_cutoff"])
-    cols[3].metric("Never ranked", result["never_ranked"])
-    cols[4].metric(
-        "Pairs per article",
-        f"{result['pairs_per_document']:.2f}" if result["pairs_per_document"] else "—",
-        help="What the cutoff sends to the judge, on average.",
-    )
-    st.caption(
-        f"{result['recall']['found']} of {result['positives']} labelled true matches kept, "
-        f"over {docs['ranked']} labelled article(s)"
-        + (
-            f"; {docs['not_embedded']} not embedded under this version, so left out"
-            if docs["not_embedded"]
-            else ""
-        )
-        + f". Of the {result['kept_labelled']} kept labelled pairs, "
-        f"{result['kept_positive']} are true matches."
-    )
-    st.markdown("**Recall at each depth of the ranking**")
-    st.caption(
-        "Labelled true matches within the top k classes of their article: the ranking's "
-        "quality before any cutoff. Where it flattens, a deeper cutoff stops paying."
-    )
-    st.altair_chart(charts.recall_at_k(result["recall_at_k"]), use_container_width=True)
-    st.markdown("**By class**")
-    st.dataframe(
-        [
-            {
-                "Class": row["class"],
-                "True matches": row["positives"],
-                "In the pool": row["in_pool"],
-                "Kept": row["kept"],
-            }
-            for row in result["per_class"]
-        ],
-        hide_index=True,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Your text: pasted text ranked as the run ranks an article
-# ---------------------------------------------------------------------------
-
-
-def show_own_text() -> None:
-    if no_run():
-        return
-    assert run is not None
-    cutoff = cutoff_controls()
     _, body = shared.own_text(
         "The text is sent to this run's embedding model, ranked and dropped."
     )
@@ -555,24 +238,376 @@ def show_own_text() -> None:
         "views/4_Judgement.py",
         label="Ask the judge about this text",
         icon="⚖️",
-        help="The text carries over: pick Your text in Try a prompt.",
+        help="The text carries over to Judgement's Your text.",
     )
 
 
-evaluation_tab, tune_tab, explore_tab, own_tab = st.tabs(
-    ["Evaluation", "Tune a run's cutoff", "Explore the ranking", "Your text"],
-    key="retrieval_tab",
-    on_change="rerun",
+def show_class(leaf: dict, cutoff: dict) -> None:
+    assert run is not None
+    if leaf.get("definition"):
+        st.caption(leaf["definition"])
+    try:
+        rows = api.retrieval_concept(run["id"], leaf["id"], cutoff, annotator, limit=50)
+    except ApiError as exc:
+        st.error(exc.detail)
+        return
+    st.caption(
+        "The 50 articles that score this class highest. Rank is the class's place "
+        "among the article's own classes, which is what the cutoff looks at."
+    )
+    st.dataframe(
+        [
+            {
+                "Score": row["score"],
+                "Rank in article": row["rank"],
+                "Run kept": mark(row["selected"]),
+                "This cutoff": mark(row["kept"]),
+                "Label": label_mark(row["label"]),
+                "Article": row["title"] or row["url"],
+                "Link": row["url"],
+                "Id": row["document_id"],
+            }
+            for row in rows
+        ],
+        hide_index=True,
+        column_config={
+            "Score": st.column_config.NumberColumn(format="%.3f"),
+            "Link": st.column_config.LinkColumn(display_text="open"),
+        },
+    )
+
+
+def show_try() -> None:
+    if no_run():
+        return
+    assert run is not None
+    cols = st.columns([3, 2])
+    look = cols[1].radio(
+        "Look at",
+        ["Your text", "A corpus article", "A class's articles"],
+        horizontal=True,
+        key="retrieval_look",
+        help="Your text: an article pasted in, ranked as a corpus article would be. "
+        "It is shared with Judgement's Your text.",
+    )
+    document_id = None
+    leaf = None
+    if look == "A corpus article":
+        try:
+            labelled = api.retrieval_labelled(run["id"], annotator)
+        except ApiError as exc:
+            st.error(exc.detail)
+            return
+        options = {
+            d["document_id"]: f"{d['title'] or d['url'][:90]}"
+            + (f"  ({d['positives']} match)" if d["positives"] == 1 else "")
+            + (f"  ({d['positives']} matches)" if d["positives"] > 1 else "")
+            for d in labelled
+        }
+        if not options:
+            cols[0].info("No labelled article in this run.")
+            return
+        document_id = cols[0].selectbox(
+            f"Labelled article ({len(options)})",
+            list(options),
+            format_func=lambda i: options[i],
+            key="retrieval_article",
+        )
+    elif look == "A class's articles":
+        try:
+            leaves = api.leaves(ontology["id"])
+        except ApiError as exc:
+            st.error(exc.detail)
+            return
+        by_name = {
+            f"{lf['families'][0]} › {lf['name']}"
+            if lf["families"][0] != lf["name"]
+            else lf["name"]: lf
+            for lf in leaves
+        }
+        leaf = by_name[cols[0].selectbox("Class", list(by_name), key="retrieval_class")]
+    else:
+        cols[0].caption(
+            f"Ranked as run {run['id']}'s retrieval ranks an article: its embedding "
+            "model, class wording and article length."
+        )
+
+    cutoff = cutoff_controls()
+    if look == "Your text":
+        show_own_text(cutoff)
+    elif document_id is not None:
+        show_article(document_id, cutoff)
+    elif leaf is not None:
+        show_class(leaf, cutoff)
+
+
+# ---------------------------------------------------------------------------
+# Evaluation: a retrieval version, scored live
+# ---------------------------------------------------------------------------
+
+
+def show_evaluation() -> None:
+    try:
+        versions = api.retrieval_versions(ontology["id"])
+    except ApiError as exc:
+        st.error(exc.detail)
+        return
+    if not versions:
+        st.info("No run of this ontology yet, so there is no retrieval version to score.")
+        return
+
+    def describe(v: dict) -> str:
+        s_ = v["settings"]
+        return (
+            f"{v['version']} · {s_['embed_model']} · {s_['concept_fields']} · "
+            f"{s_['embed_body_limit']:,} chars · {v['leaves']} leaves at "
+            f"{v['ontology_version']} · {len(v['runs'])} run(s)"
+        )
+
+    by_version = {describe(v): v for v in versions}
+    version = by_version[st.selectbox("Retrieval version", list(by_version), key="ev_version")]
+    st.caption(
+        f"Ranking code {version['code']}. Runs that used it: "
+        + ", ".join(str(r["id"]) for r in version["runs"])
+        + "."
+    )
+
+    # Presets: one per distinct cutoff among the version's runs.
+    presets: dict[str, dict] = {}
+    for r in version["runs"]:
+        c = r["cutoff"]
+        detail = (
+            f"top {c['top_k']}"
+            if c["selection"] == "top-k"
+            else f"min {c['min_score']}, margin {c['rel_margin']}, at most {c['max_k']}"
+        )
+        presets.setdefault(f"{c['selection']}: {detail}", c | {"runs": []})["runs"].append(
+            r["id"]
+        )
+    # The cutoff and the preset it started from are widget values, dropped when the
+    # tab is left: keep a copy, so an edit survives a visit to Try.
+    ev_keys = ("ev_preset", *EV_CUT_KEYS, "ev_pool")
+    for key in ev_keys:
+        if key not in st.session_state and f"keep:{key}" in st.session_state:
+            st.session_state[key] = st.session_state[f"keep:{key}"]
+    if st.session_state.get("ev_preset") not in presets:
+        st.session_state["ev_preset"] = next(iter(presets))
+
+    def load(label: str) -> None:
+        preset = presets[label]
+        st.session_state["ev_loaded"] = {k: preset[k] for k in CUTOFF_FIELDS}
+        st.session_state["ev_selection"] = preset["selection"]
+        st.session_state["ev_top_k"] = preset["top_k"]
+        st.session_state["ev_min_score"] = float(preset["min_score"])
+        st.session_state["ev_rel_margin"] = float(preset["rel_margin"])
+        st.session_state["ev_max_k"] = preset["max_k"]
+
+    loaded = st.session_state.get("ev_loaded")
+    if (
+        loaded is None
+        or loaded["selection"] is None
+        or any(key not in st.session_state for key in EV_CUT_KEYS)
+    ):
+        load(st.session_state["ev_preset"])
+        loaded = st.session_state["ev_loaded"]
+    st.session_state.setdefault("ev_pool", 20)
+
+    current = {key.removeprefix("ev_"): st.session_state[key] for key in EV_CUT_KEYS}
+    edited = current != loaded
+    header = f"**Cutoff** · {describe_cutoff(current)} · " + (
+        "edited" if edited else "the preset's own"
+    )
+    with st.expander(header, key="ev_cutoff_panel"):
+        cols = st.columns([4, 1])
+        preset_label = cols[0].selectbox(
+            "Preset from a run",
+            list(presets),
+            format_func=lambda k: f"{k}  (runs {', '.join(map(str, presets[k]['runs']))})",
+            key="ev_preset",
+        )
+        cols[1].markdown("&nbsp;")
+        if cols[1].button("Load preset", help="Set the cutoff to this preset's."):
+            load(preset_label)
+            st.rerun()
+        cols = st.columns(6)
+        selection = cols[0].radio("Selection", ["adaptive", "top-k"], key="ev_selection")
+        adaptive = selection == "adaptive"
+        cols[1].slider("Classes per article", 1, 20, key="ev_top_k", disabled=adaptive)
+        cols[2].slider(
+            "Minimum score", 0.0, 1.0, step=0.01, key="ev_min_score", disabled=not adaptive
+        )
+        cols[3].slider(
+            "Margin below the best",
+            0.0,
+            0.5,
+            step=0.01,
+            key="ev_rel_margin",
+            disabled=not adaptive,
+        )
+        cols[4].slider("At most", 1, 20, key="ev_max_k", disabled=not adaptive)
+        cols[5].number_input(
+            "Pool depth",
+            1,
+            100,
+            key="ev_pool",
+            help="How far down each article's ranking to look.",
+        )
+        st.caption(
+            "Changes are compared with the loaded preset: recall and cost below show by "
+            "how much they move."
+        )
+    for key in ev_keys:
+        st.session_state[f"keep:{key}"] = st.session_state[key]
+
+    cutoff = {
+        "selection": st.session_state["ev_selection"],
+        "top_k": int(st.session_state["ev_top_k"]),
+        "min_score": float(st.session_state["ev_min_score"]),
+        "rel_margin": float(st.session_state["ev_rel_margin"]),
+        "max_k": int(st.session_state["ev_max_k"]),
+    }
+    pool_size = int(st.session_state["ev_pool"])
+    try:
+        result = api.retrieval_evaluate(version["runs"][0]["id"], cutoff, pool_size, annotator)
+        base = (
+            api.retrieval_evaluate(version["runs"][0]["id"], loaded, pool_size, annotator)
+            if edited
+            else None
+        )
+    except ApiError as exc:
+        st.error(exc.detail)
+        return
+
+    docs = result["documents"]
+    if not result["positives"]:
+        st.info(
+            f"No labelled true match among the {docs['labelled']} labelled article(s) on "
+            "this version's leaves. Try a machine annotation set as truth (Settings, "
+            "top right)."
+        )
+        return
+
+    def interval(block: dict) -> str:
+        low, high = block["ci"]
+        return f"{block['rate']:.0%} ({low:.0%}–{high:.0%})" if low is not None else "—"
+
+    def change(now: float, then: float, fmt: str = "+d") -> str | None:
+        return format(now - then, fmt) if base is not None and now != then else None
+
+    cols = st.columns(5)
+    cols[0].metric(
+        "Recall at the cutoff",
+        interval(result["recall"]),
+        delta=change(result["recall"]["found"], base["recall"]["found"]) if base else None,
+        help="Labelled true matches kept, with a 95% Wilson interval. The arrow is the "
+        "change in true matches kept, against the loaded preset.",
+    )
+    cols[1].metric("Recall in the pool", interval(result["pool_recall"]))
+    cols[2].metric(
+        "Lost to the cutoff",
+        result["lost_to_cutoff"],
+        delta=change(result["lost_to_cutoff"], base["lost_to_cutoff"]) if base else None,
+        delta_color="inverse",
+    )
+    cols[3].metric("Never ranked", result["never_ranked"])
+    cols[4].metric(
+        "Pairs per article",
+        f"{result['pairs_per_document']:.2f}" if result["pairs_per_document"] else "—",
+        delta=change(result["pairs_per_document"], base["pairs_per_document"], "+.2f")
+        if base and result["pairs_per_document"] and base["pairs_per_document"]
+        else None,
+        delta_color="inverse",
+        help="What the cutoff sends to the judge, on average, on the labelled articles.",
+    )
+    st.caption(
+        f"{result['recall']['found']} of {result['positives']} labelled true matches kept, "
+        f"over {docs['ranked']} labelled article(s)"
+        + (
+            f"; {docs['not_embedded']} not embedded under this version, so left out"
+            if docs["not_embedded"]
+            else ""
+        )
+        + f". Of the {result['kept_labelled']} kept labelled pairs, "
+        f"{result['kept_positive']} are true matches."
+    )
+    # Cost: what the cutoff sends to the judge, over every article the version's
+    # ranking was built for (its source run's stored pool).
+    source_id = version["source_run"]
+    try:
+        cost = api.retrieval_report(source_id, cutoff, annotator)
+    except ApiError as exc:
+        st.error(exc.detail)
+    else:
+        mine, theirs = cost["setting"], cost["run"]
+        changed = cutoff != theirs["cutoff"]
+        st.markdown(f"**Cost: pairs sent to the judge, on run {source_id}'s articles**")
+        cols = st.columns(3)
+        cols[0].metric(
+            "Pairs kept",
+            f"{mine['pairs_kept']:,}",
+            delta=f"{mine['pairs_kept'] - theirs['pairs_kept']:+,}" if changed else None,
+            delta_color="inverse",
+        )
+        cols[1].metric(
+            "Per article",
+            f"{mine['pairs_per_document']:.2f}",
+            delta=f"{mine['pairs_per_document'] - theirs['pairs_per_document']:+.2f}"
+            if changed
+            else None,
+            delta_color="inverse",
+        )
+        cols[2].metric(
+            "Articles with none kept",
+            f"{mine['documents_with_none']:,}",
+            help="Never judged at all under this cutoff.",
+        )
+        st.caption(
+            f"Over its {mine['documents']:,} articles"
+            + (
+                f", against its own cutoff ({describe_cutoff(theirs['cutoff'])})."
+                if changed
+                else ", which used this cutoff."
+            )
+        )
+        histogram = {int(k): v for k, v in mine["kept_per_document"].items()}
+        with st.expander("Classes kept per article", key="retrieval_histogram"):
+            st.bar_chart(
+                {
+                    "articles": [
+                        histogram.get(k, 0) for k in range(max(histogram, default=0) + 1)
+                    ]
+                },
+                x_label="classes kept",
+                y_label="articles",
+            )
+
+    st.markdown("**Recall at each depth of the ranking**")
+    st.caption(
+        "Labelled true matches within the top k classes of their article: the ranking's "
+        "quality before any cutoff. Where it flattens, a deeper cutoff stops paying."
+    )
+    st.altair_chart(charts.recall_at_k(result["recall_at_k"]), width="stretch")
+    st.markdown("**By class**")
+    st.dataframe(
+        [
+            {
+                "Class": row["class"],
+                "True matches": row["positives"],
+                "In the pool": row["in_pool"],
+                "Kept": row["kept"],
+            }
+            for row in result["per_class"]
+        ],
+        hide_index=True,
+    )
+
+
+try_tab, evaluation_tab = st.tabs(
+    ["Try a cutoff", "Evaluation"], key="retrieval_tab", on_change="rerun"
 )
+if try_tab.open:
+    with try_tab:
+        show_try()
 if evaluation_tab.open:
     with evaluation_tab:
         show_evaluation()
-if tune_tab.open:
-    with tune_tab:
-        show_tune()
-if explore_tab.open:
-    with explore_tab:
-        show_explore()
-if own_tab.open:
-    with own_tab:
-        show_own_text()
