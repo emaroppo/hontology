@@ -3,7 +3,8 @@
 Nothing here embeds anything. Every run stores its whole pool before the cutoff,
 so these endpoints only draw a different line through a ranking that already
 exists (see `retrieve.tuning`). Requests are POSTs because each carries the
-cutoff and, optionally, a labels file to use as truth in place of the bank.
+cutoff and, optionally, a machine annotation set to score against instead of
+the human labels.
 """
 
 from __future__ import annotations
@@ -34,8 +35,8 @@ class CutoffIn(BaseModel):
 class ExploreIn(BaseModel):
     # None is the cutoff the run was built with.
     cutoff: CutoffIn | None = None
-    # A whole-document labels CSV used as truth in place of the label bank.
-    labels_csv: str | None = None
+    # The truth: None for human labels, else a machine annotation set's name.
+    annotator: str | None = None
 
 
 def _run(db: Session, run_id: int) -> Run:
@@ -53,11 +54,9 @@ def _cutoff(run: Run, payload: ExploreIn) -> tuning.Cutoff:
 
 def _truth(db: Session, run: Run, payload: ExploreIn) -> tuning.Truth:
     try:
-        return tuning.truth(db, run.ontology_id, payload.labels_csv)
-    except ValueError as exc:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, f"unreadable labels file: {exc}"
-        ) from exc
+        return tuning.truth(db, run.ontology_id, payload.annotator)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
 
 @router.get("/runs")
@@ -157,7 +156,7 @@ class LiveIn(BaseModel):
     run_id: int
     cutoff: CutoffIn
     pool_size: int = Field(20, ge=1, le=100)
-    labels_csv: str | None = None
+    annotator: str | None = None
 
 
 @router.post("/versions/evaluate")
@@ -165,7 +164,7 @@ def evaluate_version(payload: LiveIn, db: Session = Depends(get_db)):
     """A retrieval version (that of *run_id*) scored live on every labelled
     article under *cutoff*. Nothing is embedded or stored."""
     run = _run(db, payload.run_id)
-    labels = _truth(db, run, ExploreIn(labels_csv=payload.labels_csv))
+    labels = _truth(db, run, ExploreIn(annotator=payload.annotator))
     return tuning.live_report(
         db,
         run,

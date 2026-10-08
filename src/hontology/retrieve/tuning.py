@@ -11,8 +11,8 @@ of rows. It is the same rule as `candidates.select_adaptive`: the pool is ranked
 by score, so "within the margin of the document's best, at most max-k" is a
 score test and a rank test.
 
-Recall is measured against labels on the run's documents (the trusted label
-bank, or a labels file in its place), split the way
+Recall is measured against labels on the run's documents (human labels from
+the bank, or a machine annotation set), split the way
 `candidates` stores it: a true match missing from the pool was never ranked high
 enough, one in the pool but cut was lost to the cutoff. Those need different
 fixes, so they are reported apart.
@@ -28,8 +28,6 @@ from sqlalchemy.orm import Session
 
 from hontology.db.models import Concept, Document, EmbeddingModel, Run
 from hontology.evalkit import config as run_config
-from hontology.evalkit.label_io import document_label_map
-from hontology.evalkit.labels import trusted_labels
 from hontology.ontology import hierarchy
 from hontology.retrieve import embed
 from hontology.retrieve.candidates import document_body, select_adaptive
@@ -95,16 +93,13 @@ def _params(run_id: int, cutoff: Cutoff) -> dict:
 Truth = dict[tuple[int, int], bool]
 
 
-def truth(session: Session, ontology_id: int, labels_csv: str | None = None) -> Truth:
-    """``(document, concept) -> matched``: the trusted label bank, or a
-    whole-document labels file read in its place, as `eval arms --labels` does."""
-    if labels_csv is not None:
-        return document_label_map(session, ontology_id, labels_csv)
-    return {
-        (label.document_id, label.concept_id): bool(label.matched)
-        for label in trusted_labels(session, ontology_id)
-        if label.matched is not None
-    }
+def truth(session: Session, ontology_id: int, annotator: str | None = None) -> Truth:
+    """``(document, concept) -> matched``: the human label bank (trusted,
+    current), or the machine annotation set *annotator*. See
+    `evalkit.annotations`."""
+    from hontology.evalkit import annotations
+
+    return annotations.truth(session, ontology_id, annotator)
 
 
 def report(session: Session, run_id: int, cutoff: Cutoff, labels: Truth) -> dict:

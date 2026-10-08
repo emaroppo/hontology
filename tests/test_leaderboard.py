@@ -118,15 +118,22 @@ def test_coverage_follows_what_the_run_itself_worked_on(world):
 
 
 def test_the_live_leaderboard_scores_every_judged_run(world):
-    labels = "document_url,concepts\n" + "".join(
-        f"https://lb.test/{i},Strike\n" for i in range(4)
-    )
+    from hontology.evalkit import annotations
+
+    with session_scope() as session:
+        annotations.import_set(
+            session,
+            world["ontology"],
+            "test-board-annotator",
+            "document_url,concepts\n"
+            + "".join(f"https://lb.test/{i},Strike\n" for i in range(4)),
+        )
     response = TestClient(app).post(
         "/eval/leaderboard/live",
         json={
             "ontology_id": world["ontology"],
             "manifest_path": world["manifest"],
-            "labels_csv": labels,
+            "annotator": "test-board-annotator",
         },
     )
     assert response.status_code == 200, response.text

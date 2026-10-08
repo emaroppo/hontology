@@ -357,3 +357,15 @@ def label_document(document_id: int, payload: DocumentLabelIn, db: Session = Dep
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     return report
+
+
+@router.get("/truths")
+def truths(ontology_id: int, db: Session = Depends(get_db)):
+    """What a score can be computed against: the human label bank, and each
+    machine annotation set, with how much each covers."""
+    from hontology.evalkit import annotations
+
+    return {
+        "human": annotations.human_summary(db, ontology_id),
+        "machine": annotations.list_sets(db, ontology_id),
+    }

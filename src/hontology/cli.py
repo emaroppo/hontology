@@ -1102,6 +1102,39 @@ def labels_import_documents(ontology_id: int, path: Path) -> None:
         typer.secho(f"  {error}", fg=typer.colors.YELLOW)
 
 
+@labels_app.command("annotations-import")
+def labels_annotations_import(
+    ontology_id: int,
+    path: Path,
+    name: str = typer.Option(..., help="The set's name, e.g. claude-blind-001."),
+    description: str | None = typer.Option(
+        None, help="Who annotated and how, for whoever reads a score against it."
+    ),
+) -> None:
+    """Store a whole-document labels file as a machine annotation set.
+
+    Kept apart from the human label bank: scores against it measure agreement
+    with that annotator. Re-importing under the same name extends the set.
+    """
+    from hontology.evalkit import annotations
+
+    with session_scope() as session:
+        try:
+            report = annotations.import_set(
+                session,
+                ontology_id,
+                name,
+                path.read_text(encoding="utf-8"),
+                description=description,
+            )
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        f"{report['set']}: {report['articles']} article(s), {report['pairs']} pair(s), "
+        f"{report['positives']} positive; {report['skipped_blank']} blank row(s) skipped"
+    )
+
+
 @labels_app.command("import")
 def labels_import(
     ontology_id: int,
@@ -1402,23 +1435,36 @@ def eval_arms(
         "--labels",
         help="Score against this whole-document labels CSV instead of the label bank.",
     ),
+    annotator: str | None = typer.Option(
+        None,
+        "--annotator",
+        help="Score against this machine annotation set instead of the label bank.",
+    ),
     before: int = typer.Option(1),
     after: int = typer.Option(2),
 ) -> None:
     """The pre-registered comparison: every arm against the baseline, both levels."""
     from hontology.db.models import Run
-    from hontology.evalkit import arms, calendar
+    from hontology.evalkit import annotations, arms, calendar
     from hontology.evalkit.label_io import document_label_map
 
+    if labels_path is not None and annotator is not None:
+        raise typer.BadParameter("give --labels or --annotator, not both")
     with session_scope() as session:
         labels = None
-        if labels_path is not None:
+        if labels_path is not None or annotator is not None:
             baseline_run = session.get(Run, baseline)
             if baseline_run is None:
                 raise typer.BadParameter(f"run {baseline} does not exist")
-            labels = document_label_map(
-                session, baseline_run.ontology_id, labels_path.read_text(encoding="utf-8")
-            )
+            if labels_path is not None:
+                labels = document_label_map(
+                    session, baseline_run.ontology_id, labels_path.read_text(encoding="utf-8")
+                )
+            else:
+                try:
+                    labels = annotations.truth(session, baseline_run.ontology_id, annotator)
+                except LookupError as exc:
+                    raise typer.BadParameter(str(exc)) from exc
         report = arms.compare_arms(
             session,
             baseline,

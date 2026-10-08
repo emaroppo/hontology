@@ -96,14 +96,14 @@ def run_on_sample(run_id: int, manifest: str, db: Session = Depends(get_db)):
 
 class SampleIn(BaseModel):
     manifest_path: str
-    # A whole-document labels CSV used as truth in place of the label bank.
-    labels_csv: str | None = None
+    # The truth: None for human labels, else a machine annotation set's name.
+    annotator: str | None = None
 
 
 @router.post("/runs/{run_id}/sample")
 def run_on_sample_with(run_id: int, payload: SampleIn, db: Session = Depends(get_db)):
-    """As the GET, with a labels file as truth if one is given."""
-    return _sample(db, run_id, payload.manifest_path, payload.labels_csv)
+    """As the GET, scored against a machine annotation set if one is named."""
+    return _sample(db, run_id, payload.manifest_path, payload.annotator)
 
 
 def _manifest(path: str) -> dict:
@@ -118,20 +118,19 @@ def _manifest(path: str) -> dict:
         ) from exc
 
 
-def _labels(db: Session, ontology_id: int, labels_csv: str | None) -> dict | None:
+def _labels(db: Session, ontology_id: int, annotator: str | None) -> dict | None:
+    """None for human labels, which the sample scoring reads from the bank itself."""
     from hontology.retrieve import tuning
 
-    if labels_csv is None:
+    if annotator is None:
         return None
     try:
-        return tuning.truth(db, ontology_id, labels_csv)
-    except ValueError as exc:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, f"unreadable labels file: {exc}"
-        ) from exc
+        return tuning.truth(db, ontology_id, annotator)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
 
-def _sample(db: Session, run_id: int, manifest_path: str, labels_csv: str | None) -> dict:
+def _sample(db: Session, run_id: int, manifest_path: str, annotator: str | None) -> dict:
     from hontology.db.models import Concept, Document
     from hontology.evalkit import arms
 
@@ -139,7 +138,7 @@ def _sample(db: Session, run_id: int, manifest_path: str, labels_csv: str | None
     run = db.get(Run, run_id)
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"run {run_id} does not exist")
-    labels = _labels(db, run.ontology_id, labels_csv)
+    labels = _labels(db, run.ontology_id, annotator)
     result = arms.run_on_sample(db, run_id, record, labels=labels)
     for error in result.get("errors", []):
         concept = db.get(Concept, error["concept_id"])
@@ -276,7 +275,7 @@ def run_detections_csv(
 class LeaderboardIn(BaseModel):
     ontology_id: int
     manifest_path: str
-    labels_csv: str | None = None
+    annotator: str | None = None
 
 
 @router.post("/leaderboard/live")
@@ -288,7 +287,7 @@ def live_leaderboard(payload: LeaderboardIn, db: Session = Depends(get_db)):
         db,
         payload.ontology_id,
         _manifest(payload.manifest_path),
-        _labels(db, payload.ontology_id, payload.labels_csv),
+        _labels(db, payload.ontology_id, payload.annotator),
     )
 
 
@@ -314,7 +313,7 @@ class ArmsIn(BaseModel):
     baseline: int
     arms: list[int]
     manifest_path: str
-    labels_csv: str | None = None
+    annotator: str | None = None
 
 
 @router.post("/arms")
@@ -333,6 +332,6 @@ def compare_arms(payload: ArmsIn, db: Session = Depends(get_db)):
         payload.arms,
         [],
         _manifest(payload.manifest_path),
-        labels=_labels(db, baseline.ontology_id, payload.labels_csv),
+        labels=_labels(db, baseline.ontology_id, payload.annotator),
     )
     return {"report": report, "markdown": arms.render_markdown(report)}

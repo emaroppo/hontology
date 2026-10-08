@@ -15,7 +15,9 @@ from hontology.db.models.corpus import (
 from hontology.db.models.labels import (
     ALL_SOURCES,
     TRUSTED_SOURCES,
+    AnnotationSet,
     CalendarReview,
+    MachineAnnotation,
     Observation,
     PairLabel,
 )
@@ -41,6 +43,7 @@ from hontology.db.models.vectors import (
 
 __all__ = [
     "ALL_SOURCES",
+    "AnnotationSet",
     "CalendarReview",
     "TRUSTED_SOURCES",
     "Base",
@@ -62,6 +65,7 @@ __all__ = [
     "FeedSlice",
     "IngestWatermark",
     "Locus",
+    "MachineAnnotation",
     "Observation",
     "Ontology",
     "LinkSnapshot",

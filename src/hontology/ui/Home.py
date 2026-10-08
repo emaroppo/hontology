@@ -14,10 +14,9 @@ the way the arms comparison scores it.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import streamlit as st
 
+from hontology.ui import truth
 from hontology.ui.client import Api, ApiError
 
 st.set_page_config(page_title="hontology", page_icon="🧭", layout="wide")
@@ -69,15 +68,7 @@ with st.sidebar:
         value="data/samples/sample-run566.json",
         help="The labelled sample every run is scored on, in its frozen order.",
     )
-    truth_source = st.radio("Truth", ["Label bank", "Labels file"], horizontal=True)
-    labels_csv: str | None = None
-    if truth_source == "Labels file":
-        path = st.text_input("Labels file", value="data/labels/claude-blind-001-320.csv")
-        try:
-            labels_csv = Path(path).read_text(encoding="utf-8")
-        except OSError as exc:
-            st.error(f"Cannot read it: {exc}")
-            st.stop()
+    annotator = truth.pick(api, ontology["id"], st, key="home_truth")
 
 
 def ci_text(value: float | None, ci: list | None) -> str:
@@ -89,7 +80,7 @@ def ci_text(value: float | None, ci: list | None) -> str:
 
 
 try:
-    board = api.live_leaderboard(ontology["id"], manifest_path, labels_csv)
+    board = api.live_leaderboard(ontology["id"], manifest_path, annotator)
 except ApiError as exc:
     st.error(exc.detail)
     how_it_fits()
@@ -109,7 +100,8 @@ def show_leaderboard() -> None:
     if not labelled:
         st.info(
             "No article of this sample is labelled yet, so nothing can be scored. Label "
-            "some on the **Labelling** page, or use a labels file as truth (sidebar)."
+            "some on the **Labelling** page, or score against a machine annotation set "
+            "(sidebar)."
         )
         return
     show_partial = st.toggle(
@@ -211,7 +203,7 @@ def show_comparison() -> None:
     if not arms:
         return
     try:
-        result = api.compare_arms(baseline, arms, manifest_path, labels_csv)
+        result = api.compare_arms(baseline, arms, manifest_path, annotator)
     except ApiError as exc:
         st.error(exc.detail)
         return
@@ -300,7 +292,7 @@ def show_single() -> None:
             + (f", reused from run {source}" if source != run_id else "")
         )
         try:
-            cut = api.retrieval_report(source, None, labels_csv)["run"]
+            cut = api.retrieval_report(source, None, annotator)["run"]
             labelled = cut["labels"]
             st.metric(
                 "True matches past the cutoff",
@@ -326,7 +318,7 @@ def show_single() -> None:
 
     with st.expander("Where it disagrees with the labels"):
         try:
-            sample = api.run_sample(run_id, manifest_path, labels_csv)
+            sample = api.run_sample(run_id, manifest_path, annotator)
             errors = sample.get("errors") or []
             st.dataframe(
                 [

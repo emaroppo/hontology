@@ -19,11 +19,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 
 import streamlit as st
 
-from hontology.ui import charts
+from hontology.ui import charts, truth
 from hontology.ui.client import Api, ApiError
 
 st.set_page_config(page_title="Judgement", page_icon="⚖️", layout="wide")
@@ -88,15 +87,7 @@ with st.sidebar:
         )
 
     st.divider()
-    truth_source = st.radio("Truth", ["Label bank", "Labels file"], horizontal=True)
-    labels_csv: str | None = None
-    if truth_source == "Labels file":
-        path = st.text_input("Labels file", value="data/labels/claude-blind-001-320.csv")
-        try:
-            labels_csv = Path(path).read_text(encoding="utf-8")
-        except OSError as exc:
-            st.error(f"Cannot read it: {exc}")
-            st.stop()
+    annotator = truth.pick(api, ontology["id"], st, key="judgement_truth")
 
 
 def show_trials() -> None:
@@ -165,7 +156,7 @@ def show_trials() -> None:
     with articles_col:
         st.markdown("**Articles**")
         try:
-            articles = api.judgement_articles(run["id"], leaf["id"], labels_csv)
+            articles = api.judgement_articles(run["id"], leaf["id"], annotator)
         except ApiError as exc:
             st.error(exc.detail)
             return
@@ -354,15 +345,15 @@ def show_evaluation() -> None:
     if not chosen:
         return
     try:
-        result = api.judgement_evaluate([run_labels[c] for c in chosen], scope, labels_csv)
+        result = api.judgement_evaluate([run_labels[c] for c in chosen], scope, annotator)
     except ApiError as exc:
         st.error(exc.detail)
         return
     pooled = result["pooled"]
     if not pooled["pairs"]:
         st.info(
-            "No labelled pair among what these runs judged. Try a labels file as truth "
-            "(sidebar)."
+            "No labelled pair among what these runs judged. Try a machine annotation set "
+            "as truth (sidebar)."
         )
         return
 

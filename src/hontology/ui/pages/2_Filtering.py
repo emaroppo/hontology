@@ -15,10 +15,10 @@ far too much through.
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 
 import streamlit as st
 
+from hontology.ui import truth
 from hontology.ui.client import Api, ApiError
 
 st.set_page_config(page_title="Filtering", page_icon="🧹", layout="wide")
@@ -362,17 +362,8 @@ def show_evaluation() -> None:
         except ApiError as exc:
             st.error(exc.detail)
 
-    cols = st.columns(2)
-    truth_source = cols[0].radio("Truth", ["Label bank", "Labels file"], horizontal=True)
-    labels_csv = None
-    if truth_source == "Labels file":
-        path = cols[1].text_input("Labels file", value="data/labels/claude-blind-001-320.csv")
-        try:
-            labels_csv = Path(path).read_text(encoding="utf-8")
-        except OSError as exc:
-            st.error(f"Cannot read it: {exc}")
-            return
-    payload = {"ontology_id": ontology_id, "version": version, "labels_csv": labels_csv}
+    annotator = truth.pick(api, ontology_id, st, key="fe_truth")
+    payload = {"ontology_id": ontology_id, "version": version, "annotator": annotator}
     try:
         labels = api.filtering_evaluate("labels", **payload)
     except ApiError as exc:

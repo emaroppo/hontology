@@ -165,20 +165,28 @@ def test_the_api_reports_a_setting_beside_the_runs_own(world):
     assert runs[0]["cutoff"]["max_k"] == 2
 
 
-def test_a_labels_file_replaces_the_bank(world):
-    csv_text = "document_url,concepts\nhttps://tune.test/a,Riot\nhttps://tune.test/b,none\n"
+def test_a_machine_annotation_set_replaces_the_human_labels(world):
+    from hontology.evalkit import annotations
+
+    with session_scope() as session:
+        ontology_id = session.get(Run, world["run"]).ontology_id
+        annotations.import_set(
+            session,
+            ontology_id,
+            "test-annotator",
+            "document_url,concepts\nhttps://tune.test/a,Riot\nhttps://tune.test/b,none\n",
+        )
     client = TestClient(app)
     body = client.post(
-        f"/retrieval/runs/{world['run']}/report", json={"labels_csv": csv_text}
+        f"/retrieval/runs/{world['run']}/report", json={"annotator": "test-annotator"}
     ).json()
     labels = body["run"]["labels"]
     assert (labels["documents"], labels["positives"], labels["positives_kept"]) == (2, 1, 0)
 
-    bad = client.post(
-        f"/retrieval/runs/{world['run']}/report",
-        json={"labels_csv": "document_url,concepts\nhttps://tune.test/a,Volcano\n"},
+    unknown = client.post(
+        f"/retrieval/runs/{world['run']}/report", json={"annotator": "nobody"}
     )
-    assert bad.status_code == 422
+    assert unknown.status_code == 404
 
 
 # ---------------------------------------------------------------------------

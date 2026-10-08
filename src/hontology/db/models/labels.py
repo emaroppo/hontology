@@ -122,3 +122,47 @@ class CalendarReview(Base, TimestampMixin):
     document_url: Mapped[str] = mapped_column(Text, nullable=False)
     confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     note: Mapped[str | None] = mapped_column(Text)
+
+
+class AnnotationSet(Base, TimestampMixin):
+    """A named set of machine annotations, kept apart from the human label bank.
+
+    Machine annotators (an LLM labelling blind, say) can cover the same articles
+    a person did, and their answers are a different kind of evidence: a score
+    against them measures agreement with that annotator, not correctness. So they
+    live beside the bank rather than in it, one set per annotation run, and every
+    view says which truth it was scored against.
+    """
+
+    __tablename__ = "annotation_sets"
+    __table_args__ = (UniqueConstraint("ontology_id", "name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ontology_id: Mapped[int] = mapped_column(
+        ForeignKey("ontologies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    # Who annotated, how, under what instructions: provenance for a reader.
+    description: Mapped[str | None] = mapped_column(Text)
+
+
+class MachineAnnotation(Base, TimestampMixin):
+    """One machine annotator's answer for one (document, concept) pair."""
+
+    __tablename__ = "machine_annotations"
+    __table_args__ = (UniqueConstraint("set_id", "document_id", "concept_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    set_id: Mapped[int] = mapped_column(
+        ForeignKey("annotation_sets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    concept_id: Mapped[int] = mapped_column(
+        ForeignKey("concepts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    matched: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    # The ontology version the annotator was shown.
+    ontology_version: Mapped[str | None] = mapped_column(String)

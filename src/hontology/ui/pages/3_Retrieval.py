@@ -20,11 +20,9 @@ articles, not only those one run happened to retrieve for.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import streamlit as st
 
-from hontology.ui import charts
+from hontology.ui import charts, truth
 from hontology.ui.client import Api, ApiError
 
 st.set_page_config(page_title="Retrieval", page_icon="🔎", layout="wide")
@@ -58,21 +56,7 @@ with st.sidebar:
     run = by_run[st.selectbox("Run", list(by_run), key="retrieval_run")]
 
     st.divider()
-    truth_source = st.radio(
-        "Truth",
-        ["Label bank", "Labels file"],
-        horizontal=True,
-        help="A whole-document labels file (as `eval arms --labels` takes) is used in "
-        "place of the label bank, for a sample labelled elsewhere.",
-    )
-    labels_csv: str | None = None
-    if truth_source == "Labels file":
-        path = st.text_input("Labels file", value="data/labels/claude-blind-001-320.csv")
-        try:
-            labels_csv = Path(path).read_text(encoding="utf-8")
-        except OSError as exc:
-            st.error(f"Cannot read it: {exc}")
-            st.stop()
+    annotator = truth.pick(api, ontology["id"], st, key="retrieval_truth")
 
     st.divider()
     st.subheader("Cutoff")
@@ -160,7 +144,7 @@ def label_mark(value: bool | None) -> str:
 
 def show_tune() -> None:
     try:
-        result = api.retrieval_report(run["id"], cutoff, labels_csv)
+        result = api.retrieval_report(run["id"], cutoff, annotator)
     except ApiError as exc:
         st.error(exc.detail)
         return
@@ -193,7 +177,7 @@ def show_tune() -> None:
     if not labels["positives"]:
         st.info(
             "No labelled true matches on this run's articles, so recall cannot be "
-            "measured. Try a labels file as truth."
+            "measured. Try a machine annotation set as truth (sidebar)."
         )
     else:
         cols = st.columns(4)
@@ -242,7 +226,7 @@ def show_tune() -> None:
 
 def show_article(document_id: int) -> None:
     try:
-        pool = api.retrieval_document(run["id"], document_id, cutoff, labels_csv)
+        pool = api.retrieval_document(run["id"], document_id, cutoff, annotator)
     except ApiError as exc:
         st.error(exc.detail)
         return
@@ -272,7 +256,7 @@ def show_explore() -> None:
     mode = st.radio("Look at", ["One article", "One class"], horizontal=True)
     if mode == "One article":
         try:
-            labelled = api.retrieval_labelled(run["id"], labels_csv)
+            labelled = api.retrieval_labelled(run["id"], annotator)
         except ApiError as exc:
             st.error(exc.detail)
             return
@@ -313,7 +297,7 @@ def show_explore() -> None:
     if leaf.get("definition"):
         st.caption(leaf["definition"])
     try:
-        rows = api.retrieval_concept(run["id"], leaf["id"], cutoff, labels_csv, limit=50)
+        rows = api.retrieval_concept(run["id"], leaf["id"], cutoff, annotator, limit=50)
     except ApiError as exc:
         st.error(exc.detail)
         return
@@ -424,7 +408,7 @@ def show_evaluation() -> None:
     }
     try:
         result = api.retrieval_evaluate(
-            version["runs"][0]["id"], cutoff, int(pool_size), labels_csv
+            version["runs"][0]["id"], cutoff, int(pool_size), annotator
         )
     except ApiError as exc:
         st.error(exc.detail)
@@ -434,7 +418,7 @@ def show_evaluation() -> None:
     if not result["positives"]:
         st.info(
             f"No labelled true match among the {docs['labelled']} labelled article(s) on "
-            "this version's leaves. Try a labels file as truth (sidebar)."
+            "this version's leaves. Try a machine annotation set as truth (sidebar)."
         )
         return
 

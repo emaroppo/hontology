@@ -34,7 +34,7 @@ class TrialIn(BaseModel):
 class ArticlesIn(BaseModel):
     run_id: int
     concept_id: int
-    labels_csv: str | None = None
+    annotator: str | None = None
     limit: int = 40
 
 
@@ -88,8 +88,8 @@ def articles(payload: ArticlesIn, db: Session = Depends(get_db)):
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"run {payload.run_id} does not exist")
     try:
-        labels = tuning.truth(db, run.ontology_id, payload.labels_csv)
-    except ValueError as exc:
+        labels = tuning.truth(db, run.ontology_id, payload.annotator)
+    except LookupError as exc:
         raise _refuse(exc) from exc
     return trial.articles(db, payload.run_id, payload.concept_id, labels, limit=payload.limit)
 
@@ -123,7 +123,7 @@ def versions(ontology_id: int, db: Session = Depends(get_db)):
 class VersionEvalIn(BaseModel):
     run_ids: list[int]
     scope: str = "responsible"
-    labels_csv: str | None = None
+    annotator: str | None = None
 
 
 @router.post("/versions/evaluate")
@@ -138,7 +138,7 @@ def evaluate_version(payload: VersionEvalIn, db: Session = Depends(get_db)):
             status.HTTP_404_NOT_FOUND, f"run {payload.run_ids[0]} does not exist"
         )
     try:
-        labels = tuning.truth(db, run.ontology_id, payload.labels_csv)
+        labels = tuning.truth(db, run.ontology_id, payload.annotator)
         return judge_eval.evaluate(db, payload.run_ids, labels, scope=payload.scope)
     except (LookupError, ValueError) as exc:
         raise _refuse(exc) from exc

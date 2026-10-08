@@ -21,7 +21,7 @@ The UI is seven pages, each a pure HTTP client of the API:
 
 | Page | What it is for |
 |---|---|
-| **Home** | Every judged run scored end to end on the labelled sample (label bank or a labels file), as the arms report scores it. Tabs: **Leaderboard** (stage versions, coverage of the sample, F1 with intervals, cost; calendar recall on request), **Comparison** (arms against a baseline, paired, the `eval arms` tables), **Single run** (end to end, a couple of numbers per stage, disagreements, funnel, detections) |
+| **Home** | Every judged run scored end to end on the labelled sample (human labels or a machine annotation set), as the arms report scores it. Tabs: **Leaderboard** (stage versions, coverage of the sample, F1 with intervals, cost; calendar recall on request), **Comparison** (arms against a baseline, paired, the `eval arms` tables), **Single run** (end to end, a couple of numbers per stage, disagreements, funnel, detections) |
 | **Ontology** | Author a flat event set in place; for a hierarchy, view the tree and edit leaf wording (structure comes from Protégé via OWL import); import/export, version history, health checks |
 | **Filtering** | Link classes to feed codes (CAMEO, GKG themes), ticking similarity candidates; preview what the pre-download filter would keep. **Evaluation**: a version of the links (a snapshot, or the live ones) scored link by link against the labels (TP, FP, FN, TN, unique TP), the calendar, and corpus cost (articles admitted, and admitted by no other link) |
 | **Retrieval** | **Evaluation**: a retrieval version (ranking settings, leaf wording, ranking code) scored live on every labelled article under any cutoff, set by hand or loaded from a run, with recall at each depth and by class. A finished run's ranked pool under a cutoff of choice: what it sends to the judge and which labelled true matches it keeps, split into those the pool never ranked and those the cutoff dropped; one article's or one class's ranking. No re-embedding |
@@ -485,6 +485,20 @@ hontology eval arms <baseline-run> calendar.csv --arm <run> --manifest sample.js
 
 In a hierarchy, documents are labelled on leaf classes only; a parent class is
 true exactly when one of its leaves is.
+
+**Human labels and machine annotations are kept apart.** A sample labelled by a
+machine annotator, such as an LLM labelling blind, is stored as a named
+annotation set beside the label bank, never in it: it can cover the very
+articles a person labelled, and a score against it measures agreement with that
+annotator, not correctness. Every page and `eval arms --annotator <name>` can
+score against a set instead of the human labels, and says which it used.
+
+```bash
+hontology labels annotations-import <ontology-id> claude.csv --name claude-blind-001 \
+    --description "who annotated, how, under what instructions"
+hontology eval arms <baseline-run> calendar.csv --arm <run> --manifest sample.json \
+    --annotator claude-blind-001
+```
 
 An arm can be scored on the sample before, or instead of, judging every
 calendar window. `run sample` gives the sample's first documents another run's

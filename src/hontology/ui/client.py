@@ -178,33 +178,33 @@ class Api:
         return self._request("POST", f"/filtering/evaluate/{part}", json=payload, timeout=900)
 
     # --- retrieval ----------------------------------------------------------
-    # Each call carries the cutoff (None: the run's own) and, optionally, a
-    # whole-document labels file to use as truth in place of the label bank.
+    # Each call carries the cutoff (None: the run's own) and the truth: None for
+    # human labels, else a machine annotation set's name.
 
     def retrieval_runs(self, ontology_id: int) -> list[dict]:
         return self._request("GET", "/retrieval/runs", params={"ontology_id": ontology_id})
 
     def retrieval_report(
-        self, run_id: int, cutoff: dict | None, labels_csv: str | None = None
+        self, run_id: int, cutoff: dict | None, annotator: str | None = None
     ) -> dict:
         return self._request(
             "POST",
             f"/retrieval/runs/{run_id}/report",
-            json={"cutoff": cutoff, "labels_csv": labels_csv},
+            json={"cutoff": cutoff, "annotator": annotator},
         )
 
-    def retrieval_labelled(self, run_id: int, labels_csv: str | None = None) -> list[dict]:
+    def retrieval_labelled(self, run_id: int, annotator: str | None = None) -> list[dict]:
         return self._request(
-            "POST", f"/retrieval/runs/{run_id}/labelled", json={"labels_csv": labels_csv}
+            "POST", f"/retrieval/runs/{run_id}/labelled", json={"annotator": annotator}
         )
 
     def retrieval_document(
-        self, run_id: int, document_id: int, cutoff: dict | None, labels_csv: str | None = None
+        self, run_id: int, document_id: int, cutoff: dict | None, annotator: str | None = None
     ) -> dict:
         return self._request(
             "POST",
             f"/retrieval/runs/{run_id}/documents/{document_id}",
-            json={"cutoff": cutoff, "labels_csv": labels_csv},
+            json={"cutoff": cutoff, "annotator": annotator},
         )
 
     def retrieval_concept(
@@ -212,21 +212,21 @@ class Api:
         run_id: int,
         concept_id: int,
         cutoff: dict | None,
-        labels_csv: str | None = None,
+        annotator: str | None = None,
         limit: int = 50,
     ) -> list[dict]:
         return self._request(
             "POST",
             f"/retrieval/runs/{run_id}/concepts/{concept_id}",
             params={"limit": limit},
-            json={"cutoff": cutoff, "labels_csv": labels_csv},
+            json={"cutoff": cutoff, "annotator": annotator},
         )
 
     def retrieval_versions(self, ontology_id: int) -> list[dict]:
         return self._request("GET", "/retrieval/versions", params={"ontology_id": ontology_id})
 
     def retrieval_evaluate(
-        self, run_id: int, cutoff: dict, pool_size: int = 20, labels_csv: str | None = None
+        self, run_id: int, cutoff: dict, pool_size: int = 20, annotator: str | None = None
     ) -> dict:
         return self._request(
             "POST",
@@ -235,7 +235,7 @@ class Api:
                 "run_id": run_id,
                 "cutoff": cutoff,
                 "pool_size": pool_size,
-                "labels_csv": labels_csv,
+                "annotator": annotator,
             },
         )
 
@@ -249,7 +249,7 @@ class Api:
         return self._request("GET", "/judgement/runs", params={"ontology_id": ontology_id})
 
     def judgement_articles(
-        self, run_id: int, concept_id: int, labels_csv: str | None = None, limit: int = 40
+        self, run_id: int, concept_id: int, annotator: str | None = None, limit: int = 40
     ) -> list[dict]:
         return self._request(
             "POST",
@@ -257,7 +257,7 @@ class Api:
             json={
                 "run_id": run_id,
                 "concept_id": concept_id,
-                "labels_csv": labels_csv,
+                "annotator": annotator,
                 "limit": limit,
             },
         )
@@ -273,15 +273,19 @@ class Api:
         return self._request("GET", "/judgement/versions", params={"ontology_id": ontology_id})
 
     def judgement_evaluate(
-        self, run_ids: list[int], scope: str = "responsible", labels_csv: str | None = None
+        self, run_ids: list[int], scope: str = "responsible", annotator: str | None = None
     ) -> dict:
         return self._request(
             "POST",
             "/judgement/versions/evaluate",
-            json={"run_ids": run_ids, "scope": scope, "labels_csv": labels_csv},
+            json={"run_ids": run_ids, "scope": scope, "annotator": annotator},
         )
 
     # --- labels -------------------------------------------------------------
+
+    def truths(self, ontology_id: int) -> dict:
+        """The human label bank and each machine annotation set, with coverage."""
+        return self._request("GET", "/labels/truths", params={"ontology_id": ontology_id})
 
     def labelling_queue(
         self,
@@ -409,7 +413,7 @@ class Api:
         )
 
     def live_leaderboard(
-        self, ontology_id: int, manifest_path: str, labels_csv: str | None = None
+        self, ontology_id: int, manifest_path: str, annotator: str | None = None
     ) -> dict:
         return self._request(
             "POST",
@@ -417,18 +421,16 @@ class Api:
             json={
                 "ontology_id": ontology_id,
                 "manifest_path": manifest_path,
-                "labels_csv": labels_csv,
+                "annotator": annotator,
             },
             timeout=300,
         )
 
-    def run_sample(
-        self, run_id: int, manifest_path: str, labels_csv: str | None = None
-    ) -> dict:
+    def run_sample(self, run_id: int, manifest_path: str, annotator: str | None = None) -> dict:
         return self._request(
             "POST",
             f"/eval/runs/{run_id}/sample",
-            json={"manifest_path": manifest_path, "labels_csv": labels_csv},
+            json={"manifest_path": manifest_path, "annotator": annotator},
         )
 
     def run_calendar(self, run_id: int, calendar_path: str | None = None) -> dict:
@@ -445,7 +447,7 @@ class Api:
         baseline: int,
         arms: list[int],
         manifest_path: str,
-        labels_csv: str | None = None,
+        annotator: str | None = None,
     ) -> dict:
         return self._request(
             "POST",
@@ -454,7 +456,7 @@ class Api:
                 "baseline": baseline,
                 "arms": arms,
                 "manifest_path": manifest_path,
-                "labels_csv": labels_csv,
+                "annotator": annotator,
             },
             timeout=300,
         )

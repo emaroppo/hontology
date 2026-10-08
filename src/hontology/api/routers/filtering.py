@@ -26,7 +26,7 @@ class EvaluateIn(BaseModel):
     ontology_id: int
     # None: the live links.
     version: str | None = None
-    labels_csv: str | None = None
+    annotator: str | None = None
     calendar_path: str | None = None
     before: int = 1
     after: int = 2
@@ -84,11 +84,9 @@ def list_versions(ontology_id: int, db: Session = Depends(get_db)):
 @router.post("/evaluate/labels")
 def evaluate_labels(payload: EvaluateIn, db: Session = Depends(get_db)):
     try:
-        truth = tuning.truth(db, payload.ontology_id, payload.labels_csv)
-    except ValueError as exc:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, f"unreadable labels file: {exc}"
-        ) from exc
+        truth = tuning.truth(db, payload.ontology_id, payload.annotator)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return filter_eval.labelled_report(
         db, _links(db, payload), truth, _names(db, payload.ontology_id)
     )
