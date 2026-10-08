@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from hontology.config import get_settings
-from hontology.db.models import Code, CodeSystem, ConceptCode
+from hontology.db.models import Code, CodeSystem, Concept, ConceptCode
 from hontology.db.session import get_db
-from hontology.ingest import cameo
+from hontology.ingest import cameo, themes
 from hontology.judge.providers.base import ProviderError
 from hontology.retrieve import embed, similarity
 
@@ -22,6 +22,13 @@ class CodeOut(BaseModel):
     code: str
     name: str | None = None
     level: str
+    system: str | None = None  # the code system's slug
+
+
+def _code_out(code: Code) -> CodeOut:
+    return CodeOut(
+        id=code.id, code=code.code, name=code.name, level=code.level, system=code.system.slug
+    )
 
 
 class LinkOut(BaseModel):
@@ -45,22 +52,21 @@ class SetLinkIn(BaseModel):
 
 
 class SimilarityIn(BaseModel):
+    """A similarity run scores; it never links. Proposals are ticked one by one
+    under each class, so every link is one a person chose."""
+
     ontology_id: int
-    level: str = "event"
+    system: str = cameo.CAMEO_SLUG
+    # None picks the system's default level: CAMEO's 4-digit events, or the
+    # single level of a flat system such as GKG themes.
+    level: str | None = None
     concept_fields: str = "name+definition"
-    threshold: float = 0.45
-    adaptive: bool = True
-    rel_margin: float = 0.10
-    min_score: float = 0.25
-    max_k: int = 15
     model: str | None = None
 
 
 class SimilarityOut(BaseModel):
     run_id: int
     n_scores: int
-    n_linked: int
-    n_manual_preserved: int
 
 
 def _cameo_system(db: Session) -> CodeSystem:
@@ -84,6 +90,50 @@ def ingest_cameo(db: Session = Depends(get_db)):
         ) from exc
 
 
+@router.post("/themes/ingest")
+def ingest_themes(db: Session = Depends(get_db)):
+    """Fetch and load the GKG theme lookup. Idempotent."""
+    try:
+        return themes.ingest(db)
+    except Exception as exc:  # noqa: BLE001 - surface any fetch failure to the UI
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, f"could not fetch the GKG theme lookup: {exc}"
+        ) from exc
+
+
+@router.get("/systems")
+def list_systems(db: Session = Depends(get_db)):
+    """The code systems loaded, each with its levels, the default first."""
+    counts: dict[int, dict[str, int]] = {}
+    for system_id, level, n in db.execute(
+        select(Code.system_id, Code.level, func.count()).group_by(Code.system_id, Code.level)
+    ):
+        counts.setdefault(system_id, {})[level] = n
+    out = []
+    for system in db.scalars(select(CodeSystem).order_by(CodeSystem.slug)):
+        levels = counts.get(system.id, {})
+        default = _default_level(system.slug, levels)
+        out.append(
+            {
+                "slug": system.slug,
+                "name": system.name,
+                "levels": [
+                    {"level": level, "n_codes": levels[level]}
+                    for level in sorted(levels, key=lambda lv: (lv != default, lv))
+                ],
+            }
+        )
+    return out
+
+
+def _default_level(slug: str, levels: dict[str, int]) -> str | None:
+    """CAMEO's finest level, 4-digit events; otherwise the most populous level,
+    which for a flat system such as GKG themes is its only one."""
+    if slug == cameo.CAMEO_SLUG and cameo.LEVELS[4] in levels:
+        return cameo.LEVELS[4]
+    return max(levels, key=lambda level: levels[level]) if levels else None
+
+
 @router.get("/codes", response_model=list[CodeOut])
 def list_codes(level: str | None = None, limit: int = 500, db: Session = Depends(get_db)):
     system = _cameo_system(db)
@@ -98,13 +148,34 @@ def concept_links(concept_id: int, db: Session = Depends(get_db)):
     rows = db.scalars(select(ConceptCode).where(ConceptCode.concept_id == concept_id))
     return [
         LinkOut(
-            code=CodeOut.model_validate(row.code, from_attributes=True),
+            code=_code_out(row.code),
             score=row.similarity_score,
             proposed_by_run=row.similarity_run_id,
             manual=row.similarity_run_id is None,
         )
         for row in rows
     ]
+
+
+@router.get("/ontologies/{ontology_id}/links")
+def ontology_links(ontology_id: int, db: Session = Depends(get_db)) -> dict[int, list[LinkOut]]:
+    """Every class's links in one call, keyed by concept id; unlinked classes absent."""
+    rows = db.scalars(
+        select(ConceptCode)
+        .join(Concept, Concept.id == ConceptCode.concept_id)
+        .where(Concept.ontology_id == ontology_id)
+    )
+    out: dict[int, list[LinkOut]] = {}
+    for row in rows:
+        out.setdefault(row.concept_id, []).append(
+            LinkOut(
+                code=_code_out(row.code),
+                score=row.similarity_score,
+                proposed_by_run=row.similarity_run_id,
+                manual=row.similarity_run_id is None,
+            )
+        )
+    return out
 
 
 @router.get("/concepts/{concept_id}/candidates", response_model=list[CandidateOut])
@@ -118,7 +189,7 @@ def concept_candidates(
     }
     return [
         CandidateOut(
-            code=CodeOut.model_validate(code, from_attributes=True),
+            code=_code_out(code),
             score=score,
             linked=code.id in linked,
         )
@@ -141,7 +212,23 @@ def set_link(payload: SetLinkIn, db: Session = Depends(get_db)):
 @router.post("/similarity", response_model=SimilarityOut)
 def run_similarity(payload: SimilarityIn, db: Session = Depends(get_db)):
     settings = get_settings()
-    system = _cameo_system(db)
+    system = db.scalar(select(CodeSystem).where(CodeSystem.slug == payload.system))
+    if system is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"the {payload.system!r} codebook has not been ingested yet",
+        )
+    levels: dict[str, int] = {
+        level: n
+        for level, n in db.execute(
+            select(Code.level, func.count())
+            .where(Code.system_id == system.id)
+            .group_by(Code.level)
+        )
+    }
+    level = payload.level or _default_level(system.slug, levels)
+    if level is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"{payload.system!r} holds no codes")
     provider = embed.get_provider(settings.default_embed_provider)
 
     try:
@@ -151,22 +238,13 @@ def run_similarity(payload: SimilarityIn, db: Session = Depends(get_db)):
             payload.model or settings.default_embed_model,
             ontology_id=payload.ontology_id,
             system_id=system.id,
-            level=payload.level,
+            level=level,
             concept_fields=payload.concept_fields,
-            threshold=payload.threshold,
-            adaptive=payload.adaptive,
-            rel_margin=payload.rel_margin,
-            min_score=payload.min_score,
-            max_k=payload.max_k,
+            auto_link=False,
         )
     except ProviderError as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, f"embedding provider unavailable: {exc}"
         ) from exc
 
-    return SimilarityOut(
-        run_id=result.run_id,
-        n_scores=result.n_scores,
-        n_linked=result.n_linked,
-        n_manual_preserved=result.n_manual_preserved,
-    )
+    return SimilarityOut(run_id=result.run_id, n_scores=result.n_scores)

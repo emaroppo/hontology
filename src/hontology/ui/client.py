@@ -28,10 +28,12 @@ class Api:
         self.base_url = (base_url or get_settings().api_base_url).rstrip("/")
         self.timeout = timeout
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+    def _request(
+        self, method: str, path: str, *, timeout: float | None = None, **kwargs: Any
+    ) -> Any:
         try:
             response = httpx.request(
-                method, f"{self.base_url}{path}", timeout=self.timeout, **kwargs
+                method, f"{self.base_url}{path}", timeout=timeout or self.timeout, **kwargs
             )
         except httpx.HTTPError as exc:
             raise ApiError(0, f"cannot reach the API at {self.base_url}: {exc}") from exc
@@ -124,6 +126,16 @@ class Api:
     def ingest_cameo(self) -> dict:
         return self._request("POST", "/taxonomy/cameo/ingest")
 
+    def ingest_themes(self) -> dict:
+        return self._request("POST", "/taxonomy/themes/ingest")
+
+    def code_systems(self) -> list[dict]:
+        return self._request("GET", "/taxonomy/systems")
+
+    def ontology_links(self, ontology_id: int) -> dict[int, list[dict]]:
+        links = self._request("GET", f"/taxonomy/ontologies/{ontology_id}/links")
+        return {int(concept_id): rows for concept_id, rows in links.items()}
+
     def list_codes(self, level: str | None = None, limit: int = 500) -> list[dict]:
         params: dict[str, Any] = {"limit": limit}
         if level:
@@ -148,7 +160,8 @@ class Api:
         )
 
     def run_similarity(self, **payload: Any) -> dict:
-        return self._request("POST", "/taxonomy/similarity", json=payload)
+        # The first run over a codebook embeds every code, which takes a while.
+        return self._request("POST", "/taxonomy/similarity", json=payload, timeout=600)
 
     # --- labels -------------------------------------------------------------
 
@@ -302,8 +315,17 @@ class Api:
     def lint_ontology(self, ontology_id: int) -> dict:
         return self._request("GET", f"/ontologies/{ontology_id}/lint")
 
+    # Both walk every feed record in the corpus: minutes, not seconds.
+
+    def filter_preview(self, ontology_id: int) -> dict:
+        return self._request(
+            "GET", "/ingest/filter-preview", params={"ontology_id": ontology_id}, timeout=900
+        )
+
     def filter_report(self, ontology_id: int) -> dict:
-        return self._request("GET", "/eval/filter-report", params={"ontology_id": ontology_id})
+        return self._request(
+            "GET", "/eval/filter-report", params={"ontology_id": ontology_id}, timeout=900
+        )
 
     def run_funnel(self, run_id: int) -> dict:
         return self._request("GET", f"/eval/runs/{run_id}/funnel")

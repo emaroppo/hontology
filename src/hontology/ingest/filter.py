@@ -188,8 +188,8 @@ def preview(session: Session, ontology_id: int) -> dict:
             "usable": False,
             "reason": (
                 "this ontology has no concept↔code links, so the filter cannot "
-                "distinguish anything. Curate links on the Code Links page, or "
-                "leave the filter off."
+                "distinguish anything. Link classes to codes on the Filtering page, "
+                "or leave the filter off."
             ),
             "linked_codes": 0,
             "documents_total": total,

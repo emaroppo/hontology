@@ -23,7 +23,7 @@ The UI is six pages, each a pure HTTP client of the API:
 |---|---|
 | **Home** | The ontologies installed, where to start when there are none, and how the pieces fit together |
 | **Ontology** | Author a flat event set in place; for a hierarchy, view the tree and edit leaf wording (structure comes from Protégé via OWL import); import/export, version history, health checks |
-| **Code Links** | Curate concept↔CAMEO associations from similarity proposals |
+| **Filtering** | Link classes to feed codes (CAMEO, GKG themes), ticking similarity candidates; preview what the pre-download filter would keep; per-code report of what each link admitted and what it was worth once labelled |
 | **Labelling** | Two tabs: **Sample**, blind whole-document labelling of a frozen sample, in order; **Queue**, single pairs ranked by what a label would teach, adjudication of machine proposals, bank import/export |
 | **Evaluation** | Funnel, detections, per-stage metrics, breakdowns, errors, leaderboard |
 | **Runs** | Start and watch runs; preview stage keys before paying for them |
@@ -198,6 +198,18 @@ if either matches it.
 hontology ingest themes                                # load the theme vocabulary
 hontology ontology links-import <id> links.csv         # concept,system,code rows
 ```
+
+The **Filtering** page does the same in the UI. It loads either codebook, and a
+similarity run ranks codes against each class; nothing is linked until ticked.
+Proposing links automatically was tried and let far too much through: on the
+supply chain ontology the default selection added about 14 CAMEO codes to every
+class, most of them ones no person had chosen, and the filter admits whatever any
+link admits. Theme candidates are only event-like themes, those used at least
+10,000 times and outside the `TAX_` entity lists (occupations, languages,
+species), embedded as readable words. The page also previews what the filter
+would keep and reports, per linked code, what it admitted and what that was worth
+once labelled (`hontology ingest filter-preview` and `hontology eval filter-report`
+from the command line).
 
 A GKG slice is about seventy times the size of an export slice, so a historical
 backfill can keep only articles mentioning given countries. A slice records the

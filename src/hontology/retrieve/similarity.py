@@ -27,6 +27,7 @@ from hontology.db.models import (
     SimilarityRun,
     SimilarityScore,
 )
+from hontology.ingest import themes
 from hontology.retrieve.embed import (
     EmbeddingProvider,
     embed_concepts,
@@ -67,19 +68,36 @@ def embed_codes(
     system_id: int,
     level: str,
 ) -> tuple[int, dict[int, str]]:
-    """Embed a code level's descriptions."""
-    codes = list(
-        session.scalars(select(Code).where(Code.system_id == system_id, Code.level == level))
-    )
-    items = {c.id: (c.name or c.code).strip() for c in codes}
+    """Embed the proposable codes of one level."""
     return ensure_embeddings(
         session,
         provider,
         model,
         object_type="code",
-        items={k: v for k, v in items.items() if v},
+        items=proposal_texts(session, system_id=system_id, level=level),
         fields=f"code:{level}",
     )
+
+
+def proposal_texts(session: Session, *, system_id: int, level: str) -> dict[int, str]:
+    """``{code id: text to embed}`` for the codes a run may propose.
+
+    A CAMEO code is its description. GKG themes are filtered and made readable
+    first (see `themes.proposal_text`): most are entity lists, not events.
+    """
+    system = session.get(CodeSystem, system_id)
+    codes = session.scalars(
+        select(Code).where(Code.system_id == system_id, Code.level == level)
+    )
+    out: dict[int, str] = {}
+    for code in codes:
+        if system is not None and system.slug == themes.THEMES_SLUG:
+            text = themes.proposal_text(code.code, code.name)
+        else:
+            text = (code.name or code.code).strip()
+        if text:
+            out[code.id] = text
+    return out
 
 
 def run_similarity(
