@@ -408,6 +408,57 @@ class Api:
             json={"ontology_id": ontology_id, "csv": csv_text, "overwrite": overwrite},
         )
 
+    def live_leaderboard(
+        self, ontology_id: int, manifest_path: str, labels_csv: str | None = None
+    ) -> dict:
+        return self._request(
+            "POST",
+            "/eval/leaderboard/live",
+            json={
+                "ontology_id": ontology_id,
+                "manifest_path": manifest_path,
+                "labels_csv": labels_csv,
+            },
+            timeout=300,
+        )
+
+    def run_sample(
+        self, run_id: int, manifest_path: str, labels_csv: str | None = None
+    ) -> dict:
+        return self._request(
+            "POST",
+            f"/eval/runs/{run_id}/sample",
+            json={"manifest_path": manifest_path, "labels_csv": labels_csv},
+        )
+
+    def run_calendar(self, run_id: int, calendar_path: str | None = None) -> dict:
+        # Every calendar window is walked: tens of seconds.
+        return self._request(
+            "POST",
+            f"/eval/runs/{run_id}/calendar",
+            json={"calendar_path": calendar_path},
+            timeout=900,
+        )
+
+    def compare_arms(
+        self,
+        baseline: int,
+        arms: list[int],
+        manifest_path: str,
+        labels_csv: str | None = None,
+    ) -> dict:
+        return self._request(
+            "POST",
+            "/eval/arms",
+            json={
+                "baseline": baseline,
+                "arms": arms,
+                "manifest_path": manifest_path,
+                "labels_csv": labels_csv,
+            },
+            timeout=300,
+        )
+
     def run_on_sample(self, run_id: int, manifest: str) -> dict:
         return self._request(
             "GET", f"/eval/runs/{run_id}/sample", params={"manifest": manifest}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -90,22 +91,56 @@ def run_on_sample(run_id: int, manifest: str, db: Session = Depends(get_db)):
 
     *manifest* is the sample manifest's path on the API's machine.
     """
+    return _sample(db, run_id, manifest, None)
+
+
+class SampleIn(BaseModel):
+    manifest_path: str
+    # A whole-document labels CSV used as truth in place of the label bank.
+    labels_csv: str | None = None
+
+
+@router.post("/runs/{run_id}/sample")
+def run_on_sample_with(run_id: int, payload: SampleIn, db: Session = Depends(get_db)):
+    """As the GET, with a labels file as truth if one is given."""
+    return _sample(db, run_id, payload.manifest_path, payload.labels_csv)
+
+
+def _manifest(path: str) -> dict:
     import json
     from pathlib import Path
 
-    from hontology.db.models import Concept, Document
-    from hontology.evalkit import arms
-
     try:
-        record = json.loads(Path(manifest).read_text(encoding="utf-8"))
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, f"cannot read manifest: {exc}"
         ) from exc
+
+
+def _labels(db: Session, ontology_id: int, labels_csv: str | None) -> dict | None:
+    from hontology.retrieve import tuning
+
+    if labels_csv is None:
+        return None
     try:
-        result = arms.run_on_sample(db, run_id, record)
-    except LookupError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        return tuning.truth(db, ontology_id, labels_csv)
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"unreadable labels file: {exc}"
+        ) from exc
+
+
+def _sample(db: Session, run_id: int, manifest_path: str, labels_csv: str | None) -> dict:
+    from hontology.db.models import Concept, Document
+    from hontology.evalkit import arms
+
+    record = _manifest(manifest_path)
+    run = db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"run {run_id} does not exist")
+    labels = _labels(db, run.ontology_id, labels_csv)
+    result = arms.run_on_sample(db, run_id, record, labels=labels)
     for error in result.get("errors", []):
         concept = db.get(Concept, error["concept_id"])
         document = db.get(Document, error["document_id"])
@@ -233,3 +268,71 @@ def run_detections_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{kind}-run{run_id}.csv"'},
     )
+
+
+# --- Live leaderboard, comparison and single-run summary ---------------------
+
+
+class LeaderboardIn(BaseModel):
+    ontology_id: int
+    manifest_path: str
+    labels_csv: str | None = None
+
+
+@router.post("/leaderboard/live")
+def live_leaderboard(payload: LeaderboardIn, db: Session = Depends(get_db)):
+    """Every judged run of an ontology scored end to end on the labelled sample."""
+    from hontology.evalkit import leaderboard
+
+    return leaderboard.rows(
+        db,
+        payload.ontology_id,
+        _manifest(payload.manifest_path),
+        _labels(db, payload.ontology_id, payload.labels_csv),
+    )
+
+
+class CalendarIn(BaseModel):
+    # None: the calendar the run worked through.
+    calendar_path: str | None = None
+
+
+@router.post("/runs/{run_id}/calendar")
+def run_calendar(run_id: int, payload: CalendarIn, db: Session = Depends(get_db)):
+    """A run's calendar scores. Slow: every window is walked."""
+    from hontology.evalkit import leaderboard
+
+    try:
+        return leaderboard.calendar_recall(db, run_id, payload.calendar_path)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+
+class ArmsIn(BaseModel):
+    baseline: int
+    arms: list[int]
+    manifest_path: str
+    labels_csv: str | None = None
+
+
+@router.post("/arms")
+def compare_arms(payload: ArmsIn, db: Session = Depends(get_db)):
+    """Arms against a baseline on the labelled sample, paired, as `eval arms`
+    reports them, with the same Markdown tables. Calendar scores are left to
+    each run's own view, since they take minutes."""
+    from hontology.evalkit import arms
+
+    baseline = db.get(Run, payload.baseline)
+    if baseline is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"run {payload.baseline} does not exist")
+    report = arms.compare_arms(
+        db,
+        payload.baseline,
+        payload.arms,
+        [],
+        _manifest(payload.manifest_path),
+        labels=_labels(db, baseline.ontology_id, payload.labels_csv),
+    )
+    return {"report": report, "markdown": arms.render_markdown(report)}

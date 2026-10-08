@@ -17,17 +17,16 @@ is in the [design notes](design-notes.md); what comes next is in the
 
 Install and start the services as in the [quick start](../README.md#quick-start), then:
 
-The UI is eight pages, each a pure HTTP client of the API:
+The UI is seven pages, each a pure HTTP client of the API:
 
 | Page | What it is for |
 |---|---|
-| **Home** | The ontologies installed, where to start when there are none, and how the pieces fit together |
+| **Home** | Every judged run scored end to end on the labelled sample (label bank or a labels file), as the arms report scores it. Tabs: **Leaderboard** (stage versions, coverage of the sample, F1 with intervals, cost; calendar recall on request), **Comparison** (arms against a baseline, paired, the `eval arms` tables), **Single run** (end to end, a couple of numbers per stage, disagreements, funnel, detections) |
 | **Ontology** | Author a flat event set in place; for a hierarchy, view the tree and edit leaf wording (structure comes from Protégé via OWL import); import/export, version history, health checks |
 | **Filtering** | Link classes to feed codes (CAMEO, GKG themes), ticking similarity candidates; preview what the pre-download filter would keep. **Evaluation**: a version of the links (a snapshot, or the live ones) scored link by link against the labels (TP, FP, FN, TN, unique TP), the calendar, and corpus cost (articles admitted, and admitted by no other link) |
 | **Retrieval** | **Evaluation**: a retrieval version (ranking settings, leaf wording, ranking code) scored live on every labelled article under any cutoff, set by hand or loaded from a run, with recall at each depth and by class. A finished run's ranked pool under a cutoff of choice: what it sends to the judge and which labelled true matches it keeps, split into those the pool never ranked and those the cutoff dropped; one article's or one class's ranking. No re-embedding |
 | **Judgement** | **Evaluation**: a judge version across the runs that used it, on the pairs it was responsible for or only on those retrieval selected, with calibration. Pick a class and a few articles and see what the model says, asked exactly as a chosen run asks; edit the prompt's system text and the class wording and see each answer beside the original, the label and the run's recorded verdict. Nothing is stored; wording that works can be saved to the class. Per-pair prompts only |
 | **Labelling** | Two tabs: **Sample**, blind whole-document labelling of a frozen sample, in order; **Queue**, single pairs ranked by what a label would teach, adjudication of machine proposals, bank import/export |
-| **Evaluation** | Funnel, detections, per-stage metrics, breakdowns, errors, leaderboard |
 | **Runs** | Start and watch runs; preview stage keys before paying for them |
 
 `make doctor` is the first thing to run if something is not working: it reports
