@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from hontology.db.models import Candidate, Run
 from hontology.db.session import get_db
+from hontology.evalkit import versions
 from hontology.retrieve import tuning
 
 router = APIRouter(prefix="/retrieval", tags=["retrieval"])
@@ -125,4 +126,50 @@ def concept_documents(
     run = _run(db, run_id)
     return tuning.concept_documents(
         db, run_id, concept_id, _cutoff(run, payload), _truth(db, run, payload), limit=limit
+    )
+
+
+# --- Retrieval versions, scored live ------------------------------------------
+
+
+@router.get("/versions")
+def list_versions(ontology_id: int, db: Session = Depends(get_db)):
+    """Retrieval versions of an ontology's runs, newest first, each with the runs
+    that used it and their cutoffs as presets."""
+    grouped: dict[str, dict] = {}
+    for run in db.scalars(
+        select(Run).where(Run.ontology_id == ontology_id).order_by(Run.id.desc())
+    ):
+        version = versions.retrieval_version(db, run)
+        entry = grouped.setdefault(version["version"], version | {"runs": []})
+        source = db.get(Run, version["source_run"])
+        entry["runs"].append(
+            {
+                "id": run.id,
+                "name": run.name,
+                "cutoff": asdict(tuning.run_cutoff(source or run)),
+            }
+        )
+    return list(grouped.values())
+
+
+class LiveIn(BaseModel):
+    run_id: int
+    cutoff: CutoffIn
+    pool_size: int = Field(20, ge=1, le=100)
+    labels_csv: str | None = None
+
+
+@router.post("/versions/evaluate")
+def evaluate_version(payload: LiveIn, db: Session = Depends(get_db)):
+    """A retrieval version (that of *run_id*) scored live on every labelled
+    article under *cutoff*. Nothing is embedded or stored."""
+    run = _run(db, payload.run_id)
+    labels = _truth(db, run, ExploreIn(labels_csv=payload.labels_csv))
+    return tuning.live_report(
+        db,
+        run,
+        tuning.Cutoff(**payload.cutoff.model_dump()),
+        labels,
+        pool_size=payload.pool_size,
     )

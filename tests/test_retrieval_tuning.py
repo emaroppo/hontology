@@ -179,3 +179,98 @@ def test_a_labels_file_replaces_the_bank(world):
         json={"labels_csv": "document_url,concepts\nhttps://tune.test/a,Volcano\n"},
     )
     assert bad.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# A retrieval version scored live from cached embeddings
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def embedded():
+    """Two leaves and three labelled articles, two of them embedded: one points
+    at Strike, one between Strike and Flood. Nothing calls a model."""
+    from hontology.db.models import Embedding, EmbeddingModel
+    from hontology.evalkit import runner
+    from hontology.retrieve import embed
+
+    with session_scope() as session:
+        ontology = service.create_ontology(session, slug="test-live", name="Live")
+        strike = service.create_concept(session, ontology.id, name="Strike", definition="Stop.")
+        flood = service.create_concept(session, ontology.id, name="Flood", definition="Water.")
+        run = runner.create_run(session, ontology_id=ontology.id, config={})
+        model = EmbeddingModel(key="ollama/nomic-embed-text", provider="ollama", dim=3)
+        session.add(model)
+        session.flush()
+        vectors = {strike.id: [1.0, 0.0, 0.0], flood.id: [0.0, 1.0, 0.0]}
+        for concept in (strike, flood):
+            session.add(
+                Embedding(
+                    model_id=model.id,
+                    object_type="concept",
+                    object_id=concept.id,
+                    text_key=embed.content_key(
+                        "name+definition", embed.concept_text(concept, "name+definition")
+                    ),
+                    embedding=vectors[concept.id],
+                )
+            )
+        documents = {}
+        for key, vector in (
+            ("strike", [1.0, 0.1, 0.0]),
+            ("both", [1.0, 0.9, 0.0]),
+            ("none", None),
+        ):
+            document = Document(url=f"https://live.test/{key}", url_hash=f"livetest0{key}")
+            session.add(document)
+            session.flush()
+            documents[key] = document.id
+            if vector is not None:
+                session.add(
+                    Embedding(
+                        model_id=model.id,
+                        object_type="document",
+                        object_id=document.id,
+                        text_key="body@3000@abc",
+                        embedding=vector,
+                    )
+                )
+        session.flush()
+        labels = {
+            (documents["strike"], strike.id): True,
+            (documents["both"], strike.id): True,
+            (documents["both"], flood.id): True,
+            (documents["none"], flood.id): True,
+        }
+        return {"run": run.id, "labels": labels, "documents": documents}
+
+
+def test_a_version_is_scored_on_every_embedded_labelled_article(embedded):
+    with session_scope() as session:
+        run = session.get(Run, embedded["run"])
+        top1 = tuning.live_report(
+            session, run, tuning.Cutoff(selection="top-k", top_k=1), embedded["labels"]
+        )
+        top2 = tuning.live_report(
+            session, run, tuning.Cutoff(selection="top-k", top_k=2), embedded["labels"]
+        )
+    # The unembedded article is counted, not ranked, and its match not scored.
+    assert top1["documents"] == {"labelled": 3, "ranked": 2, "not_embedded": 1}
+    assert top1["positives"] == 3
+    assert (top1["recall"]["found"], top1["lost_to_cutoff"], top1["never_ranked"]) == (2, 1, 0)
+    assert top2["recall"]["found"] == 3
+    flood = next(row for row in top1["per_class"] if row["class"] == "Flood")
+    assert (flood["positives"], flood["in_pool"], flood["kept"]) == (1, 1, 0)
+
+
+def test_a_shallow_pool_counts_as_never_ranked(embedded):
+    with session_scope() as session:
+        run = session.get(Run, embedded["run"])
+        report = tuning.live_report(
+            session,
+            run,
+            tuning.Cutoff(selection="top-k", top_k=5),
+            embedded["labels"],
+            pool_size=1,
+        )
+    assert (report["recall"]["found"], report["never_ranked"]) == (2, 1)

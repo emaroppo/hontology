@@ -163,6 +163,20 @@ class Api:
         # The first run over a codebook embeds every code, which takes a while.
         return self._request("POST", "/taxonomy/similarity", json=payload, timeout=600)
 
+    # --- filter evaluation --------------------------------------------------
+
+    def filtering_versions(self, ontology_id: int) -> dict:
+        return self._request("GET", "/filtering/versions", params={"ontology_id": ontology_id})
+
+    def filtering_snapshot(self, ontology_id: int) -> dict:
+        return self._request(
+            "POST", "/filtering/versions/snapshot", params={"ontology_id": ontology_id}
+        )
+
+    def filtering_evaluate(self, part: str, **payload: Any) -> dict:
+        """*part* is labels, calendar or cost; the last two take a while."""
+        return self._request("POST", f"/filtering/evaluate/{part}", json=payload, timeout=900)
+
     # --- retrieval ----------------------------------------------------------
     # Each call carries the cutoff (None: the run's own) and, optionally, a
     # whole-document labels file to use as truth in place of the label bank.
@@ -208,6 +222,23 @@ class Api:
             json={"cutoff": cutoff, "labels_csv": labels_csv},
         )
 
+    def retrieval_versions(self, ontology_id: int) -> list[dict]:
+        return self._request("GET", "/retrieval/versions", params={"ontology_id": ontology_id})
+
+    def retrieval_evaluate(
+        self, run_id: int, cutoff: dict, pool_size: int = 20, labels_csv: str | None = None
+    ) -> dict:
+        return self._request(
+            "POST",
+            "/retrieval/versions/evaluate",
+            json={
+                "run_id": run_id,
+                "cutoff": cutoff,
+                "pool_size": pool_size,
+                "labels_csv": labels_csv,
+            },
+        )
+
     # --- judgement ----------------------------------------------------------
     # Trials are asked as the chosen run asks, and nothing is recorded.
 
@@ -237,6 +268,18 @@ class Api:
     def judgement_ask(self, **trial: Any) -> dict:
         # A local model can take a while over a long article.
         return self._request("POST", "/judgement/ask", json=trial, timeout=600)
+
+    def judgement_versions(self, ontology_id: int) -> list[dict]:
+        return self._request("GET", "/judgement/versions", params={"ontology_id": ontology_id})
+
+    def judgement_evaluate(
+        self, run_ids: list[int], scope: str = "responsible", labels_csv: str | None = None
+    ) -> dict:
+        return self._request(
+            "POST",
+            "/judgement/versions/evaluate",
+            json={"run_ids": run_ids, "scope": scope, "labels_csv": labels_csv},
+        )
 
     # --- labels -------------------------------------------------------------
 

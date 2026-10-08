@@ -15,6 +15,7 @@ far too much through.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
 
@@ -296,92 +297,6 @@ def show_preview() -> None:
     )
 
 
-def show_report() -> None:
-    st.caption(
-        "What each linked code has let in, and what that was worth once articles "
-        "were labelled. An article several codes reach is credited to one, a CAMEO "
-        "code first. A code with no labelled admissions is unmeasured, not useless."
-    )
-    entry = cached("report")
-    if st.button("Recompute" if entry else "Compute", key="report_go", type="primary"):
-        compute("report", api.filter_report)
-    if entry is None:
-        return
-    freshness(entry)
-    data = entry["data"]
-    if not data["usable"]:
-        st.info(data["reason"])
-        return
-
-    linked: dict[tuple[str, str], dict] = {}
-    names = {c["id"]: c["name"] for c in classes}
-    for concept_id, rows in links.items():
-        for link in rows:
-            code = link["code"]
-            row = linked.setdefault(
-                (code["system"], code["code"]), {"name": code.get("name"), "classes": set()}
-            )
-            row["classes"].add(names.get(concept_id, str(concept_id)))
-
-    table = []
-    reported = set()
-    for row in data["codes"]:
-        system = "gkg-themes" if row["level"] == "theme" else "cameo"
-        reported.add((system, row["code"]))
-        info = linked.get((system, row["code"]), {})
-        labelled, positive = row["labelled_pairs"], row["positive_pairs"]
-        table.append(
-            {
-                "Code": row["code"],
-                "System": system,
-                "Name": row["name"] or info.get("name"),
-                "Classes": ", ".join(sorted(info.get("classes", []))),
-                "Admitted": row["documents_admitted"],
-                "Downloaded": row["documents_fetched"],
-                "Junk": row["documents_junk"],
-                "Labelled pairs": labelled,
-                "Positive": positive,
-                "Positive share": positive / labelled if labelled else None,
-            }
-        )
-    for (system, code), info in sorted(linked.items()):
-        if (system, code) not in reported:
-            table.append(
-                {
-                    "Code": code,
-                    "System": system,
-                    "Name": info["name"],
-                    "Classes": ", ".join(sorted(info["classes"])),
-                    "Admitted": 0,
-                    "Downloaded": 0,
-                    "Junk": 0,
-                    "Labelled pairs": 0,
-                    "Positive": 0,
-                    "Positive share": None,
-                }
-            )
-
-    totals = data["totals"]
-    cols = st.columns(4)
-    cols[0].metric("Codes admitting articles", totals["codes"])
-    cols[1].metric("Articles admitted", f"{totals['documents_admitted']:,}")
-    cols[2].metric(
-        "Positive labelled pairs", f"{totals['positive_pairs']} of {totals['labelled_pairs']}"
-    )
-    cols[3].metric("Unmeasured codes", totals["unmeasured_codes"])
-    st.dataframe(
-        table,
-        hide_index=True,
-        column_config={
-            "Positive share": st.column_config.NumberColumn(format="%.2f"),
-            "Admitted": st.column_config.NumberColumn(format="%d"),
-        },
-    )
-    silent = len(table) - len(data["codes"])
-    if silent:
-        st.caption(f"{silent} linked code(s) admitted nothing: listed last with zeros.")
-
-
 # ---------------------------------------------------------------------------
 # Codebooks
 # ---------------------------------------------------------------------------
@@ -413,8 +328,154 @@ def show_codebooks() -> None:
                     st.error(exc.detail)
 
 
-links_tab, preview_tab, report_tab, codebooks_tab = st.tabs(
-    ["Links", "What it keeps", "Per code", "Codebooks"],
+# ---------------------------------------------------------------------------
+# Evaluation: a version of the links, link by link
+# ---------------------------------------------------------------------------
+
+
+def show_evaluation() -> None:
+    try:
+        listing = api.filtering_versions(ontology_id)
+    except ApiError as exc:
+        st.error(exc.detail)
+        return
+    live = listing["live"]
+    options: dict[str, str | None] = {
+        f"Live links ({live['n_links']})"
+        + (f", the same as {live['is']}" if live["is"] else ""): None
+    }
+    for snap in listing["snapshots"]:
+        used = f", used by runs {', '.join(map(str, snap['runs']))}" if snap["runs"] else ""
+        options[
+            f"{snap['version']} ({snap['n_links']} links, {snap['created_at'][:10]}{used})"
+        ] = snap["version"]
+    cols = st.columns([3, 1])
+    version = options[cols[0].selectbox("Links", list(options), key="fe_version")]
+    unkept = version is None and not live["is"] and live["n_links"]
+    if unkept and cols[1].button(
+        "Keep as a version", help="Snapshot the live links to compare later."
+    ):
+        try:
+            kept = api.filtering_snapshot(ontology_id)
+            st.session_state["filtering_message"] = f"Kept the live links as {kept['version']}."
+            st.rerun()
+        except ApiError as exc:
+            st.error(exc.detail)
+
+    cols = st.columns(2)
+    truth_source = cols[0].radio("Truth", ["Label bank", "Labels file"], horizontal=True)
+    labels_csv = None
+    if truth_source == "Labels file":
+        path = cols[1].text_input("Labels file", value="data/labels/claude-blind-001-320.csv")
+        try:
+            labels_csv = Path(path).read_text(encoding="utf-8")
+        except OSError as exc:
+            st.error(f"Cannot read it: {exc}")
+            return
+    payload = {"ontology_id": ontology_id, "version": version, "labels_csv": labels_csv}
+    try:
+        labels = api.filtering_evaluate("labels", **payload)
+    except ApiError as exc:
+        st.error(exc.detail)
+        return
+
+    st.markdown("**Against the labels**")
+    cols = st.columns(3)
+    cols[0].metric(
+        "True matches admitted",
+        f"{labels['positives_admitted']} of {labels['positives']}",
+    )
+    cols[1].metric(
+        "Labelled articles admitted", f"{labels['documents_admitted']} of {labels['documents']}"
+    )
+    st.caption(
+        "Labelled articles were mostly downloaded because the filter admitted them, so "
+        "these counts flatter it, its misses most of all. The calendar below does not "
+        "have that bias."
+    )
+
+    key = (ontology_id, version)
+    cache = st.session_state.setdefault("filter_eval", {})
+    st.markdown("**Against the calendar and over the whole corpus** (a few minutes each)")
+    cols = st.columns([2, 1, 1])
+    calendar_path = cols[0].text_input(
+        "Calendar", value="data/calendars/supply-chain-v2-small.csv", key="fe_calendar"
+    )
+    if cols[1].button("Score on the calendar"):
+        try:
+            with st.spinner("Walking every calendar window…"):
+                cache[(key, "calendar")] = api.filtering_evaluate(
+                    "calendar", **payload, calendar_path=calendar_path
+                )
+        except ApiError as exc:
+            st.error(exc.detail)
+    if cols[2].button("Count the cost"):
+        try:
+            with st.spinner("Walking every feed record…"):
+                cache[(key, "cost")] = api.filtering_evaluate("cost", **payload)
+        except ApiError as exc:
+            st.error(exc.detail)
+    calendar_result = cache.get((key, "calendar"))
+    cost = cache.get((key, "cost"))
+
+    if calendar_result:
+        st.dataframe(
+            [
+                {
+                    "Kind": kind,
+                    "Events": c["events"],
+                    "With articles in the window": c["observable"],
+                    "Reached by any link": c["reached"],
+                    "Reached by the event's own class": c["reached_by_own_class"],
+                }
+                for kind, c in calendar_result["by_kind"].items()
+            ],
+            hide_index=True,
+        )
+        missed = calendar_result["not_reached_by_own_class"]
+        if missed:
+            with st.expander(f"Events the own class's links miss ({len(missed)})"):
+                for event in missed:
+                    note = "" if event["known_class"] else " (no class of that name)"
+                    st.markdown(
+                        f"- {event['kind']} · {event['class']}{note}: {event['description']}"
+                    )
+
+    st.markdown("**Link by link**")
+    st.caption(
+        "Against the labels for the class each link reaches: TP admitted true matches, "
+        "FP admitted non-matches, FN true matches it does not admit, TN non-matches it "
+        "rightly keeps out; unique TP, true matches no other link admits. Corpus columns "
+        "count feed articles per code: admitted, and admitted by no other link, which "
+        "removing the link would stop downloading."
+    )
+    rows = []
+    for link in labels["links"]:
+        code_key = f"{link['system']}:{link['code']}"
+        row = {
+            "Class": link["class"],
+            "System": link["system"],
+            "Code": link["code"],
+            "TP": link["tp"],
+            "FP": link["fp"],
+            "FN": link["fn"],
+            "TN": link["tn"],
+            "Unique TP": link["unique_tp"],
+        }
+        if calendar_result:
+            row["Calendar events"] = len(calendar_result["per_code"].get(code_key, []))
+        if cost:
+            counts = cost["codes"].get(code_key, {})
+            row["Corpus admitted"] = counts.get("admitted", 0)
+            row["Only this code"] = counts.get("only_this", 0)
+            row["Downloaded"] = counts.get("downloaded", 0)
+        rows.append(row)
+    rows.sort(key=lambda r: (-r.get("Only this code", 0), -r["FP"]))
+    st.dataframe(rows, hide_index=True)
+
+
+links_tab, preview_tab, evaluation_tab, codebooks_tab = st.tabs(
+    ["Links", "What it keeps", "Evaluation", "Codebooks"],
     key="filtering_tab",
     on_change="rerun",
 )
@@ -424,9 +485,9 @@ if links_tab.open:
 if preview_tab.open:
     with preview_tab:
         show_preview()
-if report_tab.open:
-    with report_tab:
-        show_report()
+if evaluation_tab.open:
+    with evaluation_tab:
+        show_evaluation()
 if codebooks_tab.open:
     with codebooks_tab:
         show_codebooks()

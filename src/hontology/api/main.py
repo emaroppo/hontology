@@ -14,6 +14,7 @@ from fastapi import FastAPI
 
 from hontology.api.routers import (
     evaluation,
+    filtering,
     ingest,
     judgement,
     labels,
@@ -53,6 +54,7 @@ app.include_router(evaluation.router)
 app.include_router(runs.router)
 app.include_router(retrieval.router)
 app.include_router(judgement.router)
+app.include_router(filtering.router)
 
 
 @app.get("/health", tags=["meta"])

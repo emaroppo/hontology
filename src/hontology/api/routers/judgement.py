@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from hontology.db.models import Run, Verdict
 from hontology.db.session import get_db
 from hontology.evalkit import config as run_config
+from hontology.evalkit import judge_eval
 from hontology.judge import trial
 from hontology.retrieve import tuning
 
@@ -107,5 +108,37 @@ def ask(payload: TrialIn, db: Session = Depends(get_db)):
     """Send a trial to the model. A provider failure comes back in ``error``."""
     try:
         return trial.ask(db, _trial(payload))
+    except (LookupError, ValueError) as exc:
+        raise _refuse(exc) from exc
+
+
+# --- Judge versions, scored on what they were given --------------------------
+
+
+@router.get("/versions")
+def versions(ontology_id: int, db: Session = Depends(get_db)):
+    return judge_eval.list_versions(db, ontology_id)
+
+
+class VersionEvalIn(BaseModel):
+    run_ids: list[int]
+    scope: str = "responsible"
+    labels_csv: str | None = None
+
+
+@router.post("/versions/evaluate")
+def evaluate_version(payload: VersionEvalIn, db: Session = Depends(get_db)):
+    """A judge version's precision and recall, per run and pooled, on the pairs
+    it was responsible for or only on those retrieval selected."""
+    if not payload.run_ids:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "no runs given")
+    run = db.get(Run, payload.run_ids[0])
+    if run is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"run {payload.run_ids[0]} does not exist"
+        )
+    try:
+        labels = tuning.truth(db, run.ontology_id, payload.labels_csv)
+        return judge_eval.evaluate(db, payload.run_ids, labels, scope=payload.scope)
     except (LookupError, ValueError) as exc:
         raise _refuse(exc) from exc

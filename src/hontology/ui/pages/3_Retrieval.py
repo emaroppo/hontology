@@ -10,6 +10,12 @@ it sends to the judge, and how many labelled true matches it keeps, split into
 those the pool never ranked (no cutoff can recover them) and those the cutoff
 dropped. **Explore** shows the ranking itself, one article or one class at a
 time, under both cutoffs.
+
+**Evaluation** scores a retrieval *version* rather than a run: the embedding
+settings, the leaves' wording and the ranking code. A cutoff is a parameter, set
+by hand or loaded from a run that used the version, and every labelled article
+is ranked afresh from cached embeddings, so the score covers all labelled
+articles, not only those one run happened to retrieve for.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from hontology.ui import charts
 from hontology.ui.client import Api, ApiError
 
 st.set_page_config(page_title="Retrieval", page_icon="🔎", layout="wide")
@@ -336,9 +343,159 @@ def show_explore() -> None:
     )
 
 
-tune_tab, explore_tab = st.tabs(
-    ["Tune the cutoff", "Explore the ranking"], key="retrieval_tab", on_change="rerun"
+# ---------------------------------------------------------------------------
+# Evaluation: a retrieval version, scored live
+# ---------------------------------------------------------------------------
+
+
+def show_evaluation() -> None:
+    try:
+        versions = api.retrieval_versions(ontology["id"])
+    except ApiError as exc:
+        st.error(exc.detail)
+        return
+    if not versions:
+        st.info("No run of this ontology yet, so there is no retrieval version to score.")
+        return
+
+    def describe(v: dict) -> str:
+        s_ = v["settings"]
+        return (
+            f"{v['version']} · {s_['embed_model']} · {s_['concept_fields']} · "
+            f"{s_['embed_body_limit']:,} chars · {v['leaves']} leaves at "
+            f"{v['ontology_version']} · {len(v['runs'])} run(s)"
+        )
+
+    by_version = {describe(v): v for v in versions}
+    version = by_version[st.selectbox("Retrieval version", list(by_version), key="ev_version")]
+    st.caption(
+        f"Ranking code {version['code']}. Runs that used it: "
+        + ", ".join(str(r["id"]) for r in version["runs"])
+        + "."
+    )
+
+    # Presets: one per distinct cutoff among the version's runs.
+    presets: dict[str, dict] = {}
+    for r in version["runs"]:
+        c = r["cutoff"]
+        detail = (
+            f"top {c['top_k']}"
+            if c["selection"] == "top-k"
+            else f"min {c['min_score']}, margin {c['rel_margin']}, at most {c['max_k']}"
+        )
+        presets.setdefault(f"{c['selection']}: {detail}", c | {"runs": []})["runs"].append(
+            r["id"]
+        )
+    cols = st.columns([3, 1])
+    preset_label = cols[0].selectbox(
+        "Preset from a run",
+        list(presets),
+        format_func=lambda k: f"{k}  (runs {', '.join(map(str, presets[k]['runs']))})",
+        key="ev_preset",
+    )
+    if cols[1].button("Load preset") or "ev_selection" not in st.session_state:
+        preset = presets[preset_label]
+        st.session_state["ev_selection"] = preset["selection"]
+        st.session_state["ev_top_k"] = preset["top_k"]
+        st.session_state["ev_min_score"] = float(preset["min_score"])
+        st.session_state["ev_rel_margin"] = float(preset["rel_margin"])
+        st.session_state["ev_max_k"] = preset["max_k"]
+
+    cols = st.columns(6)
+    selection = cols[0].radio("Selection", ["adaptive", "top-k"], key="ev_selection")
+    adaptive = selection == "adaptive"
+    cols[1].number_input("Top k", 1, 50, key="ev_top_k", disabled=adaptive)
+    cols[2].number_input(
+        "Min score", 0.0, 1.0, step=0.01, key="ev_min_score", disabled=not adaptive
+    )
+    cols[3].number_input(
+        "Margin", 0.0, 1.0, step=0.01, key="ev_rel_margin", disabled=not adaptive
+    )
+    cols[4].number_input("At most", 1, 50, key="ev_max_k", disabled=not adaptive)
+    pool_size = cols[5].number_input(
+        "Pool depth", 1, 100, value=20, help="How far down each article's ranking to look."
+    )
+    cutoff = {
+        "selection": selection,
+        "top_k": int(st.session_state["ev_top_k"]),
+        "min_score": float(st.session_state["ev_min_score"]),
+        "rel_margin": float(st.session_state["ev_rel_margin"]),
+        "max_k": int(st.session_state["ev_max_k"]),
+    }
+    try:
+        result = api.retrieval_evaluate(
+            version["runs"][0]["id"], cutoff, int(pool_size), labels_csv
+        )
+    except ApiError as exc:
+        st.error(exc.detail)
+        return
+
+    docs = result["documents"]
+    if not result["positives"]:
+        st.info(
+            f"No labelled true match among the {docs['labelled']} labelled article(s) on "
+            "this version's leaves. Try a labels file as truth (sidebar)."
+        )
+        return
+
+    def interval(block: dict) -> str:
+        low, high = block["ci"]
+        return f"{block['rate']:.0%} ({low:.0%}–{high:.0%})" if low is not None else "—"
+
+    cols = st.columns(5)
+    cols[0].metric(
+        "Recall at the cutoff",
+        interval(result["recall"]),
+        help="Labelled true matches kept, with a 95% Wilson interval.",
+    )
+    cols[1].metric("Recall in the pool", interval(result["pool_recall"]))
+    cols[2].metric("Lost to the cutoff", result["lost_to_cutoff"])
+    cols[3].metric("Never ranked", result["never_ranked"])
+    cols[4].metric(
+        "Pairs per article",
+        f"{result['pairs_per_document']:.2f}" if result["pairs_per_document"] else "—",
+        help="What the cutoff sends to the judge, on average.",
+    )
+    st.caption(
+        f"{result['recall']['found']} of {result['positives']} labelled true matches kept, "
+        f"over {docs['ranked']} labelled article(s)"
+        + (
+            f"; {docs['not_embedded']} not embedded under this version, so left out"
+            if docs["not_embedded"]
+            else ""
+        )
+        + f". Of the {result['kept_labelled']} kept labelled pairs, "
+        f"{result['kept_positive']} are true matches."
+    )
+    st.markdown("**Recall at each depth of the ranking**")
+    st.caption(
+        "Labelled true matches within the top k classes of their article: the ranking's "
+        "quality before any cutoff. Where it flattens, a deeper cutoff stops paying."
+    )
+    st.altair_chart(charts.recall_at_k(result["recall_at_k"]), use_container_width=True)
+    st.markdown("**By class**")
+    st.dataframe(
+        [
+            {
+                "Class": row["class"],
+                "True matches": row["positives"],
+                "In the pool": row["in_pool"],
+                "Kept": row["kept"],
+            }
+            for row in result["per_class"]
+        ],
+        hide_index=True,
+    )
+
+
+evaluation_tab, tune_tab, explore_tab = st.tabs(
+    ["Evaluation", "Tune a run's cutoff", "Explore the ranking"],
+    key="retrieval_tab",
+    on_change="rerun",
 )
+if evaluation_tab.open:
+    with evaluation_tab:
+        show_evaluation()
 if tune_tab.open:
     with tune_tab:
         show_tune()
