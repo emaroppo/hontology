@@ -185,3 +185,117 @@ def test_deleting_an_ontology_cascades_to_concepts(client: TestClient):
 
     assert client.delete(f"/ontologies/{ontology_id}").status_code == 204
     assert client.get(f"/ontologies/{ontology_id}").status_code == 404
+
+
+def hierarchical(slug: str = "test-tree") -> dict:
+    """Disruption > {Strike, Closure}; Port strike under both; Warning precedes Closure."""
+    return {
+        "export_version": 2,
+        "slug": slug,
+        "name": "Tree",
+        "concepts": [
+            {"name": name, "definition": f"{name}."}
+            for name in ("Disruption", "Strike", "Closure", "Port strike", "Warning")
+        ],
+        "groups": [{"name": "Stage: disruption", "members": [{"concept": "Closure"}]}],
+        "relations": [
+            ["Strike", "subclass_of", "Disruption"],
+            ["Closure", "subclass_of", "Disruption"],
+            ["Port strike", "subclass_of", "Strike"],
+            ["Port strike", "subclass_of", "Closure"],
+            ["Warning", "precursor_of", "Closure"],
+        ],
+    }
+
+
+def test_hierarchy_places_every_class(client: TestClient):
+    ontology_id = client.post("/ontologies/import", json=hierarchical()).json()["id"]
+    tree = client.get(f"/ontologies/{ontology_id}/hierarchy").json()
+    classes = {c["name"]: c for c in tree["classes"]}
+
+    assert tree["structured"] is True
+    assert classes["Disruption"]["children"] == ["Closure", "Strike"]
+    assert classes["Disruption"]["leaf"] is False
+    assert classes["Port strike"]["parents"] == ["Closure", "Strike"]
+    assert classes["Port strike"]["leaf"] is True
+    assert classes["Warning"]["precursor_of"] == ["Closure"]
+    assert classes["Closure"]["groups"] == ["Stage: disruption"]
+
+
+def test_a_flat_ontology_is_not_structured(client: TestClient):
+    ontology_id = make_ontology(client)
+    client.post(f"/ontologies/{ontology_id}/concepts", json={"name": "Port closure"})
+    tree = client.get(f"/ontologies/{ontology_id}/hierarchy").json()
+    assert tree["structured"] is False
+    assert [c["leaf"] for c in tree["classes"]] == [True]
+
+
+def test_owl_round_trips_through_the_api(client: TestClient):
+    ontology_id = client.post("/ontologies/import", json=hierarchical()).json()["id"]
+    turtle = client.get(f"/ontologies/{ontology_id}/export.owl")
+    assert turtle.headers["content-type"].startswith("text/turtle")
+
+    copy = turtle.text.replace('hontology:slug "test-tree"', 'hontology:slug "test-tree-copy"')
+    imported = client.post("/ontologies/import-owl", json={"turtle": copy})
+    assert imported.status_code == 200, imported.text
+    assert imported.json()["slug"] == "test-tree-copy"
+
+    tree = client.get(f"/ontologies/{imported.json()['id']}/hierarchy").json()
+    assert {c["name"]: c["parents"] for c in tree["classes"]}["Port strike"] == [
+        "Closure",
+        "Strike",
+    ]
+
+
+def test_owl_import_refuses_rewording_unless_asked(client: TestClient):
+    ontology_id = client.post("/ontologies/import", json=hierarchical()).json()["id"]
+    turtle = client.get(f"/ontologies/{ontology_id}/export.owl").text
+    reworded = turtle.replace('"Warning."', '"An official warning."')
+
+    refused = client.post("/ontologies/import-owl", json={"turtle": reworded})
+    assert refused.status_code == 409
+
+    allowed = client.post(
+        "/ontologies/import-owl", json={"turtle": reworded, "allow_text_change": True}
+    )
+    assert allowed.status_code == 200
+    tree = client.get(f"/ontologies/{ontology_id}/hierarchy").json()
+    assert {c["name"]: c["definition"] for c in tree["classes"]}["Warning"] == (
+        "An official warning."
+    )
+
+
+def test_unreadable_owl_is_a_422(client: TestClient):
+    response = client.post("/ontologies/import-owl", json={"turtle": "this is not turtle {"})
+    assert response.status_code == 422
+
+
+def test_versions_say_which_one_the_live_wording_is(client: TestClient):
+    """Checking never mints: an edited ontology reports no current version until
+    something that needs one (a run, a label) resolves it."""
+    ontology_id = make_ontology(client)
+    created = client.post(
+        f"/ontologies/{ontology_id}/concepts", json={"name": "Port closure", "definition": "A."}
+    ).json()
+
+    def versions() -> dict:
+        return client.get(f"/ontologies/{ontology_id}/versions").json()
+
+    assert versions() == {"current": None, "versions": []}
+
+    client.post(f"/ontologies/{ontology_id}/snapshot")
+    assert versions()["current"] == "v1"
+
+    client.patch(
+        f"/ontologies/{ontology_id}/concepts/{created['id']}", json={"definition": "B."}
+    )
+    assert versions()["current"] is None
+    assert len(versions()["versions"]) == 1
+
+    client.post(f"/ontologies/{ontology_id}/snapshot")
+    listed = versions()
+    assert listed["current"] == "v2"
+    assert [(v["version"], v["n_concepts"]) for v in listed["versions"]] == [
+        ("v1", 1),
+        ("v2", 1),
+    ]

@@ -52,6 +52,8 @@ class Api:
 
         if response.status_code == 204 or not response.content:
             return None
+        if "json" not in response.headers.get("content-type", ""):
+            return response.text
         return response.json()
 
     # --- meta ---------------------------------------------------------------
@@ -93,6 +95,9 @@ class Api:
     def delete_concept(self, ontology_id: int, concept_id: int) -> None:
         self._request("DELETE", f"/ontologies/{ontology_id}/concepts/{concept_id}")
 
+    def hierarchy(self, ontology_id: int) -> dict:
+        return self._request("GET", f"/ontologies/{ontology_id}/hierarchy")
+
     # --- portability & versioning -------------------------------------------
 
     def export_ontology(self, ontology_id: int) -> dict:
@@ -101,8 +106,18 @@ class Api:
     def import_ontology(self, payload: dict) -> dict:
         return self._request("POST", "/ontologies/import", json=payload)
 
-    def snapshot(self, ontology_id: int) -> dict:
-        return self._request("POST", f"/ontologies/{ontology_id}/snapshot")
+    def export_owl(self, ontology_id: int) -> str:
+        return self._request("GET", f"/ontologies/{ontology_id}/export.owl")
+
+    def import_owl(self, turtle: str, *, allow_text_change: bool = False) -> dict:
+        return self._request(
+            "POST",
+            "/ontologies/import-owl",
+            json={"turtle": turtle, "allow_text_change": allow_text_change},
+        )
+
+    def versions(self, ontology_id: int) -> dict:
+        return self._request("GET", f"/ontologies/{ontology_id}/versions")
 
     # --- taxonomy -----------------------------------------------------------
 

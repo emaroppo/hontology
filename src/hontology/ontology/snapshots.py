@@ -82,18 +82,37 @@ def content_hash(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def resolve_current(session: Session, ontology_id: int) -> SnapshotRef:
-    """Resolve the live concept set to a snapshot, minting one only if changed."""
+def _live(session: Session, ontology_id: int) -> tuple[list[Concept], list, str]:
     concepts = list(session.scalars(select(Concept).where(Concept.ontology_id == ontology_id)))
     structure = hierarchy.edges(session, ontology_id)
-    digest = content_hash(concepts, structure)
+    return concepts, structure, content_hash(concepts, structure)
 
-    existing = session.scalar(
+
+def _registered(session: Session, ontology_id: int, digest: str) -> OntologySnapshot | None:
+    return session.scalar(
         select(OntologySnapshot).where(
             OntologySnapshot.ontology_id == ontology_id,
             OntologySnapshot.content_hash == digest,
         )
     )
+
+
+def current_version(session: Session, ontology_id: int) -> str | None:
+    """The version the live wording already is, or None if it has changed since.
+
+    Never mints: this is for showing state. The next run or label that needs a
+    version mints it through `resolve_current`.
+    """
+    _, _, digest = _live(session, ontology_id)
+    existing = _registered(session, ontology_id, digest)
+    return existing.version if existing is not None else None
+
+
+def resolve_current(session: Session, ontology_id: int) -> SnapshotRef:
+    """Resolve the live concept set to a snapshot, minting one only if changed."""
+    concepts, structure, digest = _live(session, ontology_id)
+
+    existing = _registered(session, ontology_id, digest)
     if existing is not None:
         return SnapshotRef(
             version=existing.version,

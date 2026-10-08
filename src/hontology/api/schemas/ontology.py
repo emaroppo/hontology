@@ -79,6 +79,11 @@ class OntologyImport(BaseModel):
     relations: list[list[str]] | None = None
 
 
+class OwlImport(BaseModel):
+    turtle: str = Field(min_length=1)
+    allow_text_change: bool = False
+
+
 class SnapshotOut(BaseModel):
     version: str
     content_hash: str

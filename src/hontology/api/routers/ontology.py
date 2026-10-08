@@ -7,6 +7,8 @@ is what keeps the Streamlit layer replaceable without moving any logic.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import PlainTextResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hontology.api.schemas.ontology import (
@@ -16,10 +18,13 @@ from hontology.api.schemas.ontology import (
     OntologyImport,
     OntologyIn,
     OntologyOut,
+    OwlImport,
     SnapshotOut,
 )
+from hontology.db.models import OntologySnapshot
+from hontology.db.models.ontology import PRECURSOR_OF
 from hontology.db.session import get_db
-from hontology.ontology import service, snapshots
+from hontology.ontology import hierarchy, service, snapshots
 
 router = APIRouter(prefix="/ontologies", tags=["ontology"])
 
@@ -106,6 +111,58 @@ def delete_concept(ontology_id: int, concept_id: int, db: Session = Depends(get_
         raise _handle(exc) from exc
 
 
+# --- Structure --------------------------------------------------------------
+
+
+@router.get("/{ontology_id}/hierarchy")
+def get_hierarchy(ontology_id: int, db: Session = Depends(get_db)):
+    """Every class with its place in the hierarchy, for display.
+
+    Read-only on purpose: structure is authored in an OWL editor and arrives by
+    import, so there is nothing here to edit it with.
+    """
+    try:
+        service.get_ontology(db, ontology_id)
+    except service.NotFound as exc:
+        raise _handle(exc) from exc
+    concepts = service.list_concepts(db, ontology_id)
+    names = {c.id: c.name for c in concepts}
+    categories = {c.id: c.name for c in service.list_categories(db, ontology_id)}
+    parent_map = hierarchy.parents(db, ontology_id)
+    child_map = hierarchy.children(db, ontology_id)
+    precursors: dict[int, list[int]] = {}
+    for subject, obj in hierarchy.edges(db, ontology_id, PRECURSOR_OF):
+        precursors.setdefault(subject, []).append(obj)
+    groups: dict[int, list[str]] = {}
+    for group in service.list_groups(db, ontology_id):
+        for member in group.members:
+            groups.setdefault(member.concept_id, []).append(group.name)
+
+    def by_name(ids) -> list[str]:
+        return sorted(names[i] for i in ids)
+
+    return {
+        "structured": bool(parent_map),
+        "classes": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "definition": c.definition,
+                "inclusion_criteria": c.inclusion_criteria,
+                "exclusion_criteria": c.exclusion_criteria,
+                "category": categories.get(c.category_id) if c.category_id else None,
+                "weight": c.weight,
+                "leaf": c.id not in child_map,
+                "parents": by_name(parent_map.get(c.id, ())),
+                "children": by_name(child_map.get(c.id, ())),
+                "precursor_of": by_name(precursors.get(c.id, ())),
+                "groups": sorted(groups.get(c.id, ())),
+            }
+            for c in concepts
+        ],
+    }
+
+
 # --- Portability ------------------------------------------------------------
 
 
@@ -130,6 +187,41 @@ def import_ontology(payload: OntologyImport, db: Session = Depends(get_db)):
         raise _handle(exc) from exc
 
 
+@router.get("/{ontology_id}/export.owl", response_class=PlainTextResponse)
+def export_owl(ontology_id: int, db: Session = Depends(get_db)):
+    """The ontology as OWL (Turtle), for Protégé or any OWL tool."""
+    from hontology.ontology import owl
+
+    try:
+        text = owl.export_turtle(db, ontology_id)
+    except service.NotFound as exc:
+        raise _handle(exc) from exc
+    return PlainTextResponse(text, media_type="text/turtle")
+
+
+@router.post("/import-owl", response_model=OntologyOut)
+def import_owl(payload: OwlImport, db: Session = Depends(get_db)):
+    """Create or merge from OWL (Turtle), relations included.
+
+    Rewording existing classes is refused unless asked for, as on the command
+    line: this is the path a hierarchy arrives by, and labels depend on wording.
+    """
+    from rdflib.exceptions import ParserError
+
+    from hontology.ontology import owl
+
+    try:
+        return owl.import_turtle(
+            db, payload.turtle, allow_text_change=payload.allow_text_change
+        )
+    except (service.Conflict, service.NotFound) as exc:
+        raise _handle(exc) from exc
+    except (ParserError, SyntaxError, ValueError) as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"not a readable Turtle file: {exc}"
+        ) from exc
+
+
 # --- Versioning -------------------------------------------------------------
 
 
@@ -151,6 +243,31 @@ def resolve_snapshot(ontology_id: int, db: Session = Depends(get_db)):
         n_concepts=ref.n_concepts,
         created=ref.created,
     )
+
+
+@router.get("/{ontology_id}/versions")
+def list_versions(ontology_id: int, db: Session = Depends(get_db)):
+    """Minted versions, oldest first, and which one the live wording is.
+
+    ``current`` is None when the wording has changed since the last version;
+    the next run or label mints the new one, so nothing is minted here.
+    """
+    try:
+        service.get_ontology(db, ontology_id)
+    except service.NotFound as exc:
+        raise _handle(exc) from exc
+    rows = db.scalars(
+        select(OntologySnapshot)
+        .where(OntologySnapshot.ontology_id == ontology_id)
+        .order_by(OntologySnapshot.id)
+    )
+    return {
+        "current": snapshots.current_version(db, ontology_id),
+        "versions": [
+            {"version": r.version, "n_concepts": r.n_concepts, "created_at": r.created_at}
+            for r in rows
+        ],
+    }
 
 
 @router.get("/{ontology_id}/lint")
