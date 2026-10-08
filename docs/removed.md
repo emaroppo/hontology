@@ -140,3 +140,22 @@ Gone without a replacement:
 - **Why:** versions are minted automatically by the next run or label. The header now says which version the live wording is, or that it has been edited.
 - **Recover it with:** `git show 5892f37^:src/hontology/ui/pages/1_Ontology.py`.
 - **Still present:** `POST /ontologies/{id}/snapshot` and `snapshots.resolve_current`. `Api.snapshot` was removed in the same commit; it was one line calling that endpoint.
+
+## Labels files as truth in the UI and API
+
+- **Removed in** `b9b94be` ("Keep machine annotations apart from human labels, and score against either").
+- **What went:**
+  - the "Labels file" choice and its path box on Home, Retrieval, Judgement and the Filtering Evaluation tab;
+  - the `labels_csv` field the API took on the same routes:
+    - `/retrieval/runs/{id}/...` and `/retrieval/versions/evaluate`;
+    - `/judgement/articles` and `/judgement/versions/evaluate`;
+    - `/filtering/evaluate/labels`;
+    - `/eval/runs/{id}/sample` (POST), `/eval/leaderboard/live` and `/eval/arms`.
+
+  Those carried a whole-document labels file's contents, read as truth in place of the label bank.
+- **Replaced by:** an `annotator` field and a "Machine: <set>" choice. A file is imported once, with `hontology labels annotations-import`, and is then scored against by name. The file that was used this way, `data/labels/claude-blind-001-320.csv`, is the set `claude-blind-001`.
+- **Still present:**
+  - `eval arms --labels <file>`;
+  - `label_io.document_label_map`, which reads a file into the same `(document, concept) -> matched` map;
+  - the old pages, recoverable with `git show b9b94be^:<path>`.
+- **To reinstate:** give `tuning.truth` back a `labels_csv` branch that calls `document_label_map`, and add the field next to `annotator` on the request models.
