@@ -196,3 +196,32 @@ class TestAdjudicationEndpoints:
         ).json()
         assert len(rows) == 1
         assert rows[0]["stale"] is True
+
+
+def test_options_offer_every_registered_prompt_and_the_defaults(client):
+    from hontology.evalkit import config as run_config
+    from hontology.judge import prompts
+
+    body = client.get("/runs/options").json()
+    assert [p["prompt_id"] for p in body["choices"]["prompts"]] == prompts.available()
+    assert body["choices"]["aggregation"] == list(run_config.AGGREGATIONS)
+    # The form starts from exactly what an empty config normalizes to.
+    defaults = run_config.normalize({})
+    assert body["defaults"] == {k: defaults[k] for k in ("common", "candidates", "judge")}
+
+
+@pytest.mark.requires_db
+def test_a_runs_config_comes_back_to_start_another_from(client, fixture):
+    config = {"candidates": {"selection": "top-k", "top_k": 4}}
+    started = client.post(
+        "/runs", json={"ontology_id": fixture["ontology"], "config": config}
+    ).json()
+    stored = client.get(f"/runs/{started['id']}/config").json()
+    assert stored["candidates"]["top_k"] == 4
+    # Started again from it, a run resolves to the same stage keys.
+    keys = client.post(
+        "/runs/keys",
+        json={"config": stored, "ontology_version": stored["common"]["ontology_version"]},
+    ).json()
+    assert keys == {"candidates": started["candidates_key"], "judge": started["judge_key"]}
+    assert client.get("/runs/987654/config").status_code == 404

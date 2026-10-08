@@ -149,6 +149,39 @@ def start_run(payload: RunIn, background: BackgroundTasks, db: Session = Depends
     return RunOut.of(run)
 
 
+@router.get("/options")
+def config_options():
+    """What a run config can say, for a form: every default and every choice."""
+    from hontology.judge import prompts
+    from hontology.retrieve import embed
+
+    defaults = run_config.normalize({})
+    return {
+        "defaults": {k: defaults[k] for k in ("common", "candidates", "judge")},
+        "choices": {
+            "selection": ["adaptive", "top-k"],
+            "concept_fields": list(embed.CONCEPT_FIELD_SETS),
+            "embed_providers": ["ollama", "llamacpp"],
+            "judge_providers": ["ollama", "llamacpp", "openrouter"],
+            "aggregation": list(run_config.AGGREGATIONS),
+            "prompts": [
+                {"prompt_id": prompt_id, "mode": prompts.get(prompt_id).mode}
+                for prompt_id in prompts.available()
+            ],
+            "data_collection": ["deny", "allow"],
+        },
+    }
+
+
+@router.get("/{run_id}/config")
+def run_config_of(run_id: int, db: Session = Depends(get_db)):
+    """A run's stored config, to start another from."""
+    run = db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no run with id {run_id}")
+    return run.config or {}
+
+
 @router.get("/{run_id}", response_model=RunOut)
 def get_run(run_id: int, db: Session = Depends(get_db)):
     """Poll a run's status, stage and progress."""

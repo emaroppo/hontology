@@ -363,6 +363,12 @@ class Api:
         params = {"judge_limit": judge_limit} if judge_limit else {}
         return self._request("POST", f"/runs/{run_id}/resume", params=params)
 
+    def run_options(self) -> dict:
+        return self._request("GET", "/runs/options")
+
+    def run_config(self, run_id: int) -> dict:
+        return self._request("GET", f"/runs/{run_id}/config")
+
     def preview_keys(self, config: dict, ontology_version: str = "v1") -> dict:
         return self._request(
             "POST",

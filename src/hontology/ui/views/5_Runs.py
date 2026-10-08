@@ -8,11 +8,9 @@ seconds and re-embedding the corpus every time.
 
 from __future__ import annotations
 
-import json
-
 import streamlit as st
 
-from hontology.ui import shared
+from hontology.ui import config_editor, shared
 from hontology.ui.client import Api, ApiError
 
 st.set_page_config(page_title="Runs", page_icon="⚙️", layout="wide")
@@ -30,67 +28,72 @@ if not ontologies:
     st.info("No ontologies yet. Create one on the **Ontology** page first.")
     st.stop()
 
-DEFAULT_CONFIG = {
-    "candidates": {
-        "source": "semantic",
-        "selection": "adaptive",
-        "min_score": 0.5,
-        "rel_margin": 0.05,
-        "max_k": 3,
-        "pool_size": 8,
-    },
-    "judge": {"prompt_id": "strict_v1", "think": False, "samples": 1},
-    "common": {"body_limit": 2500},
-}
-
 ontology = shared.ontology(api, ontologies)
 
-st.subheader("Configuration")
-cols = st.columns(4)
-name = cols[0].text_input("Run name", "baseline")
-document_limit = cols[1].number_input("Documents", 1, 5000, 50)
-judge_limit = cols[2].number_input("Max pairs to judge", 0, 5000, 25, help="0 means no cap.")
-skip_judge = cols[3].toggle("Candidates only", value=False)
-config_text = st.text_area(
-    "Run config (JSON)", json.dumps(DEFAULT_CONFIG, indent=2), height=280
+st.subheader("New run")
+ontology_runs = [r for r in api.list_runs() if r["ontology_id"] == ontology["id"]]
+cols = st.columns([3, 1])
+start_from = cols[0].selectbox(
+    "Start from",
+    [None, *[r["id"] for r in ontology_runs]],
+    format_func=lambda i: (
+        "Defaults"
+        if i is None
+        else next(f"Run {r['id']} · {r['name']}" for r in ontology_runs if r["id"] == i)
+    ),
+    help="Fill the editor with the defaults, or with a run's config to change one thing.",
 )
+if cols[1].button("Load", help="Replaces what is in the editor."):
+    if start_from is None:
+        config_editor.load(
+            api.run_options()["defaults"] | {"name": "baseline", "description": ""}
+        )
+    else:
+        config_editor.load(api.run_config(start_from))
+    st.rerun()
 
-try:
-    config = json.loads(config_text)
-    config_error = None
-except json.JSONDecodeError as exc:
-    config, config_error = None, str(exc)
+listing = api.versions(ontology["id"])
+versions = [v["version"] for v in listing["versions"]]
+config, problem = config_editor.editor(api, ontology["id"], versions)
 
-if config_error:
-    st.error(f"Invalid JSON: {config_error}")
-else:
+# The stage keys the config resolves to, on the version a run would use now.
+version = config.get("common", {}).get("ontology_version", "latest")
+if version == "latest":
+    version = listing["current"] or f"v{len(versions) + 1}"
+if problem is None:
     try:
-        keys = api.preview_keys(config)
+        keys = api.preview_keys(config, version)
         cols = st.columns(2)
         cols[0].metric("candidates key", keys["candidates"])
         cols[1].metric("judge key", keys["judge"].split("_")[0])
         st.caption(
-            "Two configs sharing a candidates key share retrieval — the second run "
-            "copies it instead of re-embedding. Change only the prompt or the judge "
-            "model and this key stays put."
+            f"On ontology {version}. Two configs sharing a candidates key share retrieval: "
+            "the second run copies it instead of re-embedding. Change only the prompt or "
+            "the judge model and this key stays put."
         )
     except ApiError as exc:
+        problem = exc.detail
         st.error(exc.detail)
 
-    if st.button("Start run", type="primary"):
-        try:
-            run = api.start_run(
-                ontology_id=ontology["id"],
-                name=name,
-                config=config,
-                document_limit=int(document_limit),
-                judge_limit=int(judge_limit) or None,
-                skip_judge=skip_judge,
-            )
-            st.session_state["watch_run"] = run["id"]
-            st.rerun()
-        except ApiError as exc:
-            st.error(exc.detail)
+st.markdown("**This run only**")
+cols = st.columns(3)
+document_limit = cols[0].number_input("Documents", 1, 5000, 50)
+judge_limit = cols[1].number_input("Max pairs to judge", 0, 5000, 25, help="0 means no cap.")
+skip_judge = cols[2].toggle("Candidates only", value=False)
+if st.button("Start run", type="primary", disabled=problem is not None):
+    try:
+        run = api.start_run(
+            ontology_id=ontology["id"],
+            name=config.get("name") or "unnamed",
+            config=config,
+            document_limit=int(document_limit),
+            judge_limit=int(judge_limit) or None,
+            skip_judge=skip_judge,
+        )
+        st.session_state["watch_run"] = run["id"]
+        st.rerun()
+    except ApiError as exc:
+        st.error(exc.detail)
 
 st.divider()
 st.subheader("Runs")
