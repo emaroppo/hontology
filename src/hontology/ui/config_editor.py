@@ -18,6 +18,7 @@ from typing import Any
 import streamlit as st
 
 from hontology.ui.client import Api, ApiError
+from hontology.ui.cutoff import CUTOFF_FIELDS, describe_cutoff
 
 FORM, JSON = "Form", "JSON"
 _CONFIG = "cfg:config"  # the config, last valid state
@@ -130,13 +131,7 @@ def _from_form() -> dict:
 def _summaries() -> dict[str, str]:
     """One line per section, for its header, so a collapsed section still says
     what it holds."""
-    if _value("candidates.selection") == "top-k":
-        cut = f"top {_value('candidates.top_k')}"
-    else:
-        cut = (
-            f"adaptive, min {_value('candidates.min_score'):g}, margin "
-            f"{_value('candidates.rel_margin'):g}, at most {_value('candidates.max_k')}"
-        )
+    cut = describe_cutoff({f: _value(f"candidates.{f}") for f in CUTOFF_FIELDS})
     samples = int(_value("judge.samples"))
     max_tokens = _value("judge.generation.max_output_tokens")
     seed = _value("judge.generation.seed")

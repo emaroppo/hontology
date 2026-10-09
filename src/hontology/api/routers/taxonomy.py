@@ -143,18 +143,19 @@ def list_codes(level: str | None = None, limit: int = 500, db: Session = Depends
     return list(db.scalars(query.order_by(Code.code).limit(limit)))
 
 
+def _link_out(row: ConceptCode) -> LinkOut:
+    return LinkOut(
+        code=_code_out(row.code),
+        score=row.similarity_score,
+        proposed_by_run=row.similarity_run_id,
+        manual=row.similarity_run_id is None,
+    )
+
+
 @router.get("/concepts/{concept_id}/links", response_model=list[LinkOut])
 def concept_links(concept_id: int, db: Session = Depends(get_db)):
     rows = db.scalars(select(ConceptCode).where(ConceptCode.concept_id == concept_id))
-    return [
-        LinkOut(
-            code=_code_out(row.code),
-            score=row.similarity_score,
-            proposed_by_run=row.similarity_run_id,
-            manual=row.similarity_run_id is None,
-        )
-        for row in rows
-    ]
+    return [_link_out(row) for row in rows]
 
 
 @router.get("/ontologies/{ontology_id}/links")
@@ -167,14 +168,7 @@ def ontology_links(ontology_id: int, db: Session = Depends(get_db)) -> dict[int,
     )
     out: dict[int, list[LinkOut]] = {}
     for row in rows:
-        out.setdefault(row.concept_id, []).append(
-            LinkOut(
-                code=_code_out(row.code),
-                score=row.similarity_score,
-                proposed_by_run=row.similarity_run_id,
-                manual=row.similarity_run_id is None,
-            )
-        )
+        out.setdefault(row.concept_id, []).append(_link_out(row))
     return out
 
 

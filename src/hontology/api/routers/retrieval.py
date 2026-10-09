@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from hontology.api.routers._common import run_or_404, truth_or_404
 from hontology.db.models import Candidate, Run
 from hontology.db.session import get_db
 from hontology.evalkit import versions
@@ -39,13 +40,6 @@ class ExploreIn(BaseModel):
     annotator: str | None = None
 
 
-def _run(db: Session, run_id: int) -> Run:
-    run = db.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"run {run_id} does not exist")
-    return run
-
-
 def _cutoff(run: Run, payload: ExploreIn) -> tuning.Cutoff:
     if payload.cutoff is None:
         return tuning.run_cutoff(run)
@@ -53,10 +47,7 @@ def _cutoff(run: Run, payload: ExploreIn) -> tuning.Cutoff:
 
 
 def _truth(db: Session, run: Run, payload: ExploreIn) -> tuning.Truth:
-    try:
-        return tuning.truth(db, run.ontology_id, payload.annotator)
-    except LookupError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    return truth_or_404(db, run.ontology_id, payload.annotator)
 
 
 @router.get("/runs")
@@ -87,7 +78,7 @@ def list_runs(ontology_id: int, db: Session = Depends(get_db)):
 @router.post("/runs/{run_id}/report")
 def cutoff_report(run_id: int, payload: ExploreIn, db: Session = Depends(get_db)):
     """What a cutoff keeps and what it costs in recall, beside the run's own."""
-    run = _run(db, run_id)
+    run = run_or_404(db, run_id)
     labels = _truth(db, run, payload)
     setting, own = _cutoff(run, payload), tuning.run_cutoff(run)
     report = tuning.report(db, run_id, own, labels)
@@ -100,7 +91,7 @@ def cutoff_report(run_id: int, payload: ExploreIn, db: Session = Depends(get_db)
 
 @router.post("/runs/{run_id}/labelled")
 def labelled_documents(run_id: int, payload: ExploreIn, db: Session = Depends(get_db)):
-    run = _run(db, run_id)
+    run = run_or_404(db, run_id)
     return tuning.labelled_documents(db, run_id, _truth(db, run, payload))
 
 
@@ -108,7 +99,7 @@ def labelled_documents(run_id: int, payload: ExploreIn, db: Session = Depends(ge
 def document_pool(
     run_id: int, document_id: int, payload: ExploreIn, db: Session = Depends(get_db)
 ):
-    run = _run(db, run_id)
+    run = run_or_404(db, run_id)
     try:
         return tuning.document_pool(
             db, run_id, document_id, _cutoff(run, payload), _truth(db, run, payload)
@@ -125,7 +116,7 @@ def concept_documents(
     limit: int = 50,
     db: Session = Depends(get_db),
 ):
-    run = _run(db, run_id)
+    run = run_or_404(db, run_id)
     return tuning.concept_documents(
         db, run_id, concept_id, _cutoff(run, payload), _truth(db, run, payload), limit=limit
     )
@@ -166,7 +157,7 @@ class LiveIn(BaseModel):
 def evaluate_version(payload: LiveIn, db: Session = Depends(get_db)):
     """A retrieval version (that of *run_id*) scored live on every labelled
     article under *cutoff*. Nothing is embedded or stored."""
-    run = _run(db, payload.run_id)
+    run = run_or_404(db, payload.run_id)
     labels = _truth(db, run, ExploreIn(annotator=payload.annotator))
     return live.live_report(
         db,
@@ -194,11 +185,11 @@ def rank_text(payload: TextIn, db: Session = Depends(get_db)):
     from hontology.judge.providers.base import ProviderError
     from hontology.retrieve import live
 
-    run = _run(db, payload.run_id)
+    run = run_or_404(db, payload.run_id)
     cutoff = (
         tuning.Cutoff(**payload.cutoff.model_dump())
         if payload.cutoff is not None
-        else tuning.run_cutoff(versions.source_run(db, run))
+        else tuning.run_cutoff(versions.sourcerun_or_404(db, run))
     )
     try:
         return live.rank_text(db, run, payload.text, cutoff, pool_size=payload.pool_size)

@@ -11,12 +11,12 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from hontology.api.routers._common import run_or_404, truth_or_404
 from hontology.db.models import Run, Verdict
 from hontology.db.session import get_db
 from hontology.evalkit import config as run_config
 from hontology.evalkit import judge_eval
 from hontology.judge import trial
-from hontology.retrieve import tuning
 
 router = APIRouter(prefix="/judgement", tags=["judgement"])
 
@@ -89,13 +89,8 @@ def runs(ontology_id: int, db: Session = Depends(get_db)):
 
 @router.post("/articles")
 def articles(payload: ArticlesIn, db: Session = Depends(get_db)):
-    run = db.get(Run, payload.run_id)
-    if run is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"run {payload.run_id} does not exist")
-    try:
-        labels = tuning.truth(db, run.ontology_id, payload.annotator)
-    except LookupError as exc:
-        raise _refuse(exc) from exc
+    run = run_or_404(db, payload.run_id)
+    labels = truth_or_404(db, run.ontology_id, payload.annotator)
     return trial.articles(db, payload.run_id, payload.concept_id, labels, limit=payload.limit)
 
 
@@ -137,13 +132,9 @@ def evaluate_version(payload: VersionEvalIn, db: Session = Depends(get_db)):
     it was responsible for or only on those retrieval selected."""
     if not payload.run_ids:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "no runs given")
-    run = db.get(Run, payload.run_ids[0])
-    if run is None:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND, f"run {payload.run_ids[0]} does not exist"
-        )
+    run = run_or_404(db, payload.run_ids[0])
+    labels = truth_or_404(db, run.ontology_id, payload.annotator)
     try:
-        labels = tuning.truth(db, run.ontology_id, payload.annotator)
         return judge_eval.evaluate(db, payload.run_ids, labels, scope=payload.scope)
     except (LookupError, ValueError) as exc:
         raise _refuse(exc) from exc

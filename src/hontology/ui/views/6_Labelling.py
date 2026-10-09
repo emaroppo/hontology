@@ -27,22 +27,9 @@ from pathlib import Path
 import streamlit as st
 
 from hontology.ui import shared
-from hontology.ui.client import Api, ApiError
+from hontology.ui.client import ApiError
 
-st.set_page_config(page_title="Labelling", page_icon="🏷️", layout="wide")
-
-api = Api()
-
-st.title("🏷️ Labelling")
-
-if not api.healthy():
-    st.error(f"The API is not reachable at `{api.base_url}`. Start it with `make api`.")
-    st.stop()
-
-ontologies = api.list_ontologies()
-if not ontologies:
-    st.info("No ontologies yet. Create one on the **Ontology** page first.")
-    st.stop()
+api, ontologies = shared.page("Labelling", "🏷️")
 
 
 def sample_tab() -> None:
@@ -276,18 +263,12 @@ def queue_tab() -> None:
 
                 buttons = st.columns([1, 1, 6])
                 key = f"{kind}_{row['id']}"
-                if buttons[0].button("Confirm", key=f"ok_{key}", type="primary"):
-                    try:
-                        api.adjudicate_label(row["id"], matched=row["proposed_matched"])
-                        st.rerun()
-                    except ApiError as exc:
-                        st.error(exc.detail)
-                if buttons[1].button("Flip", key=f"flip_{key}"):
-                    try:
-                        api.adjudicate_label(row["id"], matched=not row["proposed_matched"])
-                        st.rerun()
-                    except ApiError as exc:
-                        st.error(exc.detail)
+                for col, label, prefix, matched, kind_ in (
+                    (buttons[0], "Confirm", "ok", row["proposed_matched"], "primary"),
+                    (buttons[1], "Flip", "flip", not row["proposed_matched"], "secondary"),
+                ):
+                    if col.button(label, key=f"{prefix}_{key}", type=kind_):
+                        shared.act(api.adjudicate_label, row["id"], matched=matched)
 
     if stats["pending_adjudication"]:
         st.subheader(f"Awaiting review ({stats['pending_adjudication']})")
@@ -386,40 +367,21 @@ def queue_tab() -> None:
             )
             buttons = st.columns([1, 1, 6])
             key = f"{item['document_id']}_{item['concept_id']}"
-
-            if buttons[0].button("Matches", key=f"yes_{key}", type="primary"):
-                try:
-                    api.create_label(
+            for col, label, prefix, matched, kind_ in (
+                (buttons[0], "Matches", "yes", True, "primary"),
+                (buttons[1], "Does not", "no", False, "secondary"),
+            ):
+                if col.button(label, key=f"{prefix}_{key}", type=kind_):
+                    shared.act(
+                        api.create_label,
                         document_id=item["document_id"],
                         concept_id=item["concept_id"],
-                        matched=True,
+                        matched=matched,
                         note=note or None,
                     )
-                    st.rerun()
-                except ApiError as exc:
-                    st.error(exc.detail)
-
-            if buttons[1].button("Does not", key=f"no_{key}"):
-                try:
-                    api.create_label(
-                        document_id=item["document_id"],
-                        concept_id=item["concept_id"],
-                        matched=False,
-                        note=note or None,
-                    )
-                    st.rerun()
-                except ApiError as exc:
-                    st.error(exc.detail)
 
 
-sample, queue = st.tabs(
-    ["Sample (whole documents, blind)", "Queue (pairs and review)"],
-    key="labelling_tab",
-    on_change="rerun",
+shared.lazy_tabs(
+    "labelling_tab",
+    {"Sample (whole documents, blind)": sample_tab, "Queue (pairs and review)": queue_tab},
 )
-if sample.open:
-    with sample:
-        sample_tab()
-if queue.open:
-    with queue:
-        queue_tab()

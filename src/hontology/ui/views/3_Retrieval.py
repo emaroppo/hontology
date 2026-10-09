@@ -23,22 +23,18 @@ from __future__ import annotations
 import streamlit as st
 
 from hontology.ui import charts, shared
-from hontology.ui.client import Api, ApiError
+from hontology.ui.client import ApiError
+from hontology.ui.cutoff import (
+    CUT_KEYS,
+    CUTOFF_FIELDS,
+    EV_CUT_KEYS,
+    cutoff_sliders,
+    describe_cutoff,
+    read_cutoff,
+    seed_cutoff,
+)
 
-st.set_page_config(page_title="Retrieval", page_icon="🔎", layout="wide")
-
-api = Api()
-
-st.title("🔎 Retrieval")
-
-if not api.healthy():
-    st.error(f"The API is not reachable at `{api.base_url}`. Start it with `make api`.")
-    st.stop()
-
-ontologies = api.list_ontologies()
-if not ontologies:
-    st.info("No ontologies yet. Create one on the **Ontology** page first.")
-    st.stop()
+api, ontologies = shared.page("Retrieval", "🔎")
 
 
 # ---------------------------------------------------------------------------
@@ -51,72 +47,22 @@ annotator = params.annotator
 runs = api.retrieval_runs(ontology["id"])
 run = next((r for r in runs if r["id"] == params.run_id), None)
 
-CUT_KEYS = ("cut_selection", "cut_top_k", "cut_min_score", "cut_rel_margin", "cut_max_k")
-CUTOFF_FIELDS = ("selection", "top_k", "min_score", "rel_margin", "max_k")
-EV_CUT_KEYS = tuple(f"ev_{field}" for field in CUTOFF_FIELDS)
-
-
-def describe_cutoff(cutoff: dict) -> str:
-    if cutoff["selection"] == "top-k":
-        return f"top {cutoff['top_k']}"
-    return (
-        f"adaptive, min {cutoff['min_score']:g}, margin {cutoff['rel_margin']:g}, "
-        f"at most {cutoff['max_k']}"
-    )
-
 
 def cutoff_controls() -> dict:
     """The cutoff Try applies, in a collapsible section, starting from the run's own."""
     assert run is not None
     own = run["cutoff"]
-    # A keyed widget left undrawn (Evaluation open, say) loses its value: keep a copy.
-    for key in CUT_KEYS:
-        if key not in st.session_state and f"keep:{key}" in st.session_state:
-            st.session_state[key] = st.session_state[f"keep:{key}"]
+    # Kept across a visit to Evaluation, which leaves these widgets undrawn.
+    shared.restore(CUT_KEYS)
     if st.session_state.get("retrieval_cutoff_for") != run["id"]:
         st.session_state["retrieval_cutoff_for"] = run["id"]
-        st.session_state["cut_selection"] = own["selection"]
-        st.session_state["cut_top_k"] = own["top_k"]
-        st.session_state["cut_min_score"] = float(own["min_score"])
-        st.session_state["cut_rel_margin"] = float(own["rel_margin"])
-        st.session_state["cut_max_k"] = own["max_k"]
-    current = {key.removeprefix("cut_"): st.session_state[key] for key in CUT_KEYS}
+        seed_cutoff("cut_", own)
+    current = read_cutoff("cut_")
     edited = current != {k: own[k] for k in current}
     state = "edited" if edited else f"run {run['id']}'s own"
     header = f"**Cutoff** · {describe_cutoff(current)} · {state}"
     with st.expander(header, key="retrieval_cutoff_panel"):
-        cols = st.columns(5)
-        selection = cols[0].radio(
-            "Selection",
-            ["adaptive", "top-k"],
-            key="cut_selection",
-            help="Adaptive keeps the classes within a margin of the article's best score; "
-            "top-k keeps a fixed number per article.",
-        )
-        # Every control is always drawn, disabled when it does not apply.
-        adaptive = selection == "adaptive"
-        cols[1].slider("Classes per article", 1, 20, key="cut_top_k", disabled=adaptive)
-        cols[2].slider(
-            "Minimum score",
-            0.0,
-            1.0,
-            step=0.01,
-            key="cut_min_score",
-            disabled=not adaptive,
-            help="Nothing below this is kept, however close to the best.",
-        )
-        cols[3].slider(
-            "Margin below the best",
-            0.0,
-            0.5,
-            step=0.01,
-            key="cut_rel_margin",
-            disabled=not adaptive,
-            help="Keep classes scoring within this much of the article's best.",
-        )
-        cols[4].slider(
-            "At most", 1, 20, key="cut_max_k", disabled=not adaptive, help="Per article."
-        )
+        cutoff_sliders(st.columns(5), "cut_", helps=True)
         cols = st.columns([1, 4])
         if cols[0].button("Back to the run's own", disabled=not edited):
             st.session_state.pop("retrieval_cutoff_for", None)
@@ -127,9 +73,8 @@ def cutoff_controls() -> dict:
             f"Run {run['id']}'s own: {describe_cutoff(own)}. Its pool holds the top 20 "
             "classes per article; a cutoff can only draw from that."
         )
-    for key in CUT_KEYS:
-        st.session_state[f"keep:{key}"] = st.session_state[key]
-    return {key.removeprefix("cut_"): st.session_state[key] for key in CUT_KEYS}
+    shared.persist(CUT_KEYS)
+    return read_cutoff("cut_")
 
 
 def no_run() -> bool:
@@ -319,12 +264,7 @@ def show_try() -> None:
         except ApiError as exc:
             st.error(exc.detail)
             return
-        by_name = {
-            f"{lf['families'][0]} › {lf['name']}"
-            if lf["families"][0] != lf["name"]
-            else lf["name"]: lf
-            for lf in leaves
-        }
+        by_name = shared.leaf_options(leaves)
         leaf = by_name[cols[0].selectbox("Class", list(by_name), key="retrieval_class")]
     else:
         cols[0].caption(
@@ -387,20 +327,14 @@ def show_evaluation() -> None:
     # The cutoff and the preset it started from are widget values, dropped when the
     # tab is left: keep a copy, so an edit survives a visit to Try.
     ev_keys = ("ev_preset", *EV_CUT_KEYS, "ev_pool")
-    for key in ev_keys:
-        if key not in st.session_state and f"keep:{key}" in st.session_state:
-            st.session_state[key] = st.session_state[f"keep:{key}"]
+    shared.restore(ev_keys)
     if st.session_state.get("ev_preset") not in presets:
         st.session_state["ev_preset"] = next(iter(presets))
 
     def load(label: str) -> None:
         preset = presets[label]
         st.session_state["ev_loaded"] = {k: preset[k] for k in CUTOFF_FIELDS}
-        st.session_state["ev_selection"] = preset["selection"]
-        st.session_state["ev_top_k"] = preset["top_k"]
-        st.session_state["ev_min_score"] = float(preset["min_score"])
-        st.session_state["ev_rel_margin"] = float(preset["rel_margin"])
-        st.session_state["ev_max_k"] = preset["max_k"]
+        seed_cutoff("ev_", preset)
 
     loaded = st.session_state.get("ev_loaded")
     if (
@@ -412,7 +346,7 @@ def show_evaluation() -> None:
         loaded = st.session_state["ev_loaded"]
     st.session_state.setdefault("ev_pool", 20)
 
-    current = {key.removeprefix("ev_"): st.session_state[key] for key in EV_CUT_KEYS}
+    current = read_cutoff("ev_")
     edited = current != loaded
     header = f"**Cutoff** · {describe_cutoff(current)} · " + (
         "edited" if edited else "the preset's own"
@@ -430,21 +364,7 @@ def show_evaluation() -> None:
             load(preset_label)
             st.rerun()
         cols = st.columns(6)
-        selection = cols[0].radio("Selection", ["adaptive", "top-k"], key="ev_selection")
-        adaptive = selection == "adaptive"
-        cols[1].slider("Classes per article", 1, 20, key="ev_top_k", disabled=adaptive)
-        cols[2].slider(
-            "Minimum score", 0.0, 1.0, step=0.01, key="ev_min_score", disabled=not adaptive
-        )
-        cols[3].slider(
-            "Margin below the best",
-            0.0,
-            0.5,
-            step=0.01,
-            key="ev_rel_margin",
-            disabled=not adaptive,
-        )
-        cols[4].slider("At most", 1, 20, key="ev_max_k", disabled=not adaptive)
+        cutoff_sliders(cols, "ev_")
         cols[5].number_input(
             "Pool depth",
             1,
@@ -456,8 +376,7 @@ def show_evaluation() -> None:
             "Changes are compared with the loaded preset: recall and cost below show by "
             "how much they move."
         )
-    for key in ev_keys:
-        st.session_state[f"keep:{key}"] = st.session_state[key]
+    shared.persist(ev_keys)
 
     cutoff = {
         "selection": st.session_state["ev_selection"],
@@ -602,12 +521,4 @@ def show_evaluation() -> None:
     )
 
 
-try_tab, evaluation_tab = st.tabs(
-    ["Try a cutoff", "Evaluation"], key="retrieval_tab", on_change="rerun"
-)
-if try_tab.open:
-    with try_tab:
-        show_try()
-if evaluation_tab.open:
-    with evaluation_tab:
-        show_evaluation()
+shared.lazy_tabs("retrieval_tab", {"Try a cutoff": show_try, "Evaluation": show_evaluation})

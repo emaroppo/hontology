@@ -14,10 +14,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from hontology.api.routers._common import truth_or_404
 from hontology.db.models import Concept, LinkSnapshot, Run
 from hontology.db.session import get_db
 from hontology.evalkit import calendar, filter_eval, versions
-from hontology.retrieve import tuning
 
 router = APIRouter(prefix="/filtering", tags=["filtering"])
 
@@ -83,10 +83,7 @@ def list_versions(ontology_id: int, db: Session = Depends(get_db)):
 
 @router.post("/evaluate/labels")
 def evaluate_labels(payload: EvaluateIn, db: Session = Depends(get_db)):
-    try:
-        truth = tuning.truth(db, payload.ontology_id, payload.annotator)
-    except LookupError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    truth = truth_or_404(db, payload.ontology_id, payload.annotator)
     return filter_eval.labelled_report(
         db, _links(db, payload), truth, _names(db, payload.ontology_id)
     )

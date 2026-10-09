@@ -19,19 +19,9 @@ import json
 import streamlit as st
 
 from hontology.ui import shared
-from hontology.ui.client import Api, ApiError
+from hontology.ui.client import ApiError
 
-st.set_page_config(page_title="Ontology", page_icon="🧭", layout="wide")
-
-api = Api()
-
-st.title("🧭 Ontology")
-
-if not api.healthy():
-    st.error(f"The API is not reachable at `{api.base_url}`. Start it with `make api`.")
-    st.stop()
-
-ontologies = api.list_ontologies()
+api, ontologies = shared.page("Ontology", "🧭", need_ontology=False)
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +80,6 @@ slug = selected["slug"]
 tree = api.hierarchy(ontology_id)
 classes: list[dict] = tree["classes"]
 structured: bool = tree["structured"]
-by_name = {c["name"]: c for c in classes}
 
 
 # ---------------------------------------------------------------------------
@@ -141,56 +130,40 @@ st.caption(caption)
 # ---------------------------------------------------------------------------
 
 
+def wording_fields(concept: dict) -> dict[str, str]:
+    """Definition and criteria, the part of a class the judge reads, as text areas
+    in the form being drawn. Returns them stripped, by field."""
+    definition = st.text_area(
+        "Definition",
+        concept.get("definition") or "",
+        help="What the class means, in plain language.",
+    )
+    cols = st.columns(2)
+    inclusion = cols[0].text_area(
+        "Inclusion criteria",
+        concept.get("inclusion_criteria") or "",
+        help="What counts. Goes into the judge prompt verbatim.",
+    )
+    exclusion = cols[1].text_area(
+        "Exclusion criteria",
+        concept.get("exclusion_criteria") or "",
+        help="What does not count — usually the best precision lever.",
+    )
+    return {
+        "definition": definition.strip(),
+        "inclusion_criteria": inclusion.strip(),
+        "exclusion_criteria": exclusion.strip(),
+    }
+
+
 def wording_form(concept: dict, *, key: str) -> None:
-    """Definition and criteria: the part of a class the judge reads."""
+    """The wording alone, in a form of its own."""
     with st.form(key):
-        definition = st.text_area(
-            "Definition",
-            concept.get("definition") or "",
-            help="What the class means, in plain language.",
-        )
-        cols = st.columns(2)
-        inclusion = cols[0].text_area(
-            "Inclusion criteria",
-            concept.get("inclusion_criteria") or "",
-            help="What counts. Goes into the judge prompt verbatim.",
-        )
-        exclusion = cols[1].text_area(
-            "Exclusion criteria",
-            concept.get("exclusion_criteria") or "",
-            help="What does not count — usually the best precision lever.",
-        )
+        wording = wording_fields(concept)
         if st.form_submit_button("Save wording", type="primary"):
-            try:
-                api.update_concept(
-                    ontology_id,
-                    concept["id"],
-                    definition=definition.strip(),
-                    inclusion_criteria=inclusion.strip(),
-                    exclusion_criteria=exclusion.strip(),
-                )
-                st.success("Saved.")
-                st.rerun()
-            except ApiError as exc:
-                st.error(exc.detail)
-
-
-def tree_order() -> list[tuple[int, dict]]:
-    """``(depth, class)`` depth first from the top level, children by name.
-
-    A class with several parents appears under each of them.
-    """
-    out: list[tuple[int, dict]] = []
-
-    def visit(concept: dict, depth: int) -> None:
-        out.append((depth, concept))
-        for child in concept["children"]:
-            visit(by_name[child], depth + 1)
-
-    for concept in classes:
-        if not concept["parents"]:
-            visit(concept, 0)
-    return out
+            shared.act(
+                api.update_concept, ontology_id, concept["id"], success="Saved.", **wording
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +172,7 @@ def tree_order() -> list[tuple[int, dict]]:
 
 
 def show_hierarchy() -> None:
-    order = tree_order()
+    order = shared.tree_order(classes)
     left, right = st.columns([2, 3])
 
     with left, st.container(height=640):
@@ -275,22 +248,7 @@ def show_flat_editor() -> None:
     for concept in classes:
         with st.expander(concept["name"]), st.form(f"edit_{concept['id']}"):
             name = st.text_input("Name", concept["name"])
-            definition = st.text_area(
-                "Definition",
-                concept.get("definition") or "",
-                help="What the class means, in plain language.",
-            )
-            cols = st.columns(2)
-            inclusion = cols[0].text_area(
-                "Inclusion criteria",
-                concept.get("inclusion_criteria") or "",
-                help="What counts. Goes into the judge prompt verbatim.",
-            )
-            exclusion = cols[1].text_area(
-                "Exclusion criteria",
-                concept.get("exclusion_criteria") or "",
-                help="What does not count — usually the best precision lever.",
-            )
+            wording = wording_fields(concept)
             cols = st.columns(2)
             category = cols[0].text_input("Category", concept.get("category") or "")
             weight = cols[1].number_input(
@@ -302,21 +260,16 @@ def show_flat_editor() -> None:
 
             save, remove = st.columns(2)
             if save.form_submit_button("Save", type="primary"):
-                try:
-                    api.update_concept(
-                        ontology_id,
-                        concept["id"],
-                        name=name.strip(),
-                        definition=definition.strip(),
-                        inclusion_criteria=inclusion.strip(),
-                        exclusion_criteria=exclusion.strip(),
-                        category=category.strip() or None,
-                        weight=weight,
-                    )
-                    st.success("Saved.")
-                    st.rerun()
-                except ApiError as exc:
-                    st.error(exc.detail)
+                shared.act(
+                    api.update_concept,
+                    ontology_id,
+                    concept["id"],
+                    success="Saved.",
+                    name=name.strip(),
+                    **wording,
+                    category=category.strip() or None,
+                    weight=weight,
+                )
             if remove.form_submit_button("Delete"):
                 api.delete_concept(ontology_id, concept["id"])
                 st.rerun()
@@ -375,20 +328,17 @@ def show_add() -> None:
         weight = cols[1].number_input("Weight", value=1.0, step=0.5)
 
         if st.form_submit_button("Add class", type="primary"):
-            try:
-                api.create_concept(
-                    ontology_id,
-                    name=name.strip(),
-                    definition=definition.strip() or None,
-                    inclusion_criteria=inclusion.strip() or None,
-                    exclusion_criteria=exclusion.strip() or None,
-                    category=category.strip() or None,
-                    weight=weight,
-                )
-                st.success(f"Added {name!r}.")
-                st.rerun()
-            except ApiError as exc:
-                st.error(exc.detail)
+            shared.act(
+                api.create_concept,
+                ontology_id,
+                success=f"Added {name!r}.",
+                name=name.strip(),
+                definition=definition.strip() or None,
+                inclusion_criteria=inclusion.strip() or None,
+                exclusion_criteria=exclusion.strip() or None,
+                category=category.strip() or None,
+                weight=weight,
+            )
 
 
 # ---------------------------------------------------------------------------

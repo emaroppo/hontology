@@ -23,22 +23,9 @@ import json
 import streamlit as st
 
 from hontology.ui import charts, shared
-from hontology.ui.client import Api, ApiError
+from hontology.ui.client import ApiError
 
-st.set_page_config(page_title="Judgement", page_icon="⚖️", layout="wide")
-
-api = Api()
-
-st.title("⚖️ Judgement")
-
-if not api.healthy():
-    st.error(f"The API is not reachable at `{api.base_url}`. Start it with `make api`.")
-    st.stop()
-
-ontologies = api.list_ontologies()
-if not ontologies:
-    st.info("No ontologies yet. Create one on the **Ontology** page first.")
-    st.stop()
+api, ontologies = shared.page("Judgement", "⚖️")
 
 WORDING = {
     "definition": "Definition",
@@ -59,48 +46,18 @@ run = next((r for r in runs if r["id"] == params.run_id), None)
 templates = {t["prompt_id"]: t for t in api.judgement_templates()}
 
 
-def show_trials() -> None:
-    if run is None:
-        st.info(
-            "Pick a run that has judged something in Settings (top right): a trial is asked as "
-            "that run asks, with its model, decoding settings and article text limit, "
-            "and its recorded verdicts are shown beside each answer."
-        )
-        return
-    leaves = api.leaves(ontology["id"])
-    if not leaves:
-        st.info("This ontology has no classes yet.")
-        return
-    by_name = {
-        f"{leaf['families'][0]} › {leaf['name']}"
-        if leaf["families"][0] != leaf["name"]
-        else leaf["name"]: leaf
-        for leaf in leaves
-    }
-    cols = st.columns([3, 2])
-    leaf = by_name[cols[0].selectbox("Class", list(by_name), key="judgement_class")]
-    source = cols[1].radio(
-        "Ask about",
-        ["Your text", "Corpus articles"],
-        horizontal=True,
-        key="judgement_source",
-        help="Your text: an article pasted in, asked about exactly as a corpus "
-        "article would be. It is shared with Retrieval's Your text tab.",
-    )
-
-    # ---------------------------------------------------------------------------
-    # The prompt, in one collapsible section
-    # ---------------------------------------------------------------------------
-
+def prompt_panel(leaf: dict) -> tuple[str, str, dict, bool]:
+    """The prompt in one collapsible section: its template, system text and the
+    class's wording, editable. Returns the prompt id, system text and wording as
+    they stand, and whether either was edited."""
+    assert run is not None
     prompt_ids = list(templates)
     prompt_key = f"judgement_prompt_{run['id']}"
     # The template and the edits are widget values, which Streamlit drops when the
     # page or tab that drew them is left: keep a copy, so they survive a visit
     # elsewhere and are never read missing.
     kept_keys = [prompt_key, "edit_system", *(f"edit_{field}" for field in WORDING)]
-    for key in kept_keys:
-        if key not in st.session_state and f"keep:{key}" in st.session_state:
-            st.session_state[key] = st.session_state[f"keep:{key}"]
+    shared.restore(kept_keys)
     if prompt_key not in st.session_state:
         st.session_state[prompt_key] = (
             run["prompt_id"] if run["prompt_id"] in templates else prompt_ids[0]
@@ -173,8 +130,45 @@ def show_trials() -> None:
             except ApiError as exc:
                 st.error(exc.detail)
 
-    for key in kept_keys:
-        st.session_state[f"keep:{key}"] = st.session_state[key]
+    shared.persist(kept_keys)
+    return prompt_id, system, wording, edited
+
+
+def verdict_line(answer: dict | None) -> str:
+    if answer is None:
+        return "—"
+    if answer.get("error"):
+        return f"error: {answer['error'][:120]}"
+    mark = "✓ match" if answer.get("matched") else "✗ no match"
+    confidence = answer.get("confidence")
+    return mark + (f" ({confidence:.2f})" if confidence is not None else "")
+
+
+def show_trials() -> None:
+    if run is None:
+        st.info(
+            "Pick a run that has judged something in Settings (top right): a trial is asked as "
+            "that run asks, with its model, decoding settings and article text limit, "
+            "and its recorded verdicts are shown beside each answer."
+        )
+        return
+    leaves = api.leaves(ontology["id"])
+    if not leaves:
+        st.info("This ontology has no classes yet.")
+        return
+    by_name = shared.leaf_options(leaves)
+    cols = st.columns([3, 2])
+    leaf = by_name[cols[0].selectbox("Class", list(by_name), key="judgement_class")]
+    source = cols[1].radio(
+        "Ask about",
+        ["Your text", "Corpus articles"],
+        horizontal=True,
+        key="judgement_source",
+        help="Your text: an article pasted in, asked about exactly as a corpus "
+        "article would be. It is shared with Retrieval's Your text tab.",
+    )
+
+    prompt_id, system, wording, edited = prompt_panel(leaf)
 
     own: dict[str, str] = {}  # pasted text, when that is the source
 
@@ -286,15 +280,6 @@ def show_trials() -> None:
     # Answers
     # ---------------------------------------------------------------------------
 
-    def verdict_line(answer: dict | None) -> str:
-        if answer is None:
-            return "—"
-        if answer.get("error"):
-            return f"error: {answer['error'][:120]}"
-        mark = "✓ match" if answer.get("matched") else "✗ no match"
-        confidence = answer.get("confidence")
-        return mark + (f" ({confidence:.2f})" if confidence is not None else "")
-
     st.divider()
     for label in chosen:
         article = by_article[label]
@@ -302,47 +287,63 @@ def show_trials() -> None:
         mine = (
             answers.get(cache_key(trial(article["document_id"], mine=True))) if edited else None
         )
-        with st.container(border=True):
-            if article["url"]:
-                st.markdown(f"**[{article['title'] or article['url']}]({article['url']})**")
-            else:
-                st.markdown(f"**{article['title']}** (pasted)")
-            cols = st.columns(4 if edited else 3)
-            cols[0].caption("Label")
-            cols[0].markdown(
-                {True: "✓ match", False: "✗ no match", None: "—"}[article["label"]]
+        answer_card(
+            article,
+            original,
+            mine,
+            edited=edited,
+            sent=trial(article["document_id"], mine=edited),
+        )
+
+
+def answer_card(
+    article: dict,
+    original: dict | None,
+    mine: dict | None,
+    *,
+    edited: bool,
+    sent: dict,
+) -> None:
+    """One article: its label, the run's verdict, the answers now, and the prompt
+    sent, rendered from the trial *sent* when no answer carries it."""
+    assert run is not None
+    with st.container(border=True):
+        if article["url"]:
+            st.markdown(f"**[{article['title'] or article['url']}]({article['url']})**")
+        else:
+            st.markdown(f"**{article['title']}** (pasted)")
+        cols = st.columns(4 if edited else 3)
+        cols[0].caption("Label")
+        cols[0].markdown({True: "✓ match", False: "✗ no match", None: "—"}[article["label"]])
+        cols[1].caption(f"Run {run['id']} recorded")
+        cols[1].markdown(verdict_line(article["verdict"]))
+        cols[2].caption("Original prompt, now")
+        cols[2].markdown(verdict_line(original))
+        if edited:
+            changed = (
+                original is not None
+                and mine is not None
+                and not original.get("error")
+                and not mine.get("error")
+                and original.get("matched") != mine.get("matched")
             )
-            cols[1].caption(f"Run {run['id']} recorded")
-            cols[1].markdown(verdict_line(article["verdict"]))
-            cols[2].caption("Original prompt, now")
-            cols[2].markdown(verdict_line(original))
-            if edited:
-                changed = (
-                    original is not None
-                    and mine is not None
-                    and not original.get("error")
-                    and not mine.get("error")
-                    and original.get("matched") != mine.get("matched")
-                )
-                cols[3].caption("Your edits" + (" · changed the answer" if changed else ""))
-                cols[3].markdown(verdict_line(mine))
-            for name, answer in (("Original", original), ("Edited", mine)):
-                if answer and answer.get("evidence"):
-                    st.caption(f"{name} evidence: “{answer['evidence'][:300]}”")
-            if article["verdict"] and article["verdict"].get("evidence"):
-                st.caption(f"Run evidence: “{article['verdict']['evidence'][:300]}”")
-            with st.expander("The prompt sent" + (" with your edits" if edited else "")):
-                try:
-                    rendered = (mine or original) or api.judgement_render(
-                        **trial(article["document_id"], mine=edited)
-                    )
-                except ApiError as exc:
-                    st.error(exc.detail)
-                else:
-                    st.caption("System")
-                    st.code(rendered["system"], language=None, wrap_lines=True)
-                    st.caption("Message")
-                    st.code(rendered["prompt"], language=None, wrap_lines=True)
+            cols[3].caption("Your edits" + (" · changed the answer" if changed else ""))
+            cols[3].markdown(verdict_line(mine))
+        for name, answer in (("Original", original), ("Edited", mine)):
+            if answer and answer.get("evidence"):
+                st.caption(f"{name} evidence: “{answer['evidence'][:300]}”")
+        if article["verdict"] and article["verdict"].get("evidence"):
+            st.caption(f"Run evidence: “{article['verdict']['evidence'][:300]}”")
+        with st.expander("The prompt sent" + (" with your edits" if edited else "")):
+            try:
+                rendered = (mine or original) or api.judgement_render(**sent)
+            except ApiError as exc:
+                st.error(exc.detail)
+            else:
+                st.caption("System")
+                st.code(rendered["system"], language=None, wrap_lines=True)
+                st.caption("Message")
+                st.code(rendered["prompt"], language=None, wrap_lines=True)
 
 
 # ---------------------------------------------------------------------------
@@ -406,14 +407,7 @@ def show_evaluation() -> None:
         return
 
     def interval(name: str) -> str:
-        value, ci = pooled[name], pooled[f"{name}_ci"]
-        if value is None:
-            return "—"
-        return (
-            f"{value:.2f} ({ci[0]:.2f}–{ci[1]:.2f})"
-            if ci and ci[0] is not None
-            else f"{value:.2f}"
-        )
+        return shared.ci_text(pooled[name], pooled[f"{name}_ci"])
 
     cols = st.columns(4)
     cols[0].metric("Precision", interval("precision"))
@@ -456,12 +450,4 @@ def show_evaluation() -> None:
     )
 
 
-trials_tab, evaluation_tab = st.tabs(
-    ["Try a prompt", "Evaluation"], key="judgement_tab", on_change="rerun"
-)
-if trials_tab.open:
-    with trials_tab:
-        show_trials()
-if evaluation_tab.open:
-    with evaluation_tab:
-        show_evaluation()
+shared.lazy_tabs("judgement_tab", {"Try a prompt": show_trials, "Evaluation": show_evaluation})

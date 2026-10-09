@@ -11,22 +11,9 @@ from __future__ import annotations
 import streamlit as st
 
 from hontology.ui import config_editor, shared
-from hontology.ui.client import Api, ApiError
+from hontology.ui.client import ApiError
 
-st.set_page_config(page_title="Runs", page_icon="⚙️", layout="wide")
-
-api = Api()
-
-st.title("⚙️ Runs")
-
-if not api.healthy():
-    st.error(f"The API is not reachable at `{api.base_url}`. Start it with `make api`.")
-    st.stop()
-
-ontologies = api.list_ontologies()
-if not ontologies:
-    st.info("No ontologies yet. Create one on the **Ontology** page first.")
-    st.stop()
+api, ontologies = shared.page("Runs", "⚙️")
 
 ontology = shared.ontology(api, ontologies)
 
@@ -139,9 +126,8 @@ for run in runs[:25]:
 
         resumable = run["status"] in ("done", "failed", "candidates")
         if resumable and st.button("Resume", key=f"resume_{run['id']}"):
-            try:
-                api.resume_run(run["id"])
-                st.success("Resuming — pairs already judged are skipped.")
-                st.rerun()
-            except ApiError as exc:
-                st.error(exc.detail)
+            shared.act(
+                api.resume_run,
+                run["id"],
+                success="Resuming — pairs already judged are skipped.",
+            )

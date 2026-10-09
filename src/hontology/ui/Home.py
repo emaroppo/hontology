@@ -20,6 +20,7 @@ import streamlit as st
 
 from hontology.ui import shared
 from hontology.ui.client import Api, ApiError
+from hontology.ui.shared import ci_text
 
 st.set_page_config(page_title="hontology", page_icon="🧭", layout="wide")
 
@@ -66,14 +67,6 @@ params = shared.current(api)
 ontology = next((o for o in ontologies if o["id"] == params.ontology_id), ontologies[0])
 manifest_path = params.sample
 annotator = params.annotator
-
-
-def ci_text(value: float | None, ci: list | None) -> str:
-    if value is None:
-        return "—"
-    if ci and ci[0] is not None:
-        return f"{value:.2f} ({ci[0]:.2f}–{ci[1]:.2f})"
-    return f"{value:.2f}"
 
 
 @st.cache_data(ttl=300, show_spinner="Scoring every run on the sample…")
@@ -312,7 +305,8 @@ def show_single() -> None:
                 col.metric(name, ci_text(stat.get("rate"), stat.get("ci")))
             verified = (calendar.get("verified") or {}).get("event_recall") or {}
             cols[3].metric(
-                "Verified event recall", ci_text(verified.get("rate"), verified.get("ci"))
+                "Verified event recall",
+                ci_text(verified.get("rate"), verified.get("ci")),
             )
             if calendar.get("positives_lost_at"):
                 st.caption(
@@ -424,18 +418,10 @@ def show_single() -> None:
             st.error(exc.detail)
 
 
-leaderboard_tab, comparison_tab, single_tab = st.tabs(
-    ["Leaderboard", "Comparison", "Single run"], key="home_tab", on_change="rerun"
+shared.lazy_tabs(
+    "home_tab",
+    {"Leaderboard": show_leaderboard, "Comparison": show_comparison, "Single run": show_single},
 )
-if leaderboard_tab.open:
-    with leaderboard_tab:
-        show_leaderboard()
-if comparison_tab.open:
-    with comparison_tab:
-        show_comparison()
-if single_tab.open:
-    with single_tab:
-        show_single()
 
 st.divider()
 how_it_fits()

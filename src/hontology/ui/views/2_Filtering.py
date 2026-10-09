@@ -19,28 +19,16 @@ from datetime import datetime
 import streamlit as st
 
 from hontology.ui import shared
-from hontology.ui.client import Api, ApiError
+from hontology.ui.client import ApiError
 
-st.set_page_config(page_title="Filtering", page_icon="🧹", layout="wide")
-
-api = Api()
-
-st.title("🧹 Filtering")
-st.caption(
-    "Which feed articles are worth downloading. Classes link to the codes the feeds "
-    "tag articles with (CAMEO event codes, GKG themes), and the optional "
+api, ontologies = shared.page(
+    "Filtering",
+    "🧹",
+    caption="Which feed articles are worth downloading. Classes link to the codes the "
+    "feeds tag articles with (CAMEO event codes, GKG themes), and the optional "
     "pre-download filter fetches only articles whose codes link to some class. "
-    "Semantic retrieval does not use the links, so an ontology can do without any."
+    "Semantic retrieval does not use the links, so an ontology can do without any.",
 )
-
-if not api.healthy():
-    st.error(f"The API is not reachable at `{api.base_url}`. Start it with `make api`.")
-    st.stop()
-
-ontologies = api.list_ontologies()
-if not ontologies:
-    st.info("No ontologies yet. Create one on the **Ontology** page first.")
-    st.stop()
 
 ontology = shared.ontology(api, ontologies)
 ontology_id = ontology["id"]
@@ -95,20 +83,9 @@ def code_label(code: dict) -> str:
 
 def class_options() -> dict[str, int]:
     """Classes in tree order for a hierarchy, by name otherwise, with link counts."""
-    by_name = {c["name"]: c for c in classes}
-    order: list[tuple[int, dict]] = []
-
-    def visit(concept: dict, depth: int) -> None:
-        order.append((depth, concept))
-        for child in concept["children"]:
-            visit(by_name[child], depth + 1)
-
-    for concept in classes:
-        if not concept["parents"]:
-            visit(concept, 0)
     options: dict[str, int] = {}
     seen: set[int] = set()
-    for depth, concept in order:
+    for depth, concept in shared.tree_order(classes):
         if concept["id"] in seen:
             continue
         seen.add(concept["id"])
@@ -160,20 +137,12 @@ def class_links(concept: dict) -> None:
             f"{code_label(code)}{shown} · {origin}", value=link is not None, key=key
         )
         if checked != (link is not None):
-            try:
-                api.set_link(concept["id"], code["id"], linked=checked)
-                st.rerun()
-            except ApiError as exc:
-                st.error(exc.detail)
+            shared.act(api.set_link, concept["id"], code["id"], linked=checked)
         proposal = link is not None and not link["manual"]
         if proposal and cols[1].button(
             "Confirm", key=f"keep_{key}", help="Make it a hand-made link."
         ):
-            try:
-                api.set_link(concept["id"], code["id"], linked=True)
-                st.rerun()
-            except ApiError as exc:
-                st.error(exc.detail)
+            shared.act(api.set_link, concept["id"], code["id"], linked=True)
     if similarity_run is not None:
         st.caption(
             f"Candidates are the closest {SYSTEMS[similarity_run['system']]} in "
@@ -463,20 +432,12 @@ def show_evaluation() -> None:
     st.dataframe(rows, hide_index=True)
 
 
-links_tab, preview_tab, evaluation_tab, codebooks_tab = st.tabs(
-    ["Links", "What it keeps", "Evaluation", "Codebooks"],
-    key="filtering_tab",
-    on_change="rerun",
+shared.lazy_tabs(
+    "filtering_tab",
+    {
+        "Links": show_links,
+        "What it keeps": show_preview,
+        "Evaluation": show_evaluation,
+        "Codebooks": show_codebooks,
+    },
 )
-if links_tab.open:
-    with links_tab:
-        show_links()
-if preview_tab.open:
-    with preview_tab:
-        show_preview()
-if evaluation_tab.open:
-    with evaluation_tab:
-        show_evaluation()
-if codebooks_tab.open:
-    with codebooks_tab:
-        show_codebooks()

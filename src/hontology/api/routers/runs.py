@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from hontology.api.routers._common import run_or_404
 from hontology.db.models import Run
 from hontology.db.session import get_db, session_scope
 from hontology.evalkit import config as run_config
@@ -176,18 +177,14 @@ def config_options():
 @router.get("/{run_id}/config")
 def run_config_of(run_id: int, db: Session = Depends(get_db)):
     """A run's stored config, to start another from."""
-    run = db.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no run with id {run_id}")
+    run = run_or_404(db, run_id)
     return run.config or {}
 
 
 @router.get("/{run_id}", response_model=RunOut)
 def get_run(run_id: int, db: Session = Depends(get_db)):
     """Poll a run's status, stage and progress."""
-    run = db.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no run with id {run_id}")
+    run = run_or_404(db, run_id)
     return RunOut.of(run)
 
 
@@ -199,9 +196,7 @@ def resume_run(
     db: Session = Depends(get_db),
 ):
     """Continue a run, skipping pairs already judged."""
-    run = db.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no run with id {run_id}")
+    run = run_or_404(db, run_id)
 
     background.add_task(
         _execute_in_background,
@@ -216,7 +211,5 @@ def resume_run(
 @router.get("/{run_id}/manifest")
 def run_manifest(run_id: int, db: Session = Depends(get_db)):
     """The full provenance record: config, resolved keys, and the infrastructure used."""
-    run = db.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no run with id {run_id}")
+    run = run_or_404(db, run_id)
     return run.manifest or {"config": run.config}

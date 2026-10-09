@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from hontology.api.routers._common import csv_response, run_or_404, truth_or_404
+from hontology.api.routers.runs import RunOut
 from hontology.db.models import Run
 from hontology.db.session import get_db
 from hontology.evalkit import compare as compare_service
@@ -17,24 +19,9 @@ from hontology.evalkit import warehouse
 router = APIRouter(prefix="/eval", tags=["evaluation"])
 
 
-@router.get("/runs")
+@router.get("/runs", response_model=list[RunOut])
 def list_runs(db: Session = Depends(get_db)):
-    return [
-        {
-            "id": run.id,
-            "name": run.name,
-            "status": run.status,
-            "ontology_id": run.ontology_id,
-            "ontology_version": run.ontology_version,
-            "candidates_key": run.candidates_key,
-            "judge_key": run.judge_key,
-            "stage": run.stage,
-            "progress_done": run.progress_done,
-            "progress_total": run.progress_total,
-            "error": run.error,
-        }
-        for run in db.scalars(select(Run).order_by(Run.id.desc()))
-    ]
+    return [RunOut.of(run) for run in db.scalars(select(Run).order_by(Run.id.desc()))]
 
 
 @router.get("/runs/{run_id}")
@@ -120,14 +107,7 @@ def _manifest(path: str) -> dict:
 
 def _labels(db: Session, ontology_id: int, annotator: str | None) -> dict | None:
     """None for human labels, which the sample scoring reads from the bank itself."""
-    from hontology.retrieve import tuning
-
-    if annotator is None:
-        return None
-    try:
-        return tuning.truth(db, ontology_id, annotator)
-    except LookupError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    return None if annotator is None else truth_or_404(db, ontology_id, annotator)
 
 
 def _sample(db: Session, run_id: int, manifest_path: str, annotator: str | None) -> dict:
@@ -135,9 +115,7 @@ def _sample(db: Session, run_id: int, manifest_path: str, annotator: str | None)
     from hontology.evalkit import arms
 
     record = _manifest(manifest_path)
-    run = db.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"run {run_id} does not exist")
+    run = run_or_404(db, run_id)
     labels = _labels(db, run.ontology_id, annotator)
     result = arms.run_on_sample(db, run_id, record, labels=labels)
     for error in result.get("errors", []):
@@ -222,21 +200,14 @@ def run_detections(
     """What the pipeline found, as JSON."""
     from hontology.evalkit import detections as detections_module
 
+    found = detections_module.events if events else detections_module.detections
     try:
-        if events:
-            rows = [
-                e.as_row()
-                for e in detections_module.events(
-                    db, run_id, min_confidence=min_confidence, verified_only=verified_only
-                )
-            ]
-        else:
-            rows = [
-                d.as_row()
-                for d in detections_module.detections(
-                    db, run_id, min_confidence=min_confidence, verified_only=verified_only
-                )
-            ]
+        rows = [
+            row.as_row()
+            for row in found(
+                db, run_id, min_confidence=min_confidence, verified_only=verified_only
+            )
+        ]
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return {"rows": rows, "summary": detections_module.summary(db, run_id)}
@@ -262,11 +233,7 @@ def run_detections_csv(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
     kind = "events" if events else "detections"
-    return PlainTextResponse(
-        body,
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{kind}-run{run_id}.csv"'},
-    )
+    return csv_response(body, f"{kind}-run{run_id}.csv")
 
 
 # --- Live leaderboard, comparison and single-run summary ---------------------
@@ -326,9 +293,7 @@ def compare_arms(payload: ArmsIn, db: Session = Depends(get_db)):
     each run's own view, since they take minutes."""
     from hontology.evalkit import arms, arms_report
 
-    baseline = db.get(Run, payload.baseline)
-    if baseline is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"run {payload.baseline} does not exist")
+    baseline = run_or_404(db, payload.baseline)
     report = arms.compare_arms(
         db,
         payload.baseline,

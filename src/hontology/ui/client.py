@@ -412,13 +412,7 @@ class Api:
         )
 
     def export_labels(self, ontology_id: int) -> str:
-        response = httpx.get(
-            f"{self.base_url}/labels/export",
-            params={"ontology_id": ontology_id},
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        return response.text
+        return self._request("GET", "/labels/export", params={"ontology_id": ontology_id}) or ""
 
     def import_labels(
         self, ontology_id: int, csv_text: str, *, overwrite: bool = False
@@ -529,10 +523,9 @@ class Api:
         )
 
     def detections_csv(self, run_id: int, *, events: bool = False) -> str:
-        response = httpx.get(
-            f"{self.base_url}/eval/runs/{run_id}/detections.csv",
-            params={"events": events},
-            timeout=self.timeout,
+        return (
+            self._request(
+                "GET", f"/eval/runs/{run_id}/detections.csv", params={"events": events}
+            )
+            or ""
         )
-        response.raise_for_status()
-        return response.text

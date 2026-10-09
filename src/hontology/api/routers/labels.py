@@ -10,12 +10,14 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from hontology.api.routers._common import csv_response
 from hontology.db.base import among
 from hontology.db.models import Concept, Document
 from hontology.db.session import get_db
 from hontology.evalkit import document_labels, label_io
 from hontology.evalkit import labels as label_service
 from hontology.evalkit import queue as queue_service
+from hontology.evalkit.document_labels import document_label_status
 from hontology.ontology import hierarchy
 
 router = APIRouter(prefix="/labels", tags=["labels"])
@@ -44,6 +46,17 @@ class LabelOut(BaseModel):
     matched: bool
     source: str
     ontology_version: str | None = None
+
+
+def _label_out(label) -> LabelOut:
+    return LabelOut(
+        id=label.id,
+        document_id=label.document_id,
+        concept_id=label.concept_id,
+        matched=label.matched,
+        source=label.source,
+        ontology_version=label.ontology_version,
+    )
 
 
 class ObservationIn(BaseModel):
@@ -89,14 +102,7 @@ def create_label(payload: LabelIn, db: Session = Depends(get_db)):
         label = label_service.upsert_label(db, **payload.model_dump())
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    return LabelOut(
-        id=label.id,
-        document_id=label.document_id,
-        concept_id=label.concept_id,
-        matched=label.matched,
-        source=label.source,
-        ontology_version=label.ontology_version,
-    )
+    return _label_out(label)
 
 
 @router.post("/{label_id}/adjudicate", response_model=LabelOut)
@@ -108,14 +114,7 @@ def adjudicate_label(label_id: int, payload: AdjudicateIn, db: Session = Depends
         )
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-    return LabelOut(
-        id=label.id,
-        document_id=label.document_id,
-        concept_id=label.concept_id,
-        matched=label.matched,
-        source=label.source,
-        ontology_version=label.ontology_version,
-    )
+    return _label_out(label)
 
 
 class PendingOut(BaseModel):
@@ -133,8 +132,6 @@ class PendingOut(BaseModel):
 
 
 def _pending_rows(db: Session, rows, stale_ids: set[int]) -> list[PendingOut]:
-    from hontology.db.models import Concept, Document
-
     out: list[PendingOut] = []
     for label in rows:
         document = db.get(Document, label.document_id)
@@ -220,22 +217,14 @@ class ImportIn(BaseModel):
 @router.get("/export", response_class=PlainTextResponse)
 def export_labels(ontology_id: int, db: Session = Depends(get_db)):
     """All pair labels as CSV. Stale ones are included and flagged, not dropped."""
-    return PlainTextResponse(
-        label_io.export_labels(db, ontology_id),
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="labels-{ontology_id}.csv"'},
-    )
+    return csv_response(label_io.export_labels(db, ontology_id), f"labels-{ontology_id}.csv")
 
 
 @router.get("/observations/export", response_class=PlainTextResponse)
 def export_observations(ontology_id: int, db: Session = Depends(get_db)):
     """Known occurrences as CSV."""
-    return PlainTextResponse(
-        label_io.export_observations(db, ontology_id),
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": f'attachment; filename="observations-{ontology_id}.csv"'
-        },
+    return csv_response(
+        label_io.export_observations(db, ontology_id), f"observations-{ontology_id}.csv"
     )
 
 
@@ -307,9 +296,7 @@ def leaves(ontology_id: int, db: Session = Depends(get_db)):
 @router.post("/documents/status")
 def documents_status(payload: DocumentStatusIn, db: Session = Depends(get_db)):
     """Each document's labelling state, in the order asked."""
-    status_by_id = document_labels.document_label_status(
-        db, payload.ontology_id, payload.document_ids
-    )
+    status_by_id = document_label_status(db, payload.ontology_id, payload.document_ids)
     documents = {
         d.id: d
         for d in db.scalars(select(Document).where(among(Document.id, payload.document_ids)))
@@ -333,7 +320,7 @@ def document_for_labelling(document_id: int, ontology_id: int, db: Session = Dep
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"document {document_id} not found")
-    state = document_labels.document_label_status(db, ontology_id, [document_id])[document_id]
+    state = document_label_status(db, ontology_id, [document_id])[document_id]
     return {
         "document_id": document.id,
         "url": document.url,

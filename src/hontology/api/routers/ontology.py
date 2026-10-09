@@ -35,6 +35,13 @@ def _handle(exc: Exception) -> HTTPException:
     return HTTPException(status.HTTP_409_CONFLICT, str(exc))
 
 
+def _ontology_or_404(db: Session, ontology_id: int):
+    try:
+        return service.get_ontology(db, ontology_id)
+    except service.NotFound as exc:
+        raise _handle(exc) from exc
+
+
 @router.get("", response_model=list[OntologyOut])
 def list_ontologies(db: Session = Depends(get_db)):
     return service.list_ontologies(db)
@@ -52,10 +59,7 @@ def create_ontology(payload: OntologyIn, db: Session = Depends(get_db)):
 
 @router.get("/{ontology_id}", response_model=OntologyOut)
 def get_ontology(ontology_id: int, db: Session = Depends(get_db)):
-    try:
-        return service.get_ontology(db, ontology_id)
-    except service.NotFound as exc:
-        raise _handle(exc) from exc
+    return _ontology_or_404(db, ontology_id)
 
 
 @router.delete("/{ontology_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -71,10 +75,7 @@ def delete_ontology(ontology_id: int, db: Session = Depends(get_db)):
 
 @router.get("/{ontology_id}/concepts", response_model=list[ConceptOut])
 def list_concepts(ontology_id: int, db: Session = Depends(get_db)):
-    try:
-        service.get_ontology(db, ontology_id)
-    except service.NotFound as exc:
-        raise _handle(exc) from exc
+    _ontology_or_404(db, ontology_id)
     return service.list_concepts(db, ontology_id)
 
 
@@ -121,10 +122,7 @@ def get_hierarchy(ontology_id: int, db: Session = Depends(get_db)):
     Read-only on purpose: structure is authored in an OWL editor and arrives by
     import, so there is nothing here to edit it with.
     """
-    try:
-        service.get_ontology(db, ontology_id)
-    except service.NotFound as exc:
-        raise _handle(exc) from exc
+    _ontology_or_404(db, ontology_id)
     concepts = service.list_concepts(db, ontology_id)
     names = {c.id: c.name for c in concepts}
     categories = {c.id: c.name for c in service.list_categories(db, ontology_id)}
@@ -232,10 +230,7 @@ def resolve_snapshot(ontology_id: int, db: Session = Depends(get_db)):
     Safe to call repeatedly: an unchanged ontology keeps returning the same
     version with ``created=false``.
     """
-    try:
-        service.get_ontology(db, ontology_id)
-    except service.NotFound as exc:
-        raise _handle(exc) from exc
+    _ontology_or_404(db, ontology_id)
     ref = snapshots.resolve_current(db, ontology_id)
     return SnapshotOut(
         version=ref.version,
@@ -252,10 +247,7 @@ def list_versions(ontology_id: int, db: Session = Depends(get_db)):
     ``current`` is None when the wording has changed since the last version;
     the next run or label mints the new one, so nothing is minted here.
     """
-    try:
-        service.get_ontology(db, ontology_id)
-    except service.NotFound as exc:
-        raise _handle(exc) from exc
+    _ontology_or_404(db, ontology_id)
     rows = db.scalars(
         select(OntologySnapshot)
         .where(OntologySnapshot.ontology_id == ontology_id)
@@ -279,8 +271,5 @@ def lint_ontology(ontology_id: int, db: Session = Depends(get_db)):
     """
     from hontology.ontology import lint as lint_module
 
-    try:
-        service.get_ontology(db, ontology_id)
-    except service.NotFound as exc:
-        raise _handle(exc) from exc
+    _ontology_or_404(db, ontology_id)
     return lint_module.lint(db, ontology_id)
