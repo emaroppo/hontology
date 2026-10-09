@@ -58,6 +58,7 @@ test-db-reset: ## Drop the test database so the next run recreates it
 lint: ## Lint and type-check
 	$(VENV)/bin/ruff check src tests
 	$(VENV)/bin/ruff format --check src tests
+	$(VENV)/bin/mypy src
 
 .PHONY: fmt
 fmt: ## Autoformat

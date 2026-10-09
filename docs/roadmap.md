@@ -5,7 +5,7 @@ Where [hontology](../README.md) stands.
 ## Built and in progress
 
 - [x] Schema: ontology, taxonomy, vectors, corpus, runs, labels, snapshots
-- [x] Pluggable LLM provider layer (Ollama, llama.cpp; Anthropic behind the same protocol)
+- [x] Pluggable LLM provider layer (Ollama and llama.cpp locally, OpenRouter hosted)
 - [x] Ontology service, import/export, snapshots, API and editor UI
 - [x] CAMEO ingest, embeddings, similarity review
 - [x] GDELT ingest: watermarking, catch-up, backfill, optional continuous watcher
