@@ -328,7 +328,7 @@ def documents_status(payload: DocumentStatusIn, db: Session = Depends(get_db)):
 @router.get("/documents/{document_id}")
 def document_for_labelling(document_id: int, ontology_id: int, db: Session = Depends(get_db)):
     """One document's text and its current labels."""
-    from hontology.judge.run import _body
+    from hontology.retrieve.candidates import document_body
 
     document = db.get(Document, document_id)
     if document is None:
@@ -338,7 +338,7 @@ def document_for_labelling(document_id: int, ontology_id: int, db: Session = Dep
         "document_id": document.id,
         "url": document.url,
         "title": document.title,
-        "body": _body(document, DOCUMENT_BODY_LIMIT),
+        "body": document_body(document, DOCUMENT_BODY_LIMIT),
         **state,
     }
 

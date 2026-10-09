@@ -10,12 +10,11 @@ Note which fields are *behavior* and which are *transport*. ``provider`` and
 ``model`` and everything in :class:`GenerationConfig` change the output, so they
 belong in a run's config hash. Hosts, ports, API keys and timeouts do not: the
 same request served from a different machine is the same experiment.
-:meth:`GenerationConfig.hashable` draws that line explicitly.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 
@@ -23,7 +22,7 @@ from typing import Protocol, runtime_checkable
 class GenerationConfig:
     """Decoding settings. Every field here is behavior and is hashed.
 
-    ``timeout_s`` is the one exception and is excluded from :meth:`hashable`:
+    ``timeout_s`` is the one exception and is not read from a run's config:
     waiting longer for the same tokens does not make a different experiment.
     """
 
@@ -33,10 +32,15 @@ class GenerationConfig:
     seed: int | None = None
     timeout_s: float = 600.0
 
-    def hashable(self) -> dict:
-        d = asdict(self)
-        d.pop("timeout_s")
-        return d
+    @classmethod
+    def from_config(cls, generation: dict) -> GenerationConfig:
+        """The decoding settings of a run config's ``judge.generation`` section."""
+        return cls(
+            temperature=generation["temperature"],
+            context_window=generation["context_window"],
+            max_output_tokens=generation["max_output_tokens"],
+            seed=generation["seed"],
+        )
 
 
 @dataclass(frozen=True)

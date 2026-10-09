@@ -1,0 +1,130 @@
+# Every word the judge reads that is not the article or the ontology.
+#
+# How the pieces are put together, and which prompt id uses which, is in
+# prompts.py. Strings are TOML literal strings: exactly what the model sees,
+# nothing escaped. `{n}` and `{max_events}` are filled in when a prompt is built.
+#
+# Append-only. A prompt id's wording is part of every verdict recorded under it,
+# and a run's prompt fingerprint is taken from the rendered text, so changing a
+# string here changes what existing ids mean. Add new strings for a new id instead.
+
+# The most events one extraction call may list.
+max_events = 8
+
+[system]
+
+# strict_v1, and the leaves of every later arm.
+#
+# The exclusion list is the substance. A classifier told only "does this article
+# evidence this concept" reliably says yes to articles about an event being
+# *planned*, *demanded*, *feared*, or *averted* — all of which are about the
+# concept without being instances of it. Naming those cases explicitly is the
+# single biggest precision lever available before touching the model.
+strict = '''
+You decide whether a news article reports a real occurrence of a concept. A match needs the article to show that an instance of the concept has actually taken place; being about the concept is not enough.
+The concept's definition and its counts-when / does-not-count-when criteria are authoritative. Its name is only a label.
+Return matched=false in each of these cases:
+  NOT YET: the event is scheduled, anticipated, proposed, or announced as an intention.
+  ONLY URGED: someone calls for it, warns it may come, or threatens it.
+  FELL SHORT: it was attempted, but the outcome the concept requires did not follow.
+  DENIED: the article says it did not happen, or that it was prevented.
+  BACKGROUND: an earlier occurrence cited for context, a hypothetical, or an incidental mention.
+  NOISE: the relevant words appear only in menus, boilerplate or a paywall notice.
+Copy the evidence exactly from the article text; do not summarise it or make it up. Give confidence as how likely your answer is to be right, from 0 to 1.
+Output one JSON object and nothing else.'''
+
+# lenient_v1. Deliberately omits the exclusion list, as a baseline: if strict
+# does not beat this on precision, the extra instructions are not earning their
+# tokens.
+lenient = '''
+You decide whether a news article reports an occurrence of a concept. Output one JSON object and nothing else.'''
+
+# hier_batch_v2's parent classes. A parent is a routing step, not a finding: a
+# wrong yes costs one more call, a wrong no loses every leaf beneath it. The
+# strict prompt leans the other way, which is right for leaves and wrong for
+# routing, so parents are asked as questions, leaning to yes.
+route = '''
+You route a news article through a classification of supply-chain events. For each question, decide whether the article concerns it at all.
+Answer matched=true if any part of the article reports, describes, warns of or threatens what the question asks about, even briefly or in passing, and whether it has happened, is under way or is only expected. More specific classes are judged separately and strictly after this step, so when in doubt, answer true.
+Answer matched=false only when the article has nothing to do with the question, or the relevant words appear only in menus, boilerplate or a paywall notice.
+Copy the evidence exactly from the article text; do not summarise it or make it up. Give confidence as how likely your answer is to be right, from 0 to 1.
+Output one JSON object and nothing else.'''
+
+# extract_v1: listing an article's events, once.
+extract = '''
+You read a news article and list the distinct events it reports that could disrupt the production, movement, supply or trade of goods, or that warn, threaten or announce such a disruption.
+List each event once. An occurrence reported several times, or confirmed or described again later in the article, is one event. Different measures, attacks, closures, strikes or warnings are different events, even when related: a tariff imposed and further tariffs threatened are two events, and a reaction to an event, such as a complaint, a retaliatory measure or a closure in response, is an event of its own.
+Include events that happened long ago if the article mentions them. Leave out events with nothing to do with goods, and general commentary that reports no specific event.
+For each event give: description, one or two sentences saying what happened, to what, by whom and where, stating only what the article reports and never adding what the event might affect; evidence, the passage reporting it copied exactly from the article; status, one of happened (it has taken effect or is under way), threatened (it is announced, proposed, threatened, warned of or expected), ended; country, the two-letter ISO code of the country where the event physically takes place, not of whoever causes it, or empty.
+List at most {max_events} events, the most specific first. If there are none, return an empty list.
+Output one JSON object and nothing else.'''
+
+# extract_v1: the top of the hierarchy separates the event's kind from "other",
+# so it leans neither way.
+event_top = '''
+You classify one event, found in a news article, by its kind. For each question, decide whether the event is an instance of what the question asks about, whether it has happened, is under way or is only expected. Answer each question independently.
+Output one JSON object and nothing else.'''
+
+# extract_v1: below the top, a routing step leans to yes, as in hier_batch_v2.
+event_route = '''
+You route one event, found in a news article, through a classification of supply-chain events. For each question, decide whether the event could be an instance of what the question asks about.
+Answer matched=true if it plausibly could, whether it has happened, is under way or is only expected. More specific classes are judged strictly after this step, so when in doubt, answer true. Answer matched=false only when the event has nothing to do with the question.
+Output one JSON object and nothing else.'''
+
+# extract_v1: choosing at most one leaf for an event.
+choose = '''
+You decide which one concept, if any, an event is a real occurrence of. The event was found in a news article; its description, status and the passage reporting it are given.
+The concepts' definitions and their counts-when / does-not-count-when criteria are authoritative. Their names are only labels.
+Choose the single concept the event is an instance of. One event is one occurrence: never choose a concept for a consequence or a side of the event rather than the event itself. If no concept fits the definitions, choose none.
+Copy the evidence exactly from the passage given; do not summarise it. Give confidence as how likely your answer is to be right, from 0 to 1.
+Output one JSON object and nothing else.'''
+
+[shape]
+
+pair = '''
+Output format, a single JSON object:
+{"matched": <true|false>, "confidence": <0..1>, "country": "<two-letter ISO country code for where it happened; empty when matched is false>", "evidence": "<the exact passage copied from the article; empty when matched is false>"}'''
+
+# Every requested concept must come back: one the model leaves out is filled in
+# as a zero-confidence non-match (see judge.parse.parse_batch).
+batch = '''
+Output format, a single JSON object:
+{"verdicts": [
+  {"concept_id": <int>, "matched": <true|false>, "confidence": <0..1>, "country": "<two-letter ISO country code, or empty>", "evidence": "<the exact passage from the article, or empty>"},
+  ... one entry for EVERY concept listed above ...
+]}'''
+
+extract = '''
+Output format, a single JSON object:
+{"events": [
+  {"description": "<one or two sentences>", "evidence": "<exact passage>", "status": "<happened|threatened|ended>", "country": "<ISO code or empty>"},
+  ...
+]}'''
+
+# Routing an event needs only the answer: no evidence, no country, no confidence.
+event_route = '''
+Output format, a single JSON object:
+{"verdicts": [{"concept_id": <int>, "matched": <true|false>}, ... one entry for EVERY question listed above ...]}'''
+
+choose = '''
+Output format, a single JSON object:
+{"concept_id": <the chosen concept_id, or null for none>, "confidence": <0..1>, "evidence": "<exact passage, or empty>"}'''
+
+[text]
+
+# Before the concepts of a batched call.
+batch = '''
+You will judge EACH of the following {n} concepts independently against the article above. A concept matching does not make another more or less likely.'''
+
+# Before the routing questions about an article.
+route = '''
+Answer EACH of the following {n} questions independently against the article above.'''
+
+# Before the routing questions about one event.
+event_route = '''
+Answer EACH of the following {n} questions independently for the event above.'''
+
+# At the top level an event may also be "other": none of the classes. An event
+# that nothing but this accepts is rejected there, with no further calls.
+other_question = '''
+Is the event none of the above: something that does not disrupt, threaten or warn of disruption to producing, moving, supplying or trading goods?'''

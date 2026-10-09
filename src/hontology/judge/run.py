@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -27,35 +26,29 @@ from sqlalchemy.orm import Session
 from hontology.config import get_settings
 from hontology.db.models import Candidate, Concept, Document, Locus, Run, Verdict
 from hontology.judge import prompts
+from hontology.judge.batched import judge_batched, judge_hierarchical
+from hontology.judge.context import NO_BODY, JudgeStats, Judging
+from hontology.judge.extract import judge_extract
+from hontology.judge.parse import AGGREGATIONS, aggregate, parse_batch, parse_verdict
 from hontology.judge.providers.base import GenerationConfig, ProviderError
 from hontology.judge.providers.llamacpp import LlamaCppChatProvider
 from hontology.judge.providers.ollama import OllamaChatProvider
 from hontology.judge.providers.openrouter import OpenRouterChatProvider
-from hontology.ontology import hierarchy
+from hontology.retrieve import embed
+
+# Readers live in judge.parse; these names are kept here for existing callers.
+__all__ = [
+    "AGGREGATIONS",
+    "JudgeStats",
+    "aggregate",
+    "get_provider",
+    "judge_run",
+    "liveness",
+    "parse_batch",
+    "parse_verdict",
+]
 
 log = logging.getLogger(__name__)
-
-
-@dataclass
-class JudgeStats:
-    total: int = 0
-    judged: int = 0
-    skipped: int = 0
-    matched: int = 0
-    errors: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-
-    def as_dict(self) -> dict:
-        return {
-            "total": self.total,
-            "judged": self.judged,
-            "skipped_already_done": self.skipped,
-            "matched": self.matched,
-            "errors": self.errors,
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-        }
 
 
 def get_provider(name: str, routing: dict | None = None):
@@ -71,134 +64,6 @@ def get_provider(name: str, routing: dict | None = None):
     raise ProviderError(f"unknown judge provider {name!r}")
 
 
-def parse_verdict(raw: str) -> dict:
-    """Parse a model response into the canonical fields.
-
-    Falls back to the outermost ``{...}`` block: models reliably wrap JSON in
-    prose or fences even when told not to, and discarding an otherwise good
-    answer over a stray "Here you go:" would be throwing away real work.
-    """
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        start, end = raw.find("{"), raw.rfind("}")
-        if start == -1 or end <= start:
-            raise
-        payload = json.loads(raw[start : end + 1])
-
-    return _coerce(payload)
-
-
-AGGREGATIONS = ("majority", "unanimous", "any")
-
-
-def aggregate(samples: list[dict], how: str = "majority") -> dict:
-    """Combine repeated samples into one verdict.
-
-    The vote fraction replaces the model's self-reported confidence, because it
-    is the more honest signal: a model asked five times and answering yes three
-    times is genuinely uncertain in a way its own stated 0.9 does not capture.
-
-    The three rules trade precision against recall explicitly:
-
-    - ``majority`` — the plurality answer. Balanced, and the default.
-    - ``unanimous`` — matched only if *every* sample says so. Fewer, surer
-      matches; the choice when a false positive is expensive.
-    - ``any`` — matched if *any* sample says so. Catches concepts the model
-      only occasionally notices, at the cost of precision.
-
-    The vote fraction is reported unchanged under all three, so a verdict's
-    uncertainty stays visible however the rule resolved it.
-    """
-    if how not in AGGREGATIONS:
-        raise ValueError(f"unknown aggregation {how!r}; expected one of {AGGREGATIONS}")
-
-    if len(samples) == 1:
-        return samples[0] | {"vote_fraction": 1.0}
-
-    positives = sum(1 for s in samples if bool(s["matched"]))
-    if how == "unanimous":
-        winner = positives == len(samples)
-    elif how == "any":
-        winner = positives > 0
-    else:
-        winner = positives * 2 > len(samples)
-
-    # Always the share that agreed with the *reported* verdict.
-    agreeing = positives if winner else len(samples) - positives
-    fraction = agreeing / len(samples)
-    representative = next((s for s in samples if bool(s["matched"]) == winner), samples[0])
-
-    return representative | {
-        "matched": winner,
-        "confidence": fraction,
-        "vote_fraction": fraction,
-    }
-
-
-def parse_batch(raw: str, expected_concept_ids: list[int]) -> dict[int, dict]:
-    """Parse one batched response into ``{concept_id: verdict}``.
-
-    Every requested concept gets an entry. A model that omits one would
-    otherwise silently shrink the denominator — the pair would simply vanish
-    rather than count as a miss — so anything absent is filled with a
-    zero-confidence non-match and the omission is visible in the counts.
-    """
-    payload = json.loads(raw) if raw.strip().startswith("{") else None
-    if payload is None:
-        start, end = raw.find("{"), raw.rfind("}")
-        if start == -1 or end <= start:
-            raise json.JSONDecodeError("no JSON object found", raw, 0)
-        payload = json.loads(raw[start : end + 1])
-
-    entries = payload.get("verdicts")
-    if not isinstance(entries, list):
-        raise json.JSONDecodeError("no 'verdicts' array in response", raw, 0)
-
-    by_concept: dict[int, dict] = {}
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        raw_id = entry.get("concept_id")
-        if raw_id is None:
-            continue
-        try:
-            concept_id = int(raw_id)
-        except (TypeError, ValueError):
-            continue
-        if concept_id not in expected_concept_ids:
-            # The model invented a concept; ignore rather than store a row that
-            # references nothing.
-            continue
-        by_concept[concept_id] = _coerce(entry) | {"omitted": False}
-
-    for concept_id in expected_concept_ids:
-        by_concept.setdefault(
-            concept_id,
-            {
-                "matched": False,
-                "confidence": 0.0,
-                "country": "",
-                "evidence": "",
-                "omitted": True,
-            },
-        )
-    return by_concept
-
-
-def _coerce(payload: dict) -> dict:
-    try:
-        confidence = float(payload.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        confidence = 0.0
-    return {
-        "matched": bool(payload.get("matched", False)),
-        "confidence": max(0.0, min(1.0, confidence)),
-        "country": str(payload.get("country") or "").strip().upper(),
-        "evidence": str(payload.get("evidence") or "").strip(),
-    }
-
-
 def _already_judged(session: Session, run_id: int) -> set[tuple[int, int]]:
     return {
         (document_id, concept_id)
@@ -206,14 +71,6 @@ def _already_judged(session: Session, run_id: int) -> set[tuple[int, int]]:
             select(Verdict.document_id, Verdict.concept_id).where(Verdict.run_id == run_id)
         )
     }
-
-
-def _body(document: Document, limit: int) -> str | None:
-    settings = get_settings()
-    if not document.body_path:
-        return None
-    path = settings.scrape_cache_dir / document.body_path
-    return path.read_text(encoding="utf-8")[:limit] if path.exists() else None
 
 
 def judge_run(
@@ -236,16 +93,6 @@ def judge_run(
     """
     judge_config = config["judge"]
     template = prompts.get(judge_config["prompt_id"])
-    provider = get_provider(judge_config["provider"], routing=judge_config.get("routing"))
-    model = judge_config["model"]
-    samples = max(1, judge_config["samples"])
-
-    generation = GenerationConfig(
-        temperature=judge_config["generation"]["temperature"],
-        context_window=judge_config["generation"]["context_window"],
-        max_output_tokens=judge_config["generation"]["max_output_tokens"],
-        seed=judge_config["generation"]["seed"],
-    )
 
     query = select(Candidate).where(Candidate.run_id == run_id, Candidate.selected.is_(True))
     if document_ids is not None:
@@ -256,80 +103,52 @@ def judge_run(
         else (Candidate.document_id, Candidate.concept_id)
     )
     candidates = list(session.scalars(query.order_by(*order)))
+
+    judging = Judging(
+        session=session,
+        run_id=run_id,
+        template=template,
+        provider=get_provider(judge_config["provider"], routing=judge_config.get("routing")),
+        judge_config=judge_config,
+        generation=GenerationConfig.from_config(judge_config["generation"]),
+        body_limit=judge_body_limit,
+        iso2_to_locus={
+            locus.iso2: locus.id
+            for locus in session.scalars(select(Locus).where(Locus.iso2.is_not(None)))
+            if locus.iso2
+        },
+        stats=JudgeStats(total=len(candidates)),
+    )
+    batch = {"candidates": candidates, "limit": limit, "progress": progress}
+
+    if template.mode in (prompts.EXTRACT, prompts.HIERARCHICAL):
+        run = session.get(Run, run_id)
+        assert run is not None
+        if template.mode == prompts.HIERARCHICAL:
+            return judge_hierarchical(judging, ontology_id=run.ontology_id, **batch)
+        embedder = None
+        if template.leaf_top_k is not None:
+            embed_provider = config.get("candidates", {}).get("embed_provider", "ollama")
+            embedder = embed.get_provider(embed_provider)
+        return judge_extract(judging, ontology_id=run.ontology_id, embedder=embedder, **batch)
+
     done = _already_judged(session, run_id)
-
-    stats = JudgeStats(total=len(candidates))
-    iso2_to_locus: dict[str, int] = {
-        locus.iso2: locus.id
-        for locus in session.scalars(select(Locus).where(Locus.iso2.is_not(None)))
-        if locus.iso2
-    }
-
-    if template.mode == prompts.EXTRACT:
-        from hontology.judge.extract import judge_extract
-        from hontology.retrieve.embed import get_provider as get_embedder
-
-        run = session.get(Run, run_id)
-        assert run is not None
-        return judge_extract(
-            session,
-            run_id,
-            ontology_id=run.ontology_id,
-            candidates=candidates,
-            stats=stats,
-            template=template,
-            provider=provider,
-            judge_config=judge_config,
-            generation=generation,
-            judge_body_limit=judge_body_limit,
-            iso2_to_locus=iso2_to_locus,
-            limit=limit,
-            progress=progress,
-            body_of=_body,
-            share=_share,
-            embedder=(
-                get_embedder(config.get("candidates", {}).get("embed_provider", "ollama"))
-                if template.leaf_top_k is not None
-                else None
-            ),
-        )
-
-    if template.mode == prompts.HIERARCHICAL:
-        run = session.get(Run, run_id)
-        assert run is not None
-        return _judge_hierarchical(
-            session,
-            run_id,
-            ontology_id=run.ontology_id,
-            candidates=candidates,
-            stats=stats,
-            template=template,
-            provider=provider,
-            judge_config=judge_config,
-            generation=generation,
-            judge_body_limit=judge_body_limit,
-            iso2_to_locus=iso2_to_locus,
-            limit=limit,
-            progress=progress,
-        )
-
     if template.mode == prompts.PER_DOCUMENT:
-        return _judge_batched(
-            session,
-            run_id,
-            candidates=candidates,
-            done=done,
-            stats=stats,
-            template=template,
-            provider=provider,
-            judge_config=judge_config,
-            generation=generation,
-            judge_body_limit=judge_body_limit,
-            iso2_to_locus=iso2_to_locus,
-            limit=limit,
-            progress=progress,
-        )
+        return judge_batched(judging, done=done, **batch)
+    return _judge_pairs(judging, done=done, **batch)
 
+
+def _judge_pairs(
+    judging: Judging,
+    *,
+    candidates: list[Candidate],
+    done: set[tuple[int, int]],
+    limit: int | None,
+    progress: object | None,
+) -> dict:
+    """One call per pair, sampled and aggregated as the config says."""
+    session, template, stats = judging.session, judging.template, judging.stats
+    samples = max(1, judging.judge_config["samples"])
     processed = 0
     for candidate in candidates:
         key = (candidate.document_id, candidate.concept_id)
@@ -344,28 +163,18 @@ def judge_run(
         if document is None or concept is None:
             continue
 
-        body = _body(document, judge_body_limit)
+        body = judging.body(document)
         if not body:
             # No usable text: record it rather than silently dropping the pair,
             # so the denominator stays honest.
             session.add(
-                Verdict(
-                    run_id=run_id,
-                    document_id=document.id,
-                    concept_id=concept.id,
-                    provider=judge_config["provider"],
-                    model=model,
-                    prompt_id=template.prompt_id,
-                    mode=template.mode,
-                    samples=samples,
-                    error="no article body available",
-                )
+                judging.verdict(document.id, concept.id, samples=samples, error=NO_BODY)
             )
             stats.errors += 1
             processed += 1
             continue
 
-        prompt = template.build_pair(document, concept, body, judge_body_limit)
+        prompt = template.build_pair(document, concept, body, judging.body_limit)
         parsed_samples: list[dict] = []
         reasoning = ""
         latency = 0.0
@@ -375,66 +184,47 @@ def judge_run(
 
         for _ in range(samples):
             try:
-                completion = provider.complete(
-                    system=template.system,
-                    prompt=prompt,
-                    config=generation,
-                    want_json=True,
-                    want_reasoning=judge_config["think"],
-                    model=model,
-                )
+                completion = judging.ask(template.system, prompt)
                 parsed_samples.append(parse_verdict(completion.text))
                 reasoning = completion.reasoning or reasoning
                 latency += completion.latency_s
                 tokens_in += completion.input_tokens or 0
                 tokens_out += completion.output_tokens or 0
-                stats.input_tokens += completion.input_tokens or 0
-                stats.output_tokens += completion.output_tokens or 0
+                stats.spent(completion)
             except (ProviderError, json.JSONDecodeError) as exc:
                 # One bad pair must not end the run.
                 error = f"{type(exc).__name__}: {exc}"
                 break
 
+        cost = {"latency_s": latency, "input_tokens": tokens_in, "output_tokens": tokens_out}
         if parsed_samples and not error:
-            result = aggregate(parsed_samples, judge_config.get("aggregation", "majority"))
+            result = aggregate(
+                parsed_samples, judging.judge_config.get("aggregation", "majority")
+            )
             session.add(
-                Verdict(
-                    run_id=run_id,
-                    document_id=document.id,
-                    concept_id=concept.id,
+                judging.verdict(
+                    document.id,
+                    concept.id,
+                    samples=samples,
                     matched=result["matched"],
                     confidence=result["confidence"],
                     vote_fraction=result["vote_fraction"],
-                    locus_id=iso2_to_locus.get(result["country"]),
+                    locus_id=judging.iso2_to_locus.get(result["country"]),
                     evidence=result["evidence"] or None,
                     reasoning=reasoning or None,
-                    provider=judge_config["provider"],
-                    model=model,
-                    prompt_id=template.prompt_id,
-                    mode=template.mode,
-                    samples=samples,
-                    latency_s=latency,
-                    input_tokens=tokens_in,
-                    output_tokens=tokens_out,
+                    **cost,
                 )
             )
             stats.judged += 1
             stats.matched += int(result["matched"])
         else:
             session.add(
-                Verdict(
-                    run_id=run_id,
-                    document_id=document.id,
-                    concept_id=concept.id,
-                    provider=judge_config["provider"],
-                    model=model,
-                    prompt_id=template.prompt_id,
-                    mode=template.mode,
+                judging.verdict(
+                    document.id,
+                    concept.id,
                     samples=samples,
-                    latency_s=latency,
-                    input_tokens=tokens_in,
-                    output_tokens=tokens_out,
                     error=error or "no samples parsed",
+                    **cost,
                 )
             )
             stats.errors += 1
@@ -474,363 +264,3 @@ def liveness(session: Session, run_id: int) -> dict:
         "ok": not errored and not unparsed,
         "sample_errors": [str(v.error)[:120] for v in errored[:5]],
     }
-
-
-def _share(total: int | None, parts: int, position: int) -> int:
-    """One pair's share of a call's tokens; the first pair also takes the remainder.
-
-    Splitting with plain integer division drops the remainder on every call, so
-    a run's recorded tokens would fall short of what it actually spent.
-    """
-    whole, remainder = divmod(total or 0, parts)
-    return whole + (remainder if position == 0 else 0)
-
-
-def _judge_call(
-    session: Session,
-    *,
-    document: Document,
-    concepts: list[Concept],
-    body: str,
-    template: prompts.PromptTemplate,
-    provider,
-    judge_config: dict,
-    generation: GenerationConfig,
-    judge_body_limit: int,
-    iso2_to_locus: dict[str, int],
-    common: dict,
-    stats: JudgeStats,
-    routing: bool = False,
-) -> tuple[dict[int, bool | None], int]:
-    """One batched call over *concepts*, writing a verdict for each.
-
-    Returns each concept's answer (None when the call failed) and how many
-    concepts the model left out of its reply. Shared by batched and
-    hierarchical judging, so both ask the judge in exactly the same way.
-    With *routing*, the concepts are parent classes asked as routing questions.
-    """
-    if routing:
-        assert template.build_route is not None and template.route_system is not None
-        prompt = template.build_route(document, concepts, body, judge_body_limit)
-        system = template.route_system
-    else:
-        assert template.build_batch is not None  # guaranteed by PromptTemplate
-        prompt = template.build_batch(document, concepts, body, judge_body_limit)
-        system = template.system
-
-    try:
-        completion = provider.complete(
-            system=system,
-            prompt=prompt,
-            config=generation,
-            want_json=True,
-            want_reasoning=judge_config["think"],
-            model=judge_config["model"],
-        )
-        parsed = parse_batch(completion.text, [c.id for c in concepts])
-        stats.input_tokens += completion.input_tokens or 0
-        stats.output_tokens += completion.output_tokens or 0
-    except (ProviderError, json.JSONDecodeError) as exc:
-        # One bad response costs the whole set — recorded per pair so the
-        # denominator stays honest and liveness catches it.
-        for concept in concepts:
-            session.add(
-                Verdict(
-                    document_id=document.id,
-                    concept_id=concept.id,
-                    error=f"{type(exc).__name__}: {exc}",
-                    **common,
-                )
-            )
-            stats.errors += 1
-        return {concept.id: None for concept in concepts}, 0
-
-    omitted = 0
-    answers: dict[int, bool | None] = {}
-    for position, concept in enumerate(concepts):
-        result = parsed[concept.id]
-        if result.get("omitted"):
-            omitted += 1
-        session.add(
-            Verdict(
-                document_id=document.id,
-                concept_id=concept.id,
-                matched=result["matched"],
-                confidence=result["confidence"],
-                vote_fraction=1.0,
-                locus_id=iso2_to_locus.get(result["country"]),
-                evidence=result["evidence"] or None,
-                reasoning=completion.reasoning or None,
-                # One call served the whole set, so attributing its full cost
-                # to each pair would multiply the real cost.
-                latency_s=completion.latency_s / len(concepts),
-                input_tokens=_share(completion.input_tokens, len(concepts), position),
-                output_tokens=_share(completion.output_tokens, len(concepts), position),
-                **common,
-            )
-        )
-        answers[concept.id] = bool(result["matched"])
-        stats.judged += 1
-        stats.matched += int(result["matched"])
-    return answers, omitted
-
-
-def _judge_hierarchical(
-    session: Session,
-    run_id: int,
-    *,
-    ontology_id: int,
-    candidates: list[Candidate],
-    stats: JudgeStats,
-    template: prompts.PromptTemplate,
-    provider,
-    judge_config: dict,
-    generation: GenerationConfig,
-    judge_body_limit: int,
-    iso2_to_locus: dict[str, int],
-    limit: int | None,
-    progress: object | None,
-) -> dict:
-    """Judge each document top-down through the class hierarchy.
-
-    A document is judged if retrieval selected at least one leaf for it, the
-    same gate the flat arm passes through. The top-level classes are asked in
-    one call; then, round by round, the not-yet-answered children of every class
-    answered yes are asked, one call per sibling set, until nothing new opens.
-
-    - **Each class at most once per document.** A class with two parents
-      answered yes is asked under the first only: a second parent means
-      *either*, so one answer serves both.
-    - **No descent below a failure.** An errored call counts as not positive,
-      so the branch beneath it is left unasked rather than guessed at.
-    - **Leaves under a "no" get no row.** Metrics read them as negatives.
-    - **Resumable.** The descent state is rebuilt from the verdicts already
-      stored, so a restart continues mid-document without re-asking anything.
-    """
-    children = hierarchy.children(session, ontology_id)
-    top = sorted(hierarchy.top_level(session, ontology_id))
-    documents = sorted({c.document_id for c in candidates})
-    stats.total = len(documents)
-    processed = 0
-    calls = 0
-    omitted_total = 0
-
-    common = {
-        "run_id": run_id,
-        "provider": judge_config["provider"],
-        "model": judge_config["model"],
-        "prompt_id": template.prompt_id,
-        "mode": template.mode,
-        "samples": 1,
-    }
-
-    for done_documents, document_id in enumerate(documents, start=1):
-        if limit is not None and processed >= limit:
-            break
-        document = session.get(Document, document_id)
-        if document is None:
-            continue
-        answered: dict[int, bool | None] = {
-            concept_id: (None if error else matched)
-            for concept_id, matched, error in session.execute(
-                select(Verdict.concept_id, Verdict.matched, Verdict.error).where(
-                    Verdict.run_id == run_id, Verdict.document_id == document_id
-                )
-            )
-        }
-        body = _body(document, judge_body_limit)
-
-        while True:
-            sets: list[list[int]] = []
-            queued: set[int] = set()
-            pending_top = [c for c in top if c not in answered]
-            if pending_top:
-                sets.append(pending_top)
-                queued.update(pending_top)
-            for parent in sorted(c for c, yes in answered.items() if yes):
-                below = sorted(
-                    c for c in children.get(parent, ()) if c not in answered and c not in queued
-                )
-                if below:
-                    sets.append(below)
-                    queued.update(below)
-            if not sets:
-                break
-
-            for class_ids in sets:
-                concepts = [
-                    found
-                    for found in (session.get(Concept, cid) for cid in class_ids)
-                    if found is not None
-                ]
-                if not body:
-                    for concept in concepts:
-                        session.add(
-                            Verdict(
-                                document_id=document_id,
-                                concept_id=concept.id,
-                                error="no article body available",
-                                **common,
-                            )
-                        )
-                        stats.errors += 1
-                        answered[concept.id] = None
-                    session.commit()
-                    continue
-                # With routing questions, parents and leaves of one sibling set
-                # are asked in separate calls, so leaves see exactly the prompt
-                # the flat arm uses.
-                groups = (
-                    [
-                        ([c for c in concepts if children.get(c.id)], True),
-                        ([c for c in concepts if not children.get(c.id)], False),
-                    ]
-                    if template.build_route is not None
-                    else [(concepts, False)]
-                )
-                for group, routing in groups:
-                    if not group:
-                        continue
-                    answers, omitted = _judge_call(
-                        session,
-                        document=document,
-                        concepts=group,
-                        body=body,
-                        template=template,
-                        provider=provider,
-                        judge_config=judge_config,
-                        generation=generation,
-                        judge_body_limit=judge_body_limit,
-                        iso2_to_locus=iso2_to_locus,
-                        common=common,
-                        stats=stats,
-                        routing=routing,
-                    )
-                    answered.update(answers)
-                    omitted_total += omitted
-                    processed += len(group)
-                    calls += 1
-                    session.commit()
-
-        if callable(progress):
-            progress(done_documents, len(documents))
-
-    result = stats.as_dict() | {
-        "mode": template.mode,
-        "documents": len(documents),
-        "calls": calls,
-        "omitted_by_model": omitted_total,
-    }
-    log.info("judge (hierarchical): %s", result)
-    return result
-
-
-def _judge_batched(
-    session: Session,
-    run_id: int,
-    *,
-    candidates: list[Candidate],
-    done: set[tuple[int, int]],
-    stats: JudgeStats,
-    template: prompts.PromptTemplate,
-    provider,
-    judge_config: dict,
-    generation: GenerationConfig,
-    judge_body_limit: int,
-    iso2_to_locus: dict[str, int],
-    limit: int | None,
-    progress: object | None,
-) -> dict:
-    """One call per document, judging every candidate concept at once.
-
-    The cost profile is the point: N concepts for one article cost one call and
-    one copy of the body, rather than N calls each re-sending it. What is traded
-    away is isolation — a single malformed response costs every pair for that
-    document, not one — so a failure is recorded against each of them rather than
-    losing them silently.
-
-    Sampling does not apply. Repeating a batch call re-rolls every verdict
-    together, so the votes are not independent and a vote fraction across them
-    would overstate agreement. Batch runs are a single greedy call.
-    """
-    by_document: dict[int, list[Candidate]] = {}
-    for candidate in candidates:
-        if (candidate.document_id, candidate.concept_id) in done:
-            stats.skipped += 1
-            continue
-        by_document.setdefault(candidate.document_id, []).append(candidate)
-
-    processed = 0
-    omitted_total = 0
-
-    for document_id, group in by_document.items():
-        if limit is not None and processed >= limit:
-            break
-
-        document = session.get(Document, document_id)
-        if document is None:
-            continue
-        concepts: list[Concept] = [
-            found
-            for found in (session.get(Concept, c.concept_id) for c in group)
-            if found is not None
-        ]
-        if not concepts:
-            continue
-
-        body = _body(document, judge_body_limit)
-        common = {
-            "run_id": run_id,
-            "provider": judge_config["provider"],
-            "model": judge_config["model"],
-            "prompt_id": template.prompt_id,
-            "mode": template.mode,
-            "samples": 1,
-        }
-
-        if not body:
-            for concept in concepts:
-                session.add(
-                    Verdict(
-                        document_id=document_id,
-                        concept_id=concept.id,
-                        error="no article body available",
-                        **common,
-                    )
-                )
-                stats.errors += 1
-            processed += len(concepts)
-            session.commit()
-            continue
-
-        answers, omitted = _judge_call(
-            session,
-            document=document,
-            concepts=concepts,
-            body=body,
-            template=template,
-            provider=provider,
-            judge_config=judge_config,
-            generation=generation,
-            judge_body_limit=judge_body_limit,
-            iso2_to_locus=iso2_to_locus,
-            common=common,
-            stats=stats,
-        )
-        omitted_total += omitted
-
-        processed += len(concepts)
-        if callable(progress):
-            progress(processed, len(candidates))
-        session.commit()
-
-    result = stats.as_dict() | {
-        "mode": template.mode,
-        "documents": len(by_document),
-        # Concepts the model left out of its array. They count as non-matches so
-        # the denominator holds, but a high number means the batch prompt is
-        # overloaded and the model is dropping items.
-        "omitted_by_model": omitted_total,
-    }
-    log.info("judge (batched): %s", result)
-    return result

@@ -31,7 +31,8 @@ from hontology.db.models import Concept, Document, Run, Verdict
 from hontology.evalkit import config as run_config
 from hontology.judge import prompts
 from hontology.judge.providers.base import GenerationConfig, ProviderError
-from hontology.judge.run import _body, get_provider, parse_verdict
+from hontology.judge.run import get_provider, parse_verdict
+from hontology.retrieve.candidates import document_body
 
 WORDING_FIELDS = ("definition", "inclusion_criteria", "exclusion_criteria")
 
@@ -102,7 +103,7 @@ def render(session: Session, trial: Trial) -> dict:
     if trial.text is not None:
         body = trial.text[:body_limit]
     else:
-        body = _body(document, body_limit) or ""
+        body = document_body(document, body_limit) or ""
     return {
         "system": trial.system if trial.system is not None else template.system,
         "prompt": template.build_pair(document, asked, body, body_limit),
@@ -116,7 +117,6 @@ def ask(session: Session, trial: Trial) -> dict:
     run = session.get(Run, trial.run_id)
     assert run is not None
     judge_config, _ = _judge_config(run)
-    generation = judge_config["generation"]
     provider = get_provider(judge_config["provider"], routing=judge_config.get("routing"))
     out = rendered | {
         "provider": judge_config["provider"],
@@ -127,12 +127,7 @@ def ask(session: Session, trial: Trial) -> dict:
         completion = provider.complete(
             system=rendered["system"],
             prompt=rendered["prompt"],
-            config=GenerationConfig(
-                temperature=generation["temperature"],
-                context_window=generation["context_window"],
-                max_output_tokens=generation["max_output_tokens"],
-                seed=generation["seed"],
-            ),
+            config=GenerationConfig.from_config(judge_config["generation"]),
             want_json=True,
             want_reasoning=judge_config["think"],
             model=judge_config["model"],

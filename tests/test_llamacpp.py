@@ -9,7 +9,6 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from hontology.judge.providers import llamacpp
 from hontology.judge.providers.base import GenerationConfig, ProviderError
 from hontology.judge.providers.llamacpp import LlamaCppChatProvider, model_stem
 from hontology.retrieve import embed
@@ -58,8 +57,8 @@ class FakeServer:
 @pytest.fixture
 def server(monkeypatch):
     fake = FakeServer()
-    monkeypatch.setattr(llamacpp.httpx, "get", fake.get)
-    monkeypatch.setattr(llamacpp.httpx, "post", fake.post)
+    monkeypatch.setattr(httpx, "get", fake.get)
+    monkeypatch.setattr(httpx, "post", fake.post)
     return fake
 
 

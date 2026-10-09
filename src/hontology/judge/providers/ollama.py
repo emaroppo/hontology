@@ -21,14 +21,13 @@ from __future__ import annotations
 
 import time
 
-import httpx
-
 from hontology.judge.providers.base import (
     ChatProvider,
     Completion,
     GenerationConfig,
     ProviderError,
 )
+from hontology.judge.providers.http import get_json, post_json
 
 
 class OllamaChatProvider(ChatProvider):
@@ -78,26 +77,9 @@ class OllamaChatProvider(ChatProvider):
             payload["format"] = "json"
 
         started = time.monotonic()
-        try:
-            response = httpx.post(
-                f"{self.host}/api/generate",
-                json=payload,
-                timeout=config.timeout_s,
-            )
-            response.raise_for_status()
-            body = response.json()
-        except httpx.TimeoutException as exc:
-            raise ProviderError(
-                f"ollama timed out after {config.timeout_s}s", retryable=True
-            ) from exc
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            raise ProviderError(
-                f"ollama returned {status}: {exc.response.text[:300]}",
-                retryable=status >= 500,
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise ProviderError(f"ollama transport error: {exc}", retryable=True) from exc
+        body = post_json(
+            f"{self.host}/api/generate", payload, label="ollama", timeout=config.timeout_s
+        )
 
         text = body.get("response") or ""
         reasoning = body.get("thinking") or ""
@@ -120,22 +102,8 @@ class OllamaChatProvider(ChatProvider):
         )
 
     def health(self) -> str:
-        try:
-            response = httpx.get(f"{self.host}/api/tags", timeout=5.0)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise ProviderError(
-                f"ollama unreachable at {self.host}: {exc}", retryable=True
-            ) from exc
-        names = [m.get("name", "?") for m in response.json().get("models", [])]
+        tags = get_json(
+            f"{self.host}/api/tags", unreachable=f"ollama unreachable at {self.host}"
+        )
+        names = [m.get("name", "?") for m in tags.get("models", [])]
         return f"ollama at {self.host}: {len(names)} model(s) available"
-
-    def available_models(self) -> list[str]:
-        try:
-            response = httpx.get(f"{self.host}/api/tags", timeout=5.0)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise ProviderError(
-                f"ollama unreachable at {self.host}: {exc}", retryable=True
-            ) from exc
-        return sorted(m.get("name", "") for m in response.json().get("models", []))

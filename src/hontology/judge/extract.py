@@ -41,73 +41,16 @@ import logging
 
 import numpy as np
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from hontology.db.models import Candidate, Concept, Document, ExtractedEvent, Verdict
 from hontology.judge import prompts
-from hontology.judge.providers.base import Completion, GenerationConfig, ProviderError
+from hontology.judge.context import NO_BODY, Judging, share
+from hontology.judge.parse import parse_batch, parse_choice, parse_events
+from hontology.judge.providers.base import Completion, ProviderError
 from hontology.ontology import hierarchy
 from hontology.retrieve import embed
 
 log = logging.getLogger(__name__)
-
-STATUSES = ("happened", "threatened", "ended")
-
-
-def parse_events(raw: str, limit: int = prompts.MAX_EVENTS) -> list[dict]:
-    """The events in an extraction reply, cleaned; at most *limit* of them."""
-    payload = _json(raw)
-    entries = payload.get("events")
-    if not isinstance(entries, list):
-        raise json.JSONDecodeError("no 'events' array in response", raw, 0)
-    events: list[dict] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        description = str(entry.get("description") or "").strip()
-        if not description:
-            continue
-        status = str(entry.get("status") or "").strip().lower()
-        country = str(entry.get("country") or "").strip().upper()
-        events.append(
-            {
-                "description": description,
-                "evidence": str(entry.get("evidence") or "").strip(),
-                "status": status if status in STATUSES else "",
-                "country": country if len(country) == 2 else "",
-            }
-        )
-    return events[:limit]
-
-
-def parse_choice(raw: str, allowed: set[int]) -> tuple[int | None, float, str]:
-    """The leaf a choosing reply picked, if it is one of *allowed*."""
-    payload = _json(raw)
-    try:
-        confidence = max(0.0, min(1.0, float(payload.get("confidence", 0.0))))
-    except (TypeError, ValueError):
-        confidence = 0.0
-    evidence = str(payload.get("evidence") or "").strip()
-    chosen = payload.get("concept_id")
-    try:
-        concept_id = int(chosen) if chosen is not None else None
-    except (TypeError, ValueError):
-        concept_id = None
-    # A choice outside the offered classes is no choice.
-    return (concept_id if concept_id in allowed else None), confidence, evidence
-
-
-def _json(raw: str) -> dict:
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        start, end = raw.find("{"), raw.rfind("}")
-        if start == -1 or end <= start:
-            raise
-        payload = json.loads(raw[start : end + 1])
-    if not isinstance(payload, dict):
-        raise json.JSONDecodeError("response is not a JSON object", raw, 0)
-    return payload
 
 
 class _LeafRanker:
@@ -154,25 +97,16 @@ class _Spend:
 
 
 def judge_extract(
-    session: Session,
-    run_id: int,
+    judging: Judging,
     *,
     ontology_id: int,
     candidates: list[Candidate],
-    stats,
-    template: prompts.PromptTemplate,
-    provider,
-    judge_config: dict,
-    generation: GenerationConfig,
-    judge_body_limit: int,
-    iso2_to_locus: dict[str, int],
     limit: int | None,
     progress: object | None,
-    body_of,
-    share,
     embedder=None,
 ) -> dict:
     """Judge each gated document by its events. See the module docstring."""
+    session, template, stats = judging.session, judging.template, judging.stats
     assert template.mode == prompts.EXTRACT
     children = hierarchy.children(session, ontology_id)
     top = sorted(hierarchy.top_level(session, ontology_id))
@@ -197,28 +131,13 @@ def judge_extract(
         )
 
     def call(system: str | None, prompt: str, spend: _Spend) -> Completion:
-        return spend.add(
-            provider.complete(
-                system=system,
-                prompt=prompt,
-                config=generation,
-                want_json=True,
-                want_reasoning=judge_config["think"],
-                model=judge_config["model"],
-            )
-        )
+        return spend.add(judging.ask(system, prompt))
 
-    common = {
-        "run_id": run_id,
-        "provider": judge_config["provider"],
-        "model": judge_config["model"],
-        "prompt_id": template.prompt_id,
-        "mode": template.mode,
-        "samples": 1,
-    }
     documents = sorted({c.document_id for c in candidates})
     written = set(
-        session.scalars(select(Verdict.document_id).where(Verdict.run_id == run_id).distinct())
+        session.scalars(
+            select(Verdict.document_id).where(Verdict.run_id == judging.run_id).distinct()
+        )
     )
     stats.total = len(documents)
     calls = events_total = processed = 0
@@ -234,47 +153,37 @@ def judge_extract(
             continue
         processed += 1
         spend = _Spend()
-        body = body_of(document, judge_body_limit)
-
-        def error_rows(message: str, document_id: int = document_id) -> list[Verdict]:
-            stats.errors += len(top)
-            return [
-                Verdict(document_id=document_id, concept_id=c, error=message, **common)
-                for c in top
-            ]
-
+        body = judging.body(document)
         rows: list[Verdict] = []
         event_rows: list[ExtractedEvent] = []
         if not body:
-            rows = error_rows("no article body available")
+            rows = judging.failed(document_id, top, NO_BODY)
         else:
             try:
                 assert template.build_extract is not None
                 reply = call(
                     template.extract_system,
                     template.build_extract(
-                        document, [concept(c) for c in top], body, judge_body_limit
+                        document, [concept(c) for c in top], body, judging.body_limit
                     ),
                     spend,
                 )
                 events = parse_events(reply.text)
             except (ProviderError, json.JSONDecodeError) as exc:
-                rows = error_rows(f"event extraction failed: {exc}"[:1000])
+                rows = judging.failed(
+                    document_id, top, f"event extraction failed: {exc}"[:1000]
+                )
                 events = None
             if events is not None:
                 rows, event_rows = _classify(
+                    judging,
                     events,
                     document_id=document_id,
-                    run_id=run_id,
                     top=top,
                     children=children,
                     concept=concept,
                     call=call,
                     spend=spend,
-                    template=template,
-                    iso2_to_locus=iso2_to_locus,
-                    common=common,
-                    stats=stats,
                     rank=rank,
                 )
                 events_total += len(events)
@@ -305,24 +214,19 @@ def judge_extract(
 
 
 def _classify(
+    judging: Judging,
     events: list[dict],
     *,
     document_id: int,
-    run_id: int,
     top: list[int],
     children: dict[int, set[int]],
     concept,
     call,
     spend: _Spend,
-    template: prompts.PromptTemplate,
-    iso2_to_locus: dict[str, int],
-    common: dict,
-    stats,
     rank=None,
 ) -> tuple[list[Verdict], list[ExtractedEvent]]:
     """Route each event down the hierarchy and choose at most one leaf for it."""
-    from hontology.judge.run import parse_batch
-
+    template = judging.template
     assert template.build_event_route is not None and template.build_choose is not None
     parent_yes: dict[int, bool] = {}
     weighed: set[int] = set()
@@ -391,10 +295,10 @@ def _classify(
         except (ProviderError, json.JSONDecodeError) as exc:
             error = str(exc)[:1000]
             outcome = "error"
-            stats.errors += 1
+            judging.stats.errors += 1
         event_rows.append(
             ExtractedEvent(
-                run_id=run_id,
+                run_id=judging.run_id,
                 document_id=document_id,
                 ordinal=ordinal,
                 description=event["description"],
@@ -410,32 +314,29 @@ def _classify(
         )
 
     rows = [
-        Verdict(document_id=document_id, concept_id=c, matched=yes, **common)
-        for c, yes in sorted(parent_yes.items())
+        judging.verdict(document_id, c, matched=yes) for c, yes in sorted(parent_yes.items())
     ]
     for leaf in sorted(weighed):
         confidence, evidence, country = chosen.get(leaf, (None, "", ""))
         rows.append(
-            Verdict(
-                document_id=document_id,
-                concept_id=leaf,
+            judging.verdict(
+                document_id,
+                leaf,
                 matched=leaf in chosen,
                 confidence=confidence,
                 evidence=evidence or None,
-                locus_id=iso2_to_locus.get(country) if country else None,
-                **common,
+                locus_id=judging.iso2_to_locus.get(country) if country else None,
             )
         )
     if not rows:
         # No events, or none reached anything: the article is a no at the top,
         # and these rows carry what the extraction cost.
         rows = [
-            Verdict(
-                document_id=document_id,
-                concept_id=c,
+            judging.verdict(
+                document_id,
+                c,
                 matched=False,
                 evidence="no events extracted" if not events else None,
-                **common,
             )
             for c in top
         ]

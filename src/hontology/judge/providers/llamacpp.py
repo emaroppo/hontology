@@ -30,14 +30,13 @@ from __future__ import annotations
 import time
 from pathlib import PurePosixPath
 
-import httpx
-
 from hontology.judge.providers.base import (
     ChatProvider,
     Completion,
     GenerationConfig,
     ProviderError,
 )
+from hontology.judge.providers.http import chat_payload, get_json, post_json, read_chat
 
 
 def headers(api_key: str | None) -> dict[str, str]:
@@ -52,12 +51,12 @@ def model_stem(model_id: str) -> str:
 
 
 def served_models(host: str, api_key: str | None = None) -> list[dict]:
-    try:
-        response = httpx.get(f"{host}/v1/models", headers=headers(api_key), timeout=5.0)
-        response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise ProviderError(f"llama.cpp unreachable at {host}: {exc}", retryable=True) from exc
-    return response.json().get("data", [])
+    models = get_json(
+        f"{host}/v1/models",
+        headers=headers(api_key),
+        unreachable=f"llama.cpp unreachable at {host}",
+    )
+    return models.get("data", [])
 
 
 def resolve_model(host: str, model: str, api_key: str | None = None) -> str:
@@ -94,16 +93,12 @@ class LlamaCppChatProvider(ChatProvider):
 
     def _check_context(self, config: GenerationConfig) -> None:
         if self._slot_context is None:
-            try:
-                response = httpx.get(
-                    f"{self.host}/props", headers=headers(self.api_key), timeout=5.0
-                )
-                response.raise_for_status()
-            except httpx.HTTPError as exc:
-                raise ProviderError(
-                    f"llama.cpp props unavailable at {self.host}: {exc}", retryable=True
-                ) from exc
-            self._slot_context = response.json()["default_generation_settings"]["n_ctx"]
+            props = get_json(
+                f"{self.host}/props",
+                headers=headers(self.api_key),
+                unreachable=f"llama.cpp props unavailable at {self.host}",
+            )
+            self._slot_context = props["default_generation_settings"]["n_ctx"]
         if self._slot_context < config.context_window:
             raise ProviderError(
                 f"llama.cpp at {self.host} has {self._slot_context} tokens of context "
@@ -125,83 +120,31 @@ class LlamaCppChatProvider(ChatProvider):
         model_id = self._model_id(model)
         self._check_context(config)
 
-        messages = [{"role": "user", "content": prompt}]
-        if system:
-            messages.insert(0, {"role": "system", "content": system})
-        payload: dict = {
-            "model": model_id,
-            "messages": messages,
+        payload = chat_payload(model_id, system, prompt, config, want_json) | {
             "stream": False,
-            "temperature": config.temperature,
             # See the module docstring: sent either way, never left to the default.
             "chat_template_kwargs": {"enable_thinking": want_reasoning},
         }
-        if config.max_output_tokens is not None:
-            payload["max_tokens"] = config.max_output_tokens
-        if config.seed is not None:
-            payload["seed"] = config.seed
-        if want_json:
-            payload["response_format"] = {"type": "json_object"}
-
         started = time.monotonic()
-        try:
-            response = httpx.post(
-                f"{self.host}/v1/chat/completions",
-                json=payload,
-                headers=headers(self.api_key),
-                timeout=config.timeout_s,
-            )
-            response.raise_for_status()
-            body = response.json()
-        except httpx.TimeoutException as exc:
-            raise ProviderError(
-                f"llama.cpp timed out after {config.timeout_s}s", retryable=True
-            ) from exc
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            raise ProviderError(
-                f"llama.cpp returned {status}: {exc.response.text[:300]}",
-                retryable=status >= 500,
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise ProviderError(f"llama.cpp transport error: {exc}", retryable=True) from exc
-
-        choice = (body.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        text = message.get("content") or ""
-        reasoning = message.get("reasoning_content") or ""
-        stop_reason = choice.get("finish_reason")
-        usage = body.get("usage") or {}
-
-        total = usage.get("total_tokens")
-        if total is not None and total > config.context_window:
-            raise ProviderError(
-                f"llama.cpp call used {total} tokens, over the configured "
-                f"context_window of {config.context_window}"
-            )
-        if not text.strip():
-            # finish_reason "length" with reasoning but no answer means the
-            # token budget ran out mid-thought.
-            raise ProviderError(
-                f"llama.cpp model {model!r} returned an empty response "
-                f"(finish_reason={stop_reason}, think={want_reasoning}, json={want_json})"
-            )
-
-        return Completion(
-            text=text,
-            reasoning=reasoning,
-            input_tokens=usage.get("prompt_tokens"),
-            output_tokens=usage.get("completion_tokens"),
-            latency_s=time.monotonic() - started,
-            stop_reason=stop_reason,
+        body = post_json(
+            f"{self.host}/v1/chat/completions",
+            payload,
+            label="llama.cpp",
+            headers=headers(self.api_key),
+            timeout=config.timeout_s,
+        )
+        return read_chat(
+            body,
+            label="llama.cpp",
+            model=model,
+            config=config,
+            want_json=want_json,
+            want_reasoning=want_reasoning,
+            reasoning_key="reasoning_content",
+            started=started,
         )
 
     def health(self) -> str:
         served = served_models(self.host, self.api_key)
         names = ", ".join(model_stem(m.get("id", "?")) for m in served)
         return f"llama.cpp at {self.host}: {len(served)} model(s) available ({names})"
-
-    def available_models(self) -> list[str]:
-        return sorted(
-            model_stem(m.get("id", "")) for m in served_models(self.host, self.api_key)
-        )

@@ -40,6 +40,7 @@ from hontology.judge.providers.base import (
     GenerationConfig,
     ProviderError,
 )
+from hontology.judge.providers.http import chat_payload, get_json, read_chat
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 RETRY_STATUS = {408, 429, 500, 502, 503, 504}
@@ -103,24 +104,11 @@ class OpenRouterChatProvider(ChatProvider):
     ) -> Completion:
         if not model:
             raise ProviderError("openrouter provider requires an explicit model")
-        messages = [{"role": "user", "content": prompt}]
-        if system:
-            messages.insert(0, {"role": "system", "content": system})
-        payload: dict = {
-            "model": model,
-            "messages": messages,
-            "temperature": config.temperature,
+        payload = chat_payload(model, system, prompt, config, want_json) | {
             "provider": routing_payload(self.routing),
             # See the module docstring: sent either way, never left to the default.
             "reasoning": {"enabled": want_reasoning},
         }
-        if config.max_output_tokens is not None:
-            payload["max_tokens"] = config.max_output_tokens
-        if config.seed is not None:
-            payload["seed"] = config.seed
-        if want_json:
-            payload["response_format"] = {"type": "json_object"}
-
         started = time.monotonic()
         body = self._post(payload, config.timeout_s)
 
@@ -130,31 +118,15 @@ class OpenRouterChatProvider(ChatProvider):
                 f"openrouter served {model!r} from {served_by!r}, not the pinned "
                 f"{self.routing['provider']!r}"
             )
-        choice = (body.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        text = message.get("content") or ""
-        reasoning = message.get("reasoning") or ""
-        stop_reason = choice.get("finish_reason")
-        usage = body.get("usage") or {}
-
-        total = usage.get("total_tokens")
-        if total is not None and total > config.context_window:
-            raise ProviderError(
-                f"openrouter call used {total} tokens, over the configured "
-                f"context_window of {config.context_window}"
-            )
-        if not text.strip():
-            raise ProviderError(
-                f"openrouter model {model!r} returned an empty response "
-                f"(finish_reason={stop_reason}, think={want_reasoning}, json={want_json})"
-            )
-        return Completion(
-            text=text,
-            reasoning=reasoning,
-            input_tokens=usage.get("prompt_tokens"),
-            output_tokens=usage.get("completion_tokens"),
-            latency_s=time.monotonic() - started,
-            stop_reason=stop_reason,
+        return read_chat(
+            body,
+            label="openrouter",
+            model=model,
+            config=config,
+            want_json=want_json,
+            want_reasoning=want_reasoning,
+            reasoning_key="reasoning",
+            started=started,
         )
 
     def _post(self, payload: dict, timeout_s: float) -> dict:
@@ -199,12 +171,13 @@ class OpenRouterChatProvider(ChatProvider):
         raise last
 
     def health(self) -> str:
-        try:
-            response = httpx.get(f"{self.base_url}/key", headers=self._headers(), timeout=10.0)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise ProviderError(f"openrouter unreachable: {exc}", retryable=True) from exc
-        data = response.json().get("data") or {}
+        key = get_json(
+            f"{self.base_url}/key",
+            headers=self._headers(),
+            timeout=10.0,
+            unreachable="openrouter unreachable",
+        )
+        data = key.get("data") or {}
         limit = data.get("limit")
         remaining = data.get("limit_remaining")
         budget = (
