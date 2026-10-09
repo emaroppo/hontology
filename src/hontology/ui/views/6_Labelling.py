@@ -263,11 +263,13 @@ def queue_tab() -> None:
 
                 buttons = st.columns([1, 1, 6])
                 key = f"{kind}_{row['id']}"
-                for col, label, prefix, matched, kind_ in (
-                    (buttons[0], "Confirm", "ok", row["proposed_matched"], "primary"),
-                    (buttons[1], "Flip", "flip", not row["proposed_matched"], "secondary"),
+                for col, label, prefix, matched, primary in (
+                    (buttons[0], "Confirm", "ok", row["proposed_matched"], True),
+                    (buttons[1], "Flip", "flip", not row["proposed_matched"], False),
                 ):
-                    if col.button(label, key=f"{prefix}_{key}", type=kind_):
+                    if col.button(
+                        label, key=f"{prefix}_{key}", type="primary" if primary else "secondary"
+                    ):
                         shared.act(api.adjudicate_label, row["id"], matched=matched)
 
     if stats["pending_adjudication"]:
@@ -367,11 +369,13 @@ def queue_tab() -> None:
             )
             buttons = st.columns([1, 1, 6])
             key = f"{item['document_id']}_{item['concept_id']}"
-            for col, label, prefix, matched, kind_ in (
-                (buttons[0], "Matches", "yes", True, "primary"),
-                (buttons[1], "Does not", "no", False, "secondary"),
+            for col, label, prefix, matched, primary in (
+                (buttons[0], "Matches", "yes", True, True),
+                (buttons[1], "Does not", "no", False, False),
             ):
-                if col.button(label, key=f"{prefix}_{key}", type=kind_):
+                if col.button(
+                    label, key=f"{prefix}_{key}", type="primary" if primary else "secondary"
+                ):
                     shared.act(
                         api.create_label,
                         document_id=item["document_id"],

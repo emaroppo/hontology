@@ -189,7 +189,7 @@ def rank_text(payload: TextIn, db: Session = Depends(get_db)):
     cutoff = (
         tuning.Cutoff(**payload.cutoff.model_dump())
         if payload.cutoff is not None
-        else tuning.run_cutoff(versions.sourcerun_or_404(db, run))
+        else tuning.run_cutoff(versions.source_run(db, run))
     )
     try:
         return live.rank_text(db, run, payload.text, cutoff, pool_size=payload.pool_size)

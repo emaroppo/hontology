@@ -87,6 +87,7 @@ class ChatProvider(Protocol):
         config: GenerationConfig,
         want_json: bool = True,
         want_reasoning: bool = False,
+        model: str = "",
     ) -> Completion:
         """Run one completion.
 

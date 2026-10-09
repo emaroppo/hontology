@@ -152,21 +152,37 @@ def judge_run(
         },
         stats=JudgeStats(total=len(candidates)),
     )
-    batch = {"candidates": candidates, "limit": limit, "progress": progress}
 
     if template.mode in (prompts.EXTRACT, prompts.HIERARCHICAL):
         if template.mode == prompts.HIERARCHICAL:
-            return judge_hierarchical(judging, ontology_id=run.ontology_id, **batch)
+            return judge_hierarchical(
+                judging,
+                ontology_id=run.ontology_id,
+                candidates=candidates,
+                limit=limit,
+                progress=progress,
+            )
         embedder = None
         if template.leaf_top_k is not None:
             embed_provider = config.get("candidates", {}).get("embed_provider", "ollama")
             embedder = embed.get_provider(embed_provider)
-        return judge_extract(judging, ontology_id=run.ontology_id, embedder=embedder, **batch)
+        return judge_extract(
+            judging,
+            ontology_id=run.ontology_id,
+            candidates=candidates,
+            limit=limit,
+            progress=progress,
+            embedder=embedder,
+        )
 
     done = _already_judged(session, run_id)
     if template.mode == prompts.PER_DOCUMENT:
-        return judge_batched(judging, done=done, **batch)
-    return _judge_pairs(judging, done=done, **batch)
+        return judge_batched(
+            judging, candidates=candidates, done=done, limit=limit, progress=progress
+        )
+    return _judge_pairs(
+        judging, candidates=candidates, done=done, limit=limit, progress=progress
+    )
 
 
 def _judge_pairs(

@@ -322,3 +322,24 @@ def test_the_text_endpoint_refuses_nothing_to_rank(embedded):
         "/retrieval/text", json={"run_id": embedded["run"], "text": ""}
     )
     assert response.status_code == 422
+
+
+def test_the_text_endpoint_cuts_with_the_runs_own_cutoff_by_default(embedded, monkeypatch):
+    """No cutoff given: the run's own, read from its source run's config."""
+    from hontology.retrieve import embed
+
+    class Provider:
+        name = "ollama"
+
+        def embed(self, texts, *, model):
+            return [[1.0, 0.1, 0.0] for _ in texts]
+
+        def dimension(self, model):
+            return 3
+
+    monkeypatch.setattr(embed, "get_provider", lambda name, **kw: Provider())
+    response = TestClient(app).post(
+        "/retrieval/text", json={"run_id": embedded["run"], "text": "Dockworkers stopped work."}
+    )
+    assert response.status_code == 200
+    assert response.json()["ranking"][0]["name"] == "Strike"

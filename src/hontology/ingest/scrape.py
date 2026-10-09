@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
 
-from sqlalchemy import Engine, create_engine, not_, select, text
+from sqlalchemy import ColumnElement, Engine, create_engine, not_, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -226,7 +226,9 @@ def wait_for_claimed(session: Session, document_ids: list[int]) -> bool:
 def _count_pending(
     session: Session, *, retry_failed: bool, document_ids: list[int] | None
 ) -> int:
-    where = [Document.body_path.is_(None) if retry_failed else Document.fetched_at.is_(None)]
+    where: list[ColumnElement[bool]] = [
+        Document.body_path.is_(None) if retry_failed else Document.fetched_at.is_(None)
+    ]
     if document_ids is not None:
         where.append(among(Document.id, document_ids))
     return count(session, Document.id, *where)
@@ -336,7 +338,7 @@ def scrape_pending(
         # Select among the allowed ids directly. Taking the oldest pending rows
         # first and intersecting afterwards starves the budget whenever the
         # backlog is larger than the window it happens to read.
-        wanted = sorted(allowed)
+        wanted: list[int] | None = sorted(allowed)
     else:
         wanted = document_ids
     documents = pending_documents(

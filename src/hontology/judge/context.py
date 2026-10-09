@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from hontology.db.models import Concept, Document, Verdict
 from hontology.judge import prompts
-from hontology.judge.providers.base import Completion, GenerationConfig
+from hontology.judge.providers.base import ChatProvider, Completion, GenerationConfig
 from hontology.retrieve.candidates import document_body
 
 NO_BODY = "no article body available"
@@ -47,7 +47,7 @@ class Judging:
     session: Session
     run_id: int
     template: prompts.PromptTemplate
-    provider: object
+    provider: ChatProvider
     judge_config: dict
     generation: GenerationConfig
     body_limit: int
