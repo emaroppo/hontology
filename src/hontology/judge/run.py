@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from hontology.config import get_settings
 from hontology.db.models import Candidate, Concept, Document, Locus, Run, Verdict
+from hontology.evalkit import versions
 from hontology.judge import prompts
 from hontology.judge.batched import judge_batched, judge_hierarchical
 from hontology.judge.context import NO_BODY, JudgeStats, Judging
@@ -40,6 +41,7 @@ from hontology.retrieve import embed
 __all__ = [
     "AGGREGATIONS",
     "JudgeStats",
+    "PromptChanged",
     "aggregate",
     "get_provider",
     "judge_run",
@@ -62,6 +64,34 @@ def get_provider(name: str, routing: dict | None = None):
             settings.openrouter_api_key, routing, base_url=settings.openrouter_base_url
         )
     raise ProviderError(f"unknown judge provider {name!r}")
+
+
+class PromptChanged(RuntimeError):
+    """A prompt id no longer renders the wording it stands for."""
+
+
+def check_wording(run: Run, prompt_id: str) -> None:
+    """Refuse to judge with wording other than what the id, and the run, stand for.
+
+    A pinned prompt id must render exactly as pinned in prompts.lock.json, so an
+    edit in place cannot pass as the old prompt. A run created under one wording
+    is never continued under another, so one run's verdicts share one wording.
+    """
+    current = versions.prompt_fingerprint(prompt_id)
+    pinned = prompts.PINS.get(prompt_id)
+    if pinned is not None and pinned != current:
+        raise PromptChanged(
+            f"prompt {prompt_id!r} renders as {current} but is pinned to {pinned}: its "
+            "wording was edited in place. Restore it, or register the new wording "
+            "under a new prompt id and pin that."
+        )
+    recorded = ((run.manifest or {}).get("versions") or {}).get("prompt")
+    if recorded and recorded != current:
+        raise PromptChanged(
+            f"run {run.id} was created with prompt {prompt_id!r} rendering as "
+            f"{recorded}; it now renders as {current}. Continuing would mix two "
+            "wordings in one run: start a new run instead."
+        )
 
 
 def _already_judged(session: Session, run_id: int) -> set[tuple[int, int]]:
@@ -93,6 +123,9 @@ def judge_run(
     """
     judge_config = config["judge"]
     template = prompts.get(judge_config["prompt_id"])
+    run = session.get(Run, run_id)
+    assert run is not None
+    check_wording(run, template.prompt_id)
 
     query = select(Candidate).where(Candidate.run_id == run_id, Candidate.selected.is_(True))
     if document_ids is not None:
@@ -122,8 +155,6 @@ def judge_run(
     batch = {"candidates": candidates, "limit": limit, "progress": progress}
 
     if template.mode in (prompts.EXTRACT, prompts.HIERARCHICAL):
-        run = session.get(Run, run_id)
-        assert run is not None
         if template.mode == prompts.HIERARCHICAL:
             return judge_hierarchical(judging, ontology_id=run.ontology_id, **batch)
         embedder = None

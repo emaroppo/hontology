@@ -341,10 +341,12 @@ def test_ranked_leaves_come_only_from_the_branches_answered_yes(world, monkeypat
 
 
 def test_only_the_closest_leaves_are_offered(world, monkeypatch):
-    prompts.register(
+    monkeypatch.setitem(
+        prompts._REGISTRY,
+        "test_extract_embed_k1",
         dataclasses.replace(
             prompts.get("extract_embed_v1"), prompt_id="test_extract_embed_k1", leaf_top_k=1
-        )
+        ),
     )
     event = "An embargo was imposed."
     provider = FakeJudge(world["names"], {event: ({"Trade", "Sanction"}, "Embargo")})

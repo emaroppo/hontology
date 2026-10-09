@@ -8,12 +8,15 @@ separate experiments.
 
 The id lands in the run's judge key and is stamped on every verdict, so a result
 can always be traced to the exact wording that produced it. Templates are
-append-only: editing one in place silently invalidates every verdict already
-recorded under its id.
+append-only: editing one in place would silently change what every verdict
+already recorded under its id means. So each released id is pinned to the
+fingerprint of its rendered text in prompts.lock.json; judging refuses an id
+whose wording has drifted from its pin, and the tests refuse an unpinned one.
 """
 
 from __future__ import annotations
 
+import json
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -24,6 +27,11 @@ from hontology.db.models import Concept, Document
 # The wording lives in prompts.toml; this module only assembles it.
 _WORDING = tomllib.loads(Path(__file__).with_name("prompts.toml").read_text(encoding="utf-8"))
 _SYSTEM, _SHAPE, _TEXT = _WORDING["system"], _WORDING["shape"], _WORDING["text"]
+# Each released prompt id's fingerprint (evalkit.versions.prompt_fingerprint).
+# Judging refuses a pinned id whose wording no longer matches; see judge.run.
+PINS: dict[str, str] = json.loads(
+    Path(__file__).with_name("prompts.lock.json").read_text(encoding="utf-8")
+)
 
 DEFAULT_PROMPT_ID = "strict_v1"
 
