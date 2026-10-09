@@ -116,7 +116,7 @@ class Document(Base, TimestampMixin):
     error: Mapped[str | None] = mapped_column(Text)
 
     # The representative whose verdicts this near-duplicate reads, when it is
-    # a copy of an earlier article (see `ingest.dedup`). Never another copy.
+    # a copy of an earlier article (see `pipeline.ingest.articles.dedup`). Never another copy.
     duplicate_of: Mapped[int | None] = mapped_column(
         ForeignKey("documents.id", ondelete="SET NULL"), index=True
     )

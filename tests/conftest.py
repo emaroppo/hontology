@@ -189,7 +189,7 @@ def test_database(pytestconfig: pytest.Config) -> Iterator[str]:
     # Country codes are reference data the application seeds at startup, not user
     # content, so tests need them present for anything that resolves a locus.
     # Seeded once outside the per-test transaction so every test sees them.
-    from hontology.ingest.loci import seed_loci
+    from hontology.pipeline.ingest.codes.loci import seed_loci
 
     factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
     with factory() as session:

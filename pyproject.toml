@@ -46,7 +46,7 @@ dev = [
 ]
 
 [project.scripts]
-hontology = "hontology.cli:app"
+hontology = "hontology.apps.cli:app"
 
 [build-system]
 requires = ["hatchling"]

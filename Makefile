@@ -35,11 +35,11 @@ revision: ## Autogenerate a migration: make revision m="message"
 
 .PHONY: api
 api: ## Run the API with reload
-	$(PY) -m uvicorn hontology.api.main:app --reload --port 8100
+	$(PY) -m uvicorn hontology.apps.api.main:app --reload --port 8100
 
 .PHONY: ui
 ui: ## Run the Streamlit UI (needs the API running)
-	$(VENV)/bin/streamlit run src/hontology/ui/app.py
+	$(VENV)/bin/streamlit run src/hontology/apps/ui/app.py
 
 .PHONY: test
 test: ## Run the test suite
@@ -66,19 +66,19 @@ fmt: ## Autoformat
 
 .PHONY: doctor
 doctor: ## Check that the database and the LLM provider are reachable
-	$(PY) -m hontology.cli doctor
+	$(PY) -m hontology.apps.cli doctor
 
 .PHONY: ingest
 ingest: ## Catch up to the newest published feed slice, then exit
-	$(PY) -m hontology.cli ingest once
+	$(PY) -m hontology.apps.cli ingest once
 
 .PHONY: ingest-status
 ingest-status: ## Show the ingest watermark and how far behind it is
-	$(PY) -m hontology.cli ingest status
+	$(PY) -m hontology.apps.cli ingest status
 
 .PHONY: watch
 watch: ## OPTIONAL: follow the feed continuously (Ctrl-C to stop)
-	$(PY) -m hontology.cli ingest watch
+	$(PY) -m hontology.apps.cli ingest watch
 
 .PHONY: watch-docker
 watch-docker: ## OPTIONAL: run the watcher as a container

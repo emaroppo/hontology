@@ -38,7 +38,7 @@ Gone without a replacement:
 - **Lines:** 288–326. A "Slice by" radio, a precision-and-recall chart with intervals, and a table of n, TP, FP, FN, precision, recall and F1 per slice.
 - **Still present:**
   - `GET /eval/runs/{id}/breakdown` (`dimension`, `include_machine`) and `Api.run_breakdown`;
-  - `evalkit.breakdown.breakdown`;
+  - `evaluation.pairs.breakdown.breakdown`;
   - `charts.rates_with_intervals`;
   - `hontology eval breakdown`.
 - **To reinstate:** put lines 288–326 in Home → Single run, as an expander, with `selected["id"]` replaced by `run_id`.
@@ -49,7 +49,7 @@ Gone without a replacement:
 - **Lines:** 329–362. FP and FN counts, then up to 25 errors, each with the model's quoted evidence, the label note and the reasoning trace.
 - **Still present:**
   - `GET /eval/runs/{id}/errors` and `Api.run_errors`;
-  - `evalkit.errors.triage` and `evalkit.errors.summary`;
+  - `evaluation.pairs.errors.triage` and `evaluation.pairs.errors.summary`;
   - `hontology eval errors`.
 - **To reinstate:** put it in Home → Single run, next to "Where it disagrees with the labels". That expander lists the same kind of errors on the sample, but without the evidence or reasoning.
 - **Caveat:** label bank only, like the breakdown.
@@ -59,7 +59,7 @@ Gone without a replacement:
 - **Lines:** 390 to the end. An F1-against-cost scatter and a table, from `warehouse.duckdb`.
 - **Still present:**
   - `GET /eval/leaderboard` and `Api.leaderboard`;
-  - `evalkit.warehouse` (`record`, `leaderboard`);
+  - `evaluation.pairs.warehouse` (`record`, `leaderboard`);
   - `charts.leaderboard_scatter`;
   - `hontology eval run --record`, the only code that writes it.
 - **Why it went:** nothing but that command wrote to it, so it went stale and never included sample or calendar scores. Home → Leaderboard is computed live instead.
@@ -70,14 +70,14 @@ Gone without a replacement:
 - **Lines:** 365–389.
 - **Still present:**
   - `GET /eval/compare` and `Api.compare_runs`;
-  - `evalkit.compare.compare_runs`;
+  - `evaluation.pairs.compare.compare_runs`;
   - `hontology eval compare`.
 - **Why it went:** Home → Comparison uses the sample instead, paired the same way, and shows the tables `eval arms` writes.
 
 ### Run-level retrieval metrics from the label bank
 
 - **Lines:** 247–268. Retrieval precision, coverage, MRR and cutoff recall for one run.
-- **Still present:** `evaluation["retrieval"]` from `GET /eval/runs/{id}` (`Api.evaluate_run`, `evalkit.evaluate.evaluate_run`, `metrics.retrieval_metrics`).
+- **Still present:** `evaluation["retrieval"]` from `GET /eval/runs/{id}` (`Api.evaluate_run`, `evaluation.pairs.evaluate.evaluate_run`, `metrics.retrieval_metrics`).
 - **Partial replacement:** Retrieval → Evaluation reports recall at the cutoff, recall in the pool and recall@k per version. It has no precision, coverage or MRR.
 
 ### Confusion bar chart
@@ -120,7 +120,7 @@ Gone without a replacement:
 - **Recover it with:** `git show 89fa377^:src/hontology/ui/pages/2_Filtering.py`, function `show_report`.
 - **Still present:**
   - `GET /eval/filter-report` and `Api.filter_report`;
-  - `evalkit.filter_report.report`;
+  - `evaluation.stages.filter_report.report`;
   - `hontology eval filter-report`.
 - **Replaced by:** Filtering → Evaluation counts per link rather than per code, credits a document to every code that admits it, and adds the calendar and the documents only one code admits.
 
