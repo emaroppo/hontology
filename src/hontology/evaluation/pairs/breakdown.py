@@ -19,8 +19,9 @@ from sqlalchemy.orm import Session
 
 from hontology.db.lookups import concepts_by_id, get_run
 from hontology.db.models import Category, Locus
-from hontology.evaluation import metrics as metric_lib
-from hontology.evaluation.article import clean_verdicts
+from hontology.evaluation.article.verdicts import clean_verdicts
+from hontology.evaluation.metrics.confusion import Confusion
+from hontology.evaluation.metrics.intervals import format_ci, format_num, wilson
 from hontology.evaluation.pairs import evaluate as evaluate_module
 from hontology.ontology import hierarchy
 
@@ -33,13 +34,11 @@ DIMENSIONS = ("concept", "family", "category", "locus")
 class Slice:
     key: str
     label: str
-    confusion: metric_lib.Confusion
+    confusion: Confusion
 
     def as_dict(self) -> dict:
-        precision_ci = metric_lib.wilson(
-            self.confusion.tp, self.confusion.tp + self.confusion.fp
-        )
-        recall_ci = metric_lib.wilson(self.confusion.tp, self.confusion.tp + self.confusion.fn)
+        precision_ci = wilson(self.confusion.tp, self.confusion.tp + self.confusion.fp)
+        recall_ci = wilson(self.confusion.tp, self.confusion.tp + self.confusion.fn)
         return self.confusion.as_dict() | {
             "key": self.key,
             "label": self.label,
@@ -116,7 +115,7 @@ def breakdown(
 
         for slice_key, label in keys:
             entry = slices.setdefault(
-                slice_key, Slice(key=slice_key, label=label, confusion=metric_lib.Confusion())
+                slice_key, Slice(key=slice_key, label=label, confusion=Confusion())
             )
             entry.confusion.add(expected=truth[key], predicted=bool(verdict.matched))
 
@@ -136,9 +135,9 @@ def format_breakdown(rows: list[dict], dimension: str) -> str:
     ]
     lines.append("-" * 92)
     for row in rows:
-        interval = metric_lib.format_ci(*row["precision_ci"], digits=2)
+        interval = format_ci(*row["precision_ci"], digits=2)
         precision, recall, f1 = (
-            metric_lib.format_num(row[name], 6) for name in ("precision", "recall", "f1")
+            format_num(row[name], 6) for name in ("precision", "recall", "f1")
         )
         lines.append(
             f"{row['label'][:28]:<28} {row['n']:>4} {row['tp']:>3} {row['fp']:>3} "

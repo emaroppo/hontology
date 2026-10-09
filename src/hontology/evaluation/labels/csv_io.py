@@ -1,4 +1,4 @@
-"""Moving the ground-truth bank in and out as CSV.
+"""Moving the ground-truth bank in and out as CSV: import here, export in `csv_export`.
 
 The bank is the expensive asset in this project — a few hundred labels is hours
 of human attention — so it has to be portable, reviewable in a diff, and safe to
@@ -31,172 +31,15 @@ from __future__ import annotations
 
 import csv
 import io
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
-from datetime import date as _date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hontology.db.lookups import (
-    concept_ids_by_name,
-    concept_names,
-    locus_ids_by_iso3,
-    locus_iso3s,
-)
-from hontology.db.models import (
-    Concept,
-    Document,
-    Observation,
-    PairLabel,
-)
+from hontology.db.lookups import concept_ids_by_name, locus_ids_by_iso3
+from hontology.db.models import Document, Observation, PairLabel
 from hontology.evaluation.labels import bank as label_service
-from hontology.pipeline.ingest.feed.slices import url_hash
-
-LABEL_COLUMNS = [
-    "document_url",
-    "concept",
-    "matched",
-    "source",
-    "locus_iso3",
-    "occurred_on",
-    "note",
-    "proposed_by",
-    "ontology_version",
-    "stale",
-]
-
-OBSERVATION_COLUMNS = [
-    "concept",
-    "locus_iso3",
-    "occurred_on",
-    "description",
-    "source_note",
-]
-
-TRUTHY = {"1", "true", "t", "yes", "y", "match", "matched"}
-FALSY = {"0", "false", "f", "no", "n", "nomatch", "not matched"}
-
-
-@dataclass
-class ImportReport:
-    created: int = 0
-    updated: int = 0
-    skipped_existing: int = 0
-    documents_created: int = 0
-    unknown_concepts: list[str] = field(default_factory=list)
-    bad_rows: list[str] = field(default_factory=list)
-
-    def as_dict(self) -> dict:
-        return {
-            "created": self.created,
-            "updated": self.updated,
-            "skipped_existing": self.skipped_existing,
-            "documents_created": self.documents_created,
-            "unknown_concepts": sorted(set(self.unknown_concepts)),
-            "bad_rows": self.bad_rows[:20],
-            "bad_row_count": len(self.bad_rows),
-        }
-
-
-def _parse_bool(raw: str) -> bool:
-    value = (raw or "").strip().lower()
-    if value in TRUTHY:
-        return True
-    if value in FALSY:
-        return False
-    raise ValueError(f"cannot read {raw!r} as a true/false value")
-
-
-def cell(row: dict, key: str) -> str:
-    return (row.get(key) or "").strip()
-
-
-def to_csv(rows: Iterable[dict], columns: Sequence[str]) -> str:
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=columns, lineterminator="\n")
-    writer.writeheader()
-    writer.writerows(rows)
-    return buffer.getvalue()
-
-
-def _parse_date(raw: str) -> _date | None:
-    value = (raw or "").strip()
-    return _date.fromisoformat(value) if value else None
-
-
-# ---------------------------------------------------------------------------
-# Export
-# ---------------------------------------------------------------------------
-
-
-def export_labels(session: Session, ontology_id: int) -> str:
-    """Every pair label for an ontology, as CSV.
-
-    Stale labels are included and flagged rather than dropped: the flag is
-    information the recipient needs, and silently omitting them would make an
-    export look smaller than the work that went into it.
-    """
-    stale = label_service.stale_label_ids(session, ontology_id)
-    concepts = concept_names(session, ontology_id)
-    loci = locus_iso3s(session)
-
-    rows = session.scalars(
-        select(PairLabel)
-        .join(Concept, Concept.id == PairLabel.concept_id)
-        .where(Concept.ontology_id == ontology_id)
-        .order_by(PairLabel.id)
-    )
-
-    def row(label: PairLabel) -> dict | None:
-        document = session.get(Document, label.document_id)
-        if document is None:
-            return None
-        return {
-            "document_url": document.url,
-            "concept": concepts.get(label.concept_id, ""),
-            "matched": "true" if label.matched else "false",
-            "source": label.source,
-            "locus_iso3": loci.get(label.locus_id, "") if label.locus_id else "",
-            "occurred_on": label.occurred_on.isoformat() if label.occurred_on else "",
-            "note": label.note or "",
-            "proposed_by": label.proposed_by or "",
-            "ontology_version": label.ontology_version or "",
-            "stale": "true" if label.id in stale else "false",
-        }
-
-    return to_csv(filter(None, map(row, rows)), LABEL_COLUMNS)
-
-
-def export_observations(session: Session, ontology_id: int) -> str:
-    """Known occurrences, as CSV. Positive by construction."""
-    concepts = concept_names(session, ontology_id)
-    loci = locus_iso3s(session)
-
-    observations = session.scalars(
-        select(Observation)
-        .join(Concept, Concept.id == Observation.concept_id)
-        .where(Concept.ontology_id == ontology_id)
-        .order_by(Observation.id)
-    )
-    return to_csv(
-        (
-            {
-                "concept": concepts.get(observation.concept_id, ""),
-                "locus_iso3": loci.get(observation.locus_id, ""),
-                "occurred_on": observation.occurred_on.isoformat(),
-                "description": observation.description or "",
-                "source_note": observation.source_note or "",
-            }
-            for observation in observations
-        ),
-        OBSERVATION_COLUMNS,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Import
-# ---------------------------------------------------------------------------
+from hontology.evaluation.labels.csv_format import ImportReport, cell, parse_bool, parse_date
+from hontology.pipeline.ingest.feed.store import url_hash
 
 
 def import_labels(
@@ -227,8 +70,8 @@ def import_labels(
             continue
 
         try:
-            matched = _parse_bool(row.get("matched", ""))
-            occurred_on = _parse_date(row.get("occurred_on", ""))
+            matched = parse_bool(row.get("matched", ""))
+            occurred_on = parse_date(row.get("occurred_on", ""))
         except ValueError as exc:
             report.bad_rows.append(f"line {line_number}: {exc}")
             continue
@@ -296,7 +139,7 @@ def import_observations(session: Session, ontology_id: int, csv_text: str) -> di
             continue
 
         try:
-            occurred_on = _parse_date(row.get("occurred_on", ""))
+            occurred_on = parse_date(row.get("occurred_on", ""))
         except ValueError as exc:
             report.bad_rows.append(f"line {line_number}: {exc}")
             continue

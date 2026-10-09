@@ -17,25 +17,24 @@ malformed-output bug is invisible to accuracy metrics until you look for it.
 
 from __future__ import annotations
 
-import json
-import logging
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hontology.config import get_settings
-from hontology.db.models import Candidate, Concept, Document, Locus, Run, Verdict
+from hontology.db.models import Candidate, Locus, Run, Verdict
 from hontology.pipeline.judge import prompts
-from hontology.pipeline.judge.batched import judge_batched, judge_hierarchical
-from hontology.pipeline.judge.context import NO_BODY, JudgeStats, Judging
+from hontology.pipeline.judge.batched import judge_batched
+from hontology.pipeline.judge.context import JudgeStats, Judging
 from hontology.pipeline.judge.extract import judge_extract
+from hontology.pipeline.judge.hierarchical import judge_hierarchical
+from hontology.pipeline.judge.pairs import judge_pairs
 from hontology.pipeline.judge.parse import AGGREGATIONS, aggregate, parse_batch, parse_verdict
 from hontology.pipeline.judge.providers.base import GenerationConfig, ProviderError
 from hontology.pipeline.judge.providers.llamacpp import LlamaCppChatProvider
 from hontology.pipeline.judge.providers.ollama import OllamaChatProvider
 from hontology.pipeline.judge.providers.openrouter import OpenRouterChatProvider
 from hontology.pipeline.retrieve import embed
-from hontology.pipeline.runs import versions
+from hontology.pipeline.runs import fingerprints
 
 # Readers live in judge.parse; these names are kept here for existing callers.
 __all__ = [
@@ -49,8 +48,6 @@ __all__ = [
     "parse_batch",
     "parse_verdict",
 ]
-
-log = logging.getLogger(__name__)
 
 
 def get_provider(name: str, routing: dict | None = None):
@@ -77,7 +74,7 @@ def check_wording(run: Run, prompt_id: str) -> None:
     edit in place cannot pass as the old prompt. A run created under one wording
     is never continued under another, so one run's verdicts share one wording.
     """
-    current = versions.prompt_fingerprint(prompt_id)
+    current = fingerprints.prompt_fingerprint(prompt_id)
     pinned = prompts.PINS.get(prompt_id)
     if pinned is not None and pinned != current:
         raise PromptChanged(
@@ -180,116 +177,9 @@ def judge_run(
         return judge_batched(
             judging, candidates=candidates, done=done, limit=limit, progress=progress
         )
-    return _judge_pairs(
+    return judge_pairs(
         judging, candidates=candidates, done=done, limit=limit, progress=progress
     )
-
-
-def _judge_pairs(
-    judging: Judging,
-    *,
-    candidates: list[Candidate],
-    done: set[tuple[int, int]],
-    limit: int | None,
-    progress: object | None,
-) -> dict:
-    """One call per pair, sampled and aggregated as the config says."""
-    session, template, stats = judging.session, judging.template, judging.stats
-    samples = max(1, judging.judge_config["samples"])
-    processed = 0
-    for candidate in candidates:
-        key = (candidate.document_id, candidate.concept_id)
-        if key in done:
-            stats.skipped += 1
-            continue
-        if limit is not None and processed >= limit:
-            break
-
-        document = session.get(Document, candidate.document_id)
-        concept = session.get(Concept, candidate.concept_id)
-        if document is None or concept is None:
-            continue
-
-        body = judging.body(document)
-        if not body:
-            # No usable text: record it rather than silently dropping the pair,
-            # so the denominator stays honest.
-            session.add(
-                judging.verdict(document.id, concept.id, samples=samples, error=NO_BODY)
-            )
-            stats.errors += 1
-            processed += 1
-            continue
-
-        prompt = template.build_pair(document, concept, body, judging.body_limit)
-        parsed_samples: list[dict] = []
-        reasoning = ""
-        latency = 0.0
-        tokens_in = 0
-        tokens_out = 0
-        error = ""
-
-        for _ in range(samples):
-            try:
-                completion = judging.ask(template.system, prompt)
-                parsed_samples.append(parse_verdict(completion.text))
-                reasoning = completion.reasoning or reasoning
-                latency += completion.latency_s
-                tokens_in += completion.input_tokens or 0
-                tokens_out += completion.output_tokens or 0
-                stats.spent(completion)
-            except (ProviderError, json.JSONDecodeError) as exc:
-                # One bad pair must not end the run.
-                error = f"{type(exc).__name__}: {exc}"
-                break
-
-        cost = {"latency_s": latency, "input_tokens": tokens_in, "output_tokens": tokens_out}
-        if parsed_samples and not error:
-            result = aggregate(
-                parsed_samples, judging.judge_config.get("aggregation", "majority")
-            )
-            session.add(
-                judging.verdict(
-                    document.id,
-                    concept.id,
-                    samples=samples,
-                    matched=result["matched"],
-                    confidence=result["confidence"],
-                    vote_fraction=result["vote_fraction"],
-                    locus_id=judging.iso2_to_locus.get(result["country"]),
-                    evidence=result["evidence"] or None,
-                    reasoning=reasoning or None,
-                    **cost,
-                )
-            )
-            stats.judged += 1
-            stats.matched += int(result["matched"])
-        else:
-            session.add(
-                judging.verdict(
-                    document.id,
-                    concept.id,
-                    samples=samples,
-                    error=error or "no samples parsed",
-                    **cost,
-                )
-            )
-            stats.errors += 1
-
-        processed += 1
-        # Update progress BEFORE committing, so the new value is part of the same
-        # transaction as the verdict. Setting it afterwards leaves it uncommitted
-        # until the next pair, and the final value is lost entirely — which makes
-        # a poller watching this run appear to stall one pair short of done.
-        if callable(progress):
-            progress(processed, len(candidates))
-
-        # Commit as we go: this is what makes a killed run resumable rather than
-        # a total loss.
-        session.commit()
-
-    log.info("judge: %s", stats.as_dict())
-    return stats.as_dict()
 
 
 def liveness(session: Session, run_id: int) -> dict:

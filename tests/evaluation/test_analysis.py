@@ -8,7 +8,9 @@ from hontology.db.models import Document, Run, Verdict
 from hontology.db.session import session_scope
 from hontology.evaluation.labels import bank
 from hontology.evaluation.pairs import breakdown, errors
-from hontology.ontology import lint, service
+from hontology.ontology import service
+from hontology.ontology.lint import report as lint
+from hontology.ontology.lint.wording import _mentions
 from hontology.pipeline.runs import sweep
 
 pytestmark = pytest.mark.requires_db
@@ -198,9 +200,9 @@ class TestLint:
 
     def test_a_morphological_variant_counts_as_earning_it(self):
         """'shutdown' is earned by 'halts operations'."""
-        assert lint._mentions("a port halts operations", "halt")
-        assert lint._mentions("physical violence occurs", "violent")
-        assert not lint._mentions("something happens", "violent")
+        assert _mentions("a port halts operations", "halt")
+        assert _mentions("physical violence occurs", "violent")
+        assert not _mentions("something happens", "violent")
 
     def test_a_missing_definition_is_a_warning(self):
         with session_scope() as session:

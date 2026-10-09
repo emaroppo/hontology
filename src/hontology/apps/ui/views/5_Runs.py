@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import streamlit as st
 
-from hontology.apps.ui import config_editor, shared
+from hontology.apps.ui import config_editor, panel, shared
 from hontology.apps.ui.client import ApiError
+from hontology.apps.ui.config_editor.state import load as load_config
 
 api, ontologies = shared.page("Runs", "⚙️")
 
-ontology = shared.ontology(api, ontologies)
+ontology = panel.ontology(api, ontologies)
 
 st.subheader("New run")
 ontology_runs = [r for r in api.list_runs() if r["ontology_id"] == ontology["id"]]
@@ -32,11 +33,9 @@ start_from = cols[0].selectbox(
 )
 if cols[1].button("Load", help="Replaces what is in the editor."):
     if start_from is None:
-        config_editor.load(
-            api.run_options()["defaults"] | {"name": "baseline", "description": ""}
-        )
+        load_config(api.run_options()["defaults"] | {"name": "baseline", "description": ""})
     else:
-        config_editor.load(api.run_config(start_from))
+        load_config(api.run_config(start_from))
     st.rerun()
 
 listing = api.versions(ontology["id"])

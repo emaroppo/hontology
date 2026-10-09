@@ -33,13 +33,7 @@ from sqlalchemy.orm import Session
 
 from hontology.db.lookups import concepts_by_id
 from hontology.db.models import Candidate, Concept, Document, PairLabel, Run, Verdict
-
-# Thresholds for deciding whether a run's confidence carries usable signal.
-CONF_MIN_SAMPLES = 20
-CONF_MIN_STD = 0.05
-CONF_INTERIOR_LO = 0.15
-CONF_INTERIOR_HI = 0.85
-CONF_MIN_INTERIOR_FRAC = 0.05
+from hontology.evaluation.labels.confidence import usable_confidence_runs
 
 
 @dataclass
@@ -68,39 +62,6 @@ class QueueItem:
             "proposed_matched": self.proposed_matched,
             "proposed_confidence": self.proposed_confidence,
         }
-
-
-def usable_confidence_runs(session: Session, run_ids: list[int]) -> set[int]:
-    """Runs whose confidence distribution carries an uncertainty signal.
-
-    Rejects too-few samples, near-constant output (a run that always says 0.5),
-    and effectively binary output (a run that only ever says ~0 or ~1). Treating
-    a degenerate distribution as uncertainty is worse than ignoring it: it
-    actively misranks the queue.
-    """
-    usable: set[int] = set()
-    for run_id in run_ids:
-        values = [
-            float(c)
-            for (c,) in session.execute(
-                select(Verdict.confidence).where(
-                    Verdict.run_id == run_id,
-                    Verdict.confidence.is_not(None),
-                    Verdict.error.is_(None),
-                )
-            )
-        ]
-        if len(values) < CONF_MIN_SAMPLES:
-            continue
-        if statistics.pstdev(values) < CONF_MIN_STD:
-            continue
-        interior = sum(1 for v in values if CONF_INTERIOR_LO < v < CONF_INTERIOR_HI) / len(
-            values
-        )
-        if interior < CONF_MIN_INTERIOR_FRAC:
-            continue
-        usable.add(run_id)
-    return usable
 
 
 def _labelled_pairs(session: Session, ontology_id: int) -> set[tuple[int, int]]:
@@ -149,31 +110,7 @@ def build_queue(
     usable = usable_confidence_runs(session, run_ids)
     already = _labelled_pairs(session, ontology_id)
     label_counts = _label_counts(session, ontology_id)
-
-    # pair -> [{run, matched, confidence}]
-    by_pair: dict[tuple[int, int], list[dict]] = defaultdict(list)
-    for verdict in session.scalars(
-        select(Verdict).where(Verdict.run_id.in_(run_ids), Verdict.error.is_(None))
-    ):
-        if verdict.matched is None:
-            continue
-        by_pair[(verdict.document_id, verdict.concept_id)].append(
-            {
-                "run_id": verdict.run_id,
-                "matched": bool(verdict.matched),
-                "confidence": verdict.confidence,
-                "evidence": verdict.evidence,
-                "confidence_usable": verdict.run_id in usable,
-            }
-        )
-
-    if include_unjudged:
-        # Candidates that retrieval selected but no run ever judged. These are a
-        # blind spot: they carry no verdict at all, so nothing else surfaces them.
-        for candidate in session.scalars(
-            select(Candidate).where(Candidate.run_id.in_(run_ids), Candidate.selected.is_(True))
-        ):
-            by_pair.setdefault((candidate.document_id, candidate.concept_id), [])
+    by_pair = _verdicts_by_pair(session, run_ids, usable, include_unjudged=include_unjudged)
 
     concepts = concepts_by_id(session, ontology_id)
     max_labels = max(label_counts.values(), default=0) or 1
@@ -183,28 +120,8 @@ def build_queue(
         if (document_id, concept_id) in already or concept_id not in concepts:
             continue
 
-        matched_values = {v["matched"] for v in verdicts}
-        disagreement = len(matched_values) > 1
-
-        informative = [
-            v for v in verdicts if v["confidence_usable"] and v["confidence"] is not None
-        ]
-        # Distance from the decision boundary, only from runs worth believing.
-        uncertainty = (
-            max(0.0, 1.0 - 2 * abs(statistics.mean(v["confidence"] for v in informative) - 0.5))
-            if informative
-            else 0.0
-        )
         coverage = 1.0 - (label_counts.get(concept_id, 0) / max_labels)
-
-        if disagreement:
-            score, reason = 1.0 + uncertainty, "runs disagree"
-        elif not verdicts:
-            score, reason = 0.5 + 0.3 * coverage, "never judged"
-        elif uncertainty > 0:
-            score, reason = 0.4 * uncertainty + 0.2 * coverage, "model uncertain"
-        else:
-            score, reason = 0.1 * coverage, "coverage"
+        score, reason = _priority(verdicts, coverage)
 
         document = session.get(Document, document_id)
         if document is None:
@@ -229,7 +146,65 @@ def build_queue(
     items.sort(key=lambda i: i.score, reverse=True)
     if per_concept_cap is None:
         return items[:limit]
+    return _stratify(items, limit, per_concept_cap)
 
+
+def _verdicts_by_pair(
+    session: Session, run_ids: list[int], usable: set[int], *, include_unjudged: bool
+) -> dict[tuple[int, int], list[dict]]:
+    """Every pair the runs judged or selected: ``pair -> [{run, matched, confidence}]``."""
+    by_pair: dict[tuple[int, int], list[dict]] = defaultdict(list)
+    for verdict in session.scalars(
+        select(Verdict).where(Verdict.run_id.in_(run_ids), Verdict.error.is_(None))
+    ):
+        if verdict.matched is None:
+            continue
+        by_pair[(verdict.document_id, verdict.concept_id)].append(
+            {
+                "run_id": verdict.run_id,
+                "matched": bool(verdict.matched),
+                "confidence": verdict.confidence,
+                "evidence": verdict.evidence,
+                "confidence_usable": verdict.run_id in usable,
+            }
+        )
+
+    if include_unjudged:
+        # Candidates that retrieval selected but no run ever judged. These are a
+        # blind spot: they carry no verdict at all, so nothing else surfaces them.
+        for candidate in session.scalars(
+            select(Candidate).where(Candidate.run_id.in_(run_ids), Candidate.selected.is_(True))
+        ):
+            by_pair.setdefault((candidate.document_id, candidate.concept_id), [])
+    return by_pair
+
+
+def _priority(verdicts: list[dict], coverage: float) -> tuple[float, str]:
+    """A pair's queue score, and the reason it is worth labelling."""
+    matched_values = {v["matched"] for v in verdicts}
+    disagreement = len(matched_values) > 1
+
+    informative = [
+        v for v in verdicts if v["confidence_usable"] and v["confidence"] is not None
+    ]
+    # Distance from the decision boundary, only from runs worth believing.
+    uncertainty = (
+        max(0.0, 1.0 - 2 * abs(statistics.mean(v["confidence"] for v in informative) - 0.5))
+        if informative
+        else 0.0
+    )
+
+    if disagreement:
+        return 1.0 + uncertainty, "runs disagree"
+    if not verdicts:
+        return 0.5 + 0.3 * coverage, "never judged"
+    if uncertainty > 0:
+        return 0.4 * uncertainty + 0.2 * coverage, "model uncertain"
+    return 0.1 * coverage, "coverage"
+
+
+def _stratify(items: list[QueueItem], limit: int, per_concept_cap: int) -> list[QueueItem]:
+    """The top *limit* items with at most *per_concept_cap* per concept, backfilled."""
     # Stratify: a purely greedy take-the-top-N concentrates on whichever concept
     # is noisiest, leaving a bank that cannot support per-concept metrics.
     taken: dict[int, int] = defaultdict(int)

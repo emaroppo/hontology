@@ -20,8 +20,10 @@ from dataclasses import asdict, dataclass
 from sqlalchemy.orm import Session
 
 from hontology.db.models import Run
-from hontology.evaluation import metrics as metric_lib
-from hontology.evaluation.article import clean_verdicts
+from hontology.evaluation.article.verdicts import clean_verdicts
+from hontology.evaluation.metrics.confusion import Confusion
+from hontology.evaluation.metrics.intervals import with_intervals
+from hontology.evaluation.metrics.paired import McNemarResult, mcnemar
 from hontology.evaluation.pairs import evaluate as evaluate_module
 
 
@@ -70,13 +72,13 @@ def compare_runs(
 
     # Score both over the SAME shared subset, otherwise the comparison is
     # between different test sets wearing the same label.
-    confusion_a = metric_lib.Confusion()
-    confusion_b = metric_lib.Confusion()
+    confusion_a = Confusion()
+    confusion_b = Confusion()
     for key in shared:
         confusion_a.add(expected=truth[key], predicted=verdicts_a[key])
         confusion_b.add(expected=truth[key], predicted=verdicts_b[key])
 
-    paired = metric_lib.mcnemar(truth, verdicts_a, verdicts_b)
+    paired = mcnemar(truth, verdicts_a, verdicts_b)
     verdict = _interpret(paired, run_a.name, run_b.name, alpha=alpha)
 
     return Comparison(
@@ -85,16 +87,14 @@ def compare_runs(
         name_a=run_a.name,
         name_b=run_b.name,
         n_shared_labelled=len(shared),
-        metrics_a=metric_lib.with_intervals(confusion_a),
-        metrics_b=metric_lib.with_intervals(confusion_b),
+        metrics_a=with_intervals(confusion_a),
+        metrics_b=with_intervals(confusion_b),
         paired=paired.as_dict(),
         verdict=verdict,
     )
 
 
-def _interpret(
-    paired: metric_lib.McNemarResult, name_a: str, name_b: str, *, alpha: float
-) -> str:
+def _interpret(paired: McNemarResult, name_a: str, name_b: str, *, alpha: float) -> str:
     """State plainly what the numbers do and do not support."""
     if paired.n_pairs == 0:
         return "no labelled pairs judged by both runs — nothing to compare yet"

@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from hontology.db.models import Document, PairLabel, Run, Verdict
 from hontology.db.session import session_scope
-from hontology.evaluation import article
+from hontology.evaluation.article import bootstrap, sample_design, verdicts
 from hontology.evaluation.labels import sample
 from hontology.evaluation.labels.document_labels import import_document_labels
 from hontology.ontology import service
@@ -58,13 +58,13 @@ class TestScoring:
     TRUTH = {(1, 10): True, (1, 11): False, (2, 10): False, (2, 11): True, (3, 10): False}
 
     def test_an_unjudged_pair_counts_as_no(self):
-        result = article.confusion(self.TRUTH, {(1, 10): True})
+        result = verdicts.confusion(self.TRUTH, {(1, 10): True})
         assert (result.tp, result.fn, result.fp) == (1, 1, 0)
 
     def test_document_bootstrap_keeps_documents_with_only_negatives(self):
         """Document 3 has no positives and no predictions; dropping it from the
         resampling pool would bias every interval."""
-        scores = article.document_bootstrap(self.TRUTH, {(1, 10): True}, n_boot=200)
+        scores = bootstrap.document_bootstrap(self.TRUTH, {(1, 10): True}, n_boot=200)
         assert scores["documents"] == 3
         assert scores["precision"] == 1.0
         assert scores["recall"] == 0.5
@@ -73,7 +73,7 @@ class TestScoring:
         truth = {(d, 1): d % 2 == 0 for d in range(200)}
         baseline = {key: False for key in truth}
         arm = dict(truth)
-        result = article.paired_document_bootstrap(truth, baseline, arm, n_boot=300)
+        result = bootstrap.paired_document_bootstrap(truth, baseline, arm, n_boot=300)
         assert (result["baseline_f1"], result["arm_f1"], result["difference"]) == (
             0.0,
             1.0,
@@ -84,7 +84,7 @@ class TestScoring:
     def test_identical_arms_are_not_an_improvement(self):
         truth = {(d, 1): d % 3 == 0 for d in range(150)}
         guess = {key: (key[0] % 2 == 0) for key in truth}
-        result = article.paired_document_bootstrap(truth, guess, guess, n_boot=300)
+        result = bootstrap.paired_document_bootstrap(truth, guess, guess, n_boot=300)
         assert result["difference"] == 0
         assert result["improvement"] is False
 
@@ -103,8 +103,8 @@ class TestScoring:
             "precision_ci": [0.70, 0.78],
             "recall_ci": [0.78, 0.86],
         }
-        assert article.sample_status(wide)["target_met"] is False
-        assert article.sample_status(narrow)["target_met"] is True
+        assert sample_design.sample_status(wide)["target_met"] is False
+        assert sample_design.sample_status(narrow)["target_met"] is True
 
 
 @pytest.mark.requires_db
@@ -192,8 +192,8 @@ def test_predictions_treat_errors_and_absences_as_no():
         )
         session.flush()
         keys = {(document.id, concept.id), (document.id, other.id)}
-        assert article.predictions(session, run.id, keys) == {key: False for key in keys}
-        assert article.judged_keys(session, run.id, keys) == set()
+        assert verdicts.predictions(session, run.id, keys) == {key: False for key in keys}
+        assert verdicts.judged_keys(session, run.id, keys) == set()
 
 
 @pytest.mark.requires_db
@@ -260,7 +260,7 @@ class TestEqualPerWindow:
         ordered = sample.frozen_order(self.FRAME, seed=4, allocation=sample.EQUAL_PER_WINDOW)
         record = sample.manifest(1, "abc", 4, ordered, allocation=sample.EQUAL_PER_WINDOW)
         labelled = {d.document_id for d in ordered[:4]}
-        weights, groups = article.window_weights(record, labelled)
+        weights, groups = sample_design.window_weights(record, labelled)
         assert sorted(weights.values()) == [5.0, 5.0, 45.0, 45.0]
         assert set(groups.values()) == {"big", "small"}
 
@@ -269,8 +269,8 @@ class TestEqualPerWindow:
         precision is a half, weighted it follows the big window."""
         truth = {(1, 10): True, (2, 10): False}
         predicted = {(1, 10): True, (2, 10): True}
-        plain = article.document_bootstrap(truth, predicted, n_boot=50)
-        weighted = article.document_bootstrap(
+        plain = bootstrap.document_bootstrap(truth, predicted, n_boot=50)
+        weighted = bootstrap.document_bootstrap(
             truth,
             predicted,
             n_boot=50,
@@ -288,7 +288,7 @@ class TestEqualPerWindow:
         documents = [1, 2, 3, 4]
         groups = {1: "a", 2: "a", 3: "b", 4: "b"}
         for seed in range(5):
-            draw = article._resample(documents, groups, random.Random(seed))
+            draw = bootstrap._resample(documents, groups, random.Random(seed))
             assert Counter(groups[d] for d in draw) == {"a": 2, "b": 2}
 
     def test_windows_with_one_labelled_document_still_vary(self):
@@ -296,7 +296,7 @@ class TestEqualPerWindow:
         each alone would redraw it every time and give a zero-width interval."""
         truth = {(d, 10): d % 2 == 0 for d in range(1, 9)}
         predicted = {(d, 10): True for d in range(1, 9)}
-        result = article.document_bootstrap(
+        result = bootstrap.document_bootstrap(
             truth,
             predicted,
             n_boot=200,
@@ -312,7 +312,7 @@ class TestEqualPerWindow:
         documents = [1, 2, 3, 4, 5]
         groups = {1: "a", 2: "a", 3: "b", 4: "c", 5: "d"}
         for seed in range(5):
-            draw = article._resample(documents, groups, random.Random(seed))
+            draw = bootstrap._resample(documents, groups, random.Random(seed))
             assert sum(1 for d in draw if groups[d] == "a") == 2
             assert len(draw) == 5
 

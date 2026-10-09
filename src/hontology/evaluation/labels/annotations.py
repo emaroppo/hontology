@@ -3,7 +3,7 @@
 Every score is computed against a *truth*, and there are two kinds:
 
 - **Human**: the label bank, trusted and current labels only (see
-  `evaluation.labels.bank.trusted_labels`).
+  `evaluation.labels.staleness.trusted_labels`).
 - **Machine**: a named annotation set, such as a blind LLM labelling a sample
   on its own. Scoring against it measures agreement with that annotator, which
   is worth knowing and is not the same as correctness, so it is never mixed
@@ -22,8 +22,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from hontology.db.models import AnnotationSet, MachineAnnotation
-from hontology.evaluation.labels.bank import trusted_labels
 from hontology.evaluation.labels.document_labels import parse_document_labels
+from hontology.evaluation.labels.staleness import trusted_labels
 from hontology.ontology import service, snapshots
 
 Truth = dict[tuple[int, int], bool]

@@ -15,7 +15,7 @@ from sqlalchemy import delete, select
 from hontology.db.models import Document, Observation, PairLabel
 from hontology.db.session import session_scope
 from hontology.evaluation.labels import bank as labels
-from hontology.evaluation.labels import csv_io
+from hontology.evaluation.labels import csv_export, csv_io, staleness
 from hontology.ontology import service, snapshots
 
 pytestmark = pytest.mark.requires_db
@@ -102,7 +102,7 @@ class TestExport:
             )
 
         with session_scope() as session:
-            exported = csv_io.export_labels(session, bank["ontology"])
+            exported = csv_export.export_labels(session, bank["ontology"])
 
         rows = rows_of(exported)
         assert len(rows) == 1
@@ -121,7 +121,7 @@ class TestExport:
                 matched=True,
             )
         with session_scope() as session:
-            assert rows_of(csv_io.export_labels(session, bank["other"])) == []
+            assert rows_of(csv_export.export_labels(session, bank["other"])) == []
 
     def test_stale_labels_are_flagged_not_dropped(self, bank):
         """Omitting them would make an export smaller than the work behind it."""
@@ -137,14 +137,14 @@ class TestExport:
             snapshots.resolve_current(session, bank["ontology"])
 
         with session_scope() as session:
-            rows = rows_of(csv_io.export_labels(session, bank["ontology"]))
+            rows = rows_of(csv_export.export_labels(session, bank["ontology"]))
         assert len(rows) == 1
         assert rows[0]["stale"] == "true"
 
     def test_empty_bank_exports_a_header_only(self, bank):
         with session_scope() as session:
-            exported = csv_io.export_labels(session, bank["ontology"])
-        assert exported.strip() == ",".join(csv_io.LABEL_COLUMNS)
+            exported = csv_export.export_labels(session, bank["ontology"])
+        assert exported.strip() == ",".join(csv_export.LABEL_COLUMNS)
 
 
 class TestRoundTrip:
@@ -166,7 +166,7 @@ class TestRoundTrip:
             )
 
         with session_scope() as session:
-            exported = csv_io.export_labels(session, bank["ontology"])
+            exported = csv_export.export_labels(session, bank["ontology"])
             clear_labels(session, bank)
 
         with session_scope() as session:
@@ -193,7 +193,7 @@ class TestRoundTrip:
             )
         with session_scope() as session:
             original = one_label(session, bank).ontology_version
-            exported = csv_io.export_labels(session, bank["ontology"])
+            exported = csv_export.export_labels(session, bank["ontology"])
             clear_labels(session, bank)
 
         # The ontology moves on before the import.
@@ -209,7 +209,7 @@ class TestRoundTrip:
             label = one_label(session, bank)
             assert label.ontology_version == original
             # And it is therefore correctly recognised as stale.
-            assert label.id in labels.stale_label_ids(session, bank["ontology"])
+            assert label.id in staleness.stale_label_ids(session, bank["ontology"])
 
 
 class TestImportSafety:
@@ -338,7 +338,7 @@ class TestObservations:
         assert report["created"] == 1
 
         with session_scope() as session:
-            exported = rows_of(csv_io.export_observations(session, bank["ontology"]))
+            exported = rows_of(csv_export.export_observations(session, bank["ontology"]))
         assert len(exported) == 1
         assert exported[0]["locus_iso3"] == "KEN"
         assert exported[0]["occurred_on"] == "2026-08-01"

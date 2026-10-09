@@ -26,24 +26,21 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hontology.db.base import among
-from hontology.db.lookups import count
-from hontology.db.models import Candidate, Concept, Document, FeedSlice, Run, Verdict
+from hontology.db.models import Concept, FeedSlice, Run
 from hontology.evaluation.calendar.events import Entry, window_documents
+from hontology.evaluation.calendar.window_work import (
+    copy_window_candidates,
+    judge_window,
+    prepare_window,
+    reuse_retrieval,
+)
 from hontology.ontology import hierarchy, snapshots
-from hontology.pipeline.ingest.articles import dedup, scrape
-from hontology.pipeline.ingest.articles import filter as ingest_filter
-from hontology.pipeline.ingest.articles.dedup import representative_of
 from hontology.pipeline.ingest.feed import slices
 from hontology.pipeline.judge import run as judge_module
-from hontology.pipeline.retrieve import candidates as candidates_module
-from hontology.pipeline.runs import versions
-from hontology.pipeline.runs.runner import clone_candidates
 
 log = logging.getLogger(__name__)
 
 SLICES_PER_DAY = 96
-SCRAPE_BATCH = 200
 
 
 def _window_slices(
@@ -144,175 +141,29 @@ def process_entry(
         )
     )
     if candidates_from is not None:
-        # Another run's retrieval, reused: judge exactly the documents it
-        # judged in this window, with no scraping, deduplication or retrieval
-        # of our own, so the two runs differ only in how they judge.
-        representatives = copy_window_candidates(session, candidates_from, run.id, window)
-        session.commit()
-        allowed = window
-        fetched_now = deferred = 0
-        dedup_result = {"newly_marked": 0}
-        new: list[Document] = []
-        retrieval = {"copied_from_run": candidates_from, "documents": len(representatives)}
+        work = reuse_retrieval(session, run, window, candidates_from)
     else:
-        # Filter matches are computed for this window now, not taken from a set
-        # computed earlier: a window that finished ingesting after that set was
-        # built would otherwise be judged against articles that did not exist yet,
-        # find nothing in scope, and be marked done.
-        ontology_id = run.ontology_id
-        if ingest_filter.has_links(session, ontology_id):
-            matches = ingest_filter.matching_documents(
-                session, ontology_id, document_ids=sorted(window)
-            )
-            allowed = window & set(matches)
-            # Which links fetched this window: live rows change, so record the
-            # snapshot on the run.
-            snapshot = versions.resolve_links(session, ontology_id)
-            if snapshot is not None:
-                versions.note_filter(run, snapshot.version)
-        else:
-            allowed = window  # no links at all: the filter cannot distinguish anything
-
-        fetched_now = 0
-        deferred = 0
-        while True:
-            result = scrape.scrape_pending(
-                session, limit=SCRAPE_BATCH, document_ids=sorted(allowed)
-            )
-            session.commit()
-            deferred = result.get("deferred", 0)
-            if not result["attempted"]:
-                # Nothing left we could claim. A scraper running ahead may
-                # still hold some of this window's documents: wait for it,
-                # then look again, so none is retrieved before it is fetched.
-                if scrape.wait_for_claimed(session, sorted(allowed)):
-                    continue
-                break
-            fetched_now += result["attempted"]
-
-        dedup_result = dedup.deduplicate(session, sorted(allowed))
-        session.commit()
-
-        representatives = set(
-            session.scalars(
-                select(Document.id).where(
-                    among(Document.id, allowed),
-                    Document.body_path.is_not(None),
-                    Document.is_junk.is_(False),
-                    Document.duplicate_of.is_(None),
-                )
-            )
-        )
-        already = set(
-            session.scalars(
-                select(Candidate.document_id)
-                .where(
-                    Candidate.run_id == run.id, among(Candidate.document_id, representatives)
-                )
-                .distinct()
-            )
-        )
-        new = list(
-            session.scalars(
-                select(Document).where(among(Document.id, representatives - already))
-            )
-        )
-        retrieval = None
-        if new:
-            retrieval = candidates_module.build_semantic(
-                session,
-                run.id,
-                ontology_id=run.ontology_id,
-                documents=new,
-                config=run.config["candidates"],
-                embed_body_limit=run.config["common"]["embed_body_limit"],
-            ).as_dict()
-            session.commit()
-
-    remaining = None
-    if budget is not None:
-        judged = count(
-            session,
-            Verdict.id,
-            Verdict.run_id == run.id,
-            among(Verdict.document_id, representatives),
-        )
-        remaining = max(0, budget - judged)
-    pairs = count(
-        session,
-        Candidate.id,
-        Candidate.run_id == run.id,
-        Candidate.selected.is_(True),
-        among(Candidate.document_id, representatives),
+        work = prepare_window(session, run, window)
+    pairs, judged_now = judge_window(
+        session, run, work.representatives, budget=budget, judge=judge
     )
-    judged_now = None
-    if judge and (remaining is None or remaining > 0):
-        judged_now = judge_module.judge_run(
-            session,
-            run.id,
-            config=run.config,
-            judge_body_limit=run.config["common"]["judge_body_limit"],
-            limit=remaining,
-            document_ids=representatives,
-            by_score=budget is not None,
-        )
-        session.commit()
 
     summary = {
         "entry": entry.id,
         "in_window": len(window),
-        "passed_filter": len(allowed),
-        "fetched_now": fetched_now,
+        "passed_filter": len(work.allowed),
+        "fetched_now": work.fetched_now,
         # Still pending at the end: hosts whose crawl delay outlasted the pass.
-        "deferred": deferred,
-        "representatives": len(representatives),
-        "copies_marked": dedup_result["newly_marked"],
-        "retrieved_new": len(new),
-        "retrieval": retrieval,
+        "deferred": work.deferred,
+        "representatives": len(work.representatives),
+        "copies_marked": work.copies_marked,
+        "retrieved_new": len(work.new),
+        "retrieval": work.retrieval,
         "pairs_selected": pairs,
         "judge": judged_now,
     }
     log.info("calendar entry %s: %s", entry.id, summary)
     return summary
-
-
-def copy_window_candidates(
-    session: Session, source_run_id: int, target_run_id: int, window: set[int]
-) -> set[int]:
-    """Copy *source*'s candidates for the window's representatives into *target*.
-
-    Returns the representatives *source* retrieved for. Documents already
-    copied are left alone, so this is safe to repeat.
-    """
-    representatives = (
-        set(representative_of(session, sorted(window)).values()) if window else set()
-    )
-    if not representatives:
-        return set()
-    retrieved = set(
-        session.scalars(
-            select(Candidate.document_id)
-            .where(
-                Candidate.run_id == source_run_id,
-                among(Candidate.document_id, representatives),
-            )
-            .distinct()
-        )
-    )
-    present = set(
-        session.scalars(
-            select(Candidate.document_id)
-            .where(Candidate.run_id == target_run_id, among(Candidate.document_id, retrieved))
-            .distinct()
-        )
-    )
-    rows = session.scalars(
-        select(Candidate).where(
-            Candidate.run_id == source_run_id, among(Candidate.document_id, retrieved - present)
-        )
-    )
-    clone_candidates(session, rows, target_run_id)
-    return retrieved
 
 
 def judge_documents(

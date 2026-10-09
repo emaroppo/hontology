@@ -32,7 +32,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from hontology.db.session import session_scope
-from hontology.pipeline.ingest.feed import gdelt, slices
+from hontology.pipeline.ingest.feed import catchup, gdelt
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ class Watcher:
                 log.debug("another process holds the ingest lock; skipping this pass")
                 return None
             try:
-                return slices.catch_up(session, max_slices=self.max_slices)
+                return catchup.catch_up(session, max_slices=self.max_slices)
             finally:
                 unlock(session)
 

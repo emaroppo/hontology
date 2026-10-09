@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 from hontology.evaluation.calendar import events
 from hontology.pipeline.ingest.codes.cameo import CAMEO_SLUG
 from hontology.pipeline.ingest.codes.themes import THEMES_SLUG
-from hontology.pipeline.runs import versions
+from hontology.pipeline.runs import link_versions
 
 Key = tuple[str, str]  # (system slug, code)
 
@@ -43,8 +43,8 @@ _EVENT_CODE = "COALESCE(NULLIF(event_code, ''), NULLIF(base_code, ''), NULLIF(ro
 def link_set(session: Session, ontology_id: int, version: str | None) -> list[list]:
     """``[[concept id, system, code], ...]`` of a snapshot, or the live links."""
     if version is None:
-        return versions.current_links(session, ontology_id)
-    links = versions.link_snapshot(session, ontology_id, version)
+        return link_versions.current_links(session, ontology_id)
+    links = link_versions.link_snapshot(session, ontology_id, version)
     if links is None:
         raise LookupError(f"no link version {version!r}")
     return links

@@ -16,8 +16,8 @@ from sqlalchemy import select
 
 from hontology.db.models import Candidate, Document, Run
 from hontology.db.session import session_scope
-from hontology.evaluation.labels import bank
-from hontology.ontology import hierarchy, owl, service, snapshots
+from hontology.evaluation.labels import bank, staleness
+from hontology.ontology import hierarchy, owl, portable, service, snapshots
 
 pytestmark = pytest.mark.requires_db
 
@@ -68,7 +68,7 @@ def ids_by_name(session, ontology_id: int) -> dict[str, int]:
 class TestRelations:
     def test_leaves_and_top_level_follow_the_edges(self):
         with session_scope() as session:
-            ontology = service.import_ontology(session, hierarchical_payload())
+            ontology = portable.import_ontology(session, hierarchical_payload())
             ids = ids_by_name(session, ontology.id)
             assert hierarchy.leaves(session, ontology.id) == {ids[n] for n in LEAVES}
             # A leaf with no parent is top level too: it is still asked about.
@@ -79,7 +79,7 @@ class TestRelations:
 
     def test_a_class_may_have_several_parents(self):
         with session_scope() as session:
-            ontology = service.import_ontology(session, hierarchical_payload())
+            ontology = portable.import_ontology(session, hierarchical_payload())
             ids = ids_by_name(session, ontology.id)
             parents = hierarchy.parents(session, ontology.id)
             assert parents[ids["Import ban"]] == {ids["Trade restriction"], ids["Sanctions"]}
@@ -92,32 +92,32 @@ class TestRelations:
 
     def test_a_cycle_is_refused_and_the_old_relations_survive(self):
         with session_scope() as session:
-            ontology = service.import_ontology(session, hierarchical_payload())
+            ontology = portable.import_ontology(session, hierarchical_payload())
             before = hierarchy.edges(session, ontology.id)
             looped = hierarchical_payload()
             looped["relations"] = STRUCTURE + [["Trade policy", "subclass_of", "Import ban"]]
             with pytest.raises(service.Conflict, match="cycle"):
-                service.import_ontology(session, looped)
+                portable.import_ontology(session, looped)
             assert hierarchy.edges(session, ontology.id) == before
 
     def test_a_relation_to_an_unknown_class_is_refused(self):
         bad = hierarchical_payload()
         bad["relations"] = [["Import ban", "subclass_of", "Nowhere"]]
         with session_scope() as session, pytest.raises(service.Conflict, match="Nowhere"):
-            service.import_ontology(session, bad)
+            portable.import_ontology(session, bad)
 
 
 class TestVersions:
     def test_a_flat_ontology_hashes_as_it_always_did(self):
         """Adding the capability must not mint versions for anyone not using it."""
         with session_scope() as session:
-            ontology = service.import_ontology(session, flat_payload())
+            ontology = portable.import_ontology(session, flat_payload())
             concepts = service.list_concepts(session, ontology.id)
             assert snapshots.content_hash(concepts) == snapshots.content_hash(concepts, [])
 
     def test_structure_changes_the_version(self):
         with session_scope() as session:
-            ontology = service.import_ontology(session, hierarchical_payload())
+            ontology = portable.import_ontology(session, hierarchical_payload())
             first = snapshots.resolve_current(session, ontology.id)
             ids = ids_by_name(session, ontology.id)
             hierarchy.set_relations(
@@ -132,7 +132,7 @@ class TestVersions:
         """The internal classes are new and the leaves' wording is untouched, so
         nothing a person labelled has been reworded."""
         with session_scope() as session:
-            ontology = service.import_ontology(session, flat_payload())
+            ontology = portable.import_ontology(session, flat_payload())
             ids = ids_by_name(session, ontology.id)
             document = Document(url="https://hi.test/1", url_hash="hitest000001")
             session.add(document)
@@ -145,23 +145,23 @@ class TestVersions:
                 ontology_id=ontology.id,
             )
             stamped = label.ontology_version
-            service.import_ontology(session, hierarchical_payload(), allow_text_change=False)
+            portable.import_ontology(session, hierarchical_payload(), allow_text_change=False)
             assert snapshots.resolve_current(session, ontology.id).version != stamped
-            assert bank.stale_label_ids(session, ontology.id) == set()
+            assert staleness.stale_label_ids(session, ontology.id) == set()
 
 
 class TestImportExport:
     def test_a_version_1_import_leaves_relations_alone(self):
         with session_scope() as session:
-            ontology = service.import_ontology(session, hierarchical_payload())
+            ontology = portable.import_ontology(session, hierarchical_payload())
             before = hierarchy.edges(session, ontology.id)
-            service.import_ontology(session, flat_payload())
+            portable.import_ontology(session, flat_payload())
             assert hierarchy.edges(session, ontology.id) == before
 
     def test_export_carries_the_relations(self):
         with session_scope() as session:
-            ontology = service.import_ontology(session, hierarchical_payload())
-            exported = service.export_ontology(session, ontology.id)
+            ontology = portable.import_ontology(session, hierarchical_payload())
+            exported = portable.export_ontology(session, ontology.id)
             assert exported["export_version"] == 2
             assert exported["relations"] == sorted(STRUCTURE)
 
@@ -169,9 +169,9 @@ class TestImportExport:
         reworded = hierarchical_payload()
         reworded["concepts"][0]["definition"] = "Something else entirely."
         with session_scope() as session:
-            service.import_ontology(session, flat_payload())
+            portable.import_ontology(session, flat_payload())
             with pytest.raises(service.Conflict, match="reword"):
-                service.import_ontology(session, reworded, allow_text_change=False)
+                portable.import_ontology(session, reworded, allow_text_change=False)
 
 
 class TestOwl:
@@ -197,7 +197,7 @@ class TestOwl:
 
     def test_reimporting_its_own_export_changes_nothing(self):
         with session_scope() as session:
-            ontology = service.import_ontology(session, hierarchical_payload())
+            ontology = portable.import_ontology(session, hierarchical_payload())
             before = snapshots.resolve_current(session, ontology.id)
             turtle = owl.export_turtle(session, ontology.id)
             owl.import_turtle(session, turtle)
@@ -235,8 +235,8 @@ def test_flat_retrieval_only_ever_ranks_leaves(tmp_path, monkeypatch):
     )
 
     with session_scope() as session:
-        ontology = service.import_ontology(session, hierarchical_payload())
-        other = service.import_ontology(session, flat_payload("test-hier-other"))
+        ontology = portable.import_ontology(session, hierarchical_payload())
+        other = portable.import_ontology(session, flat_payload("test-hier-other"))
         document = Document(
             url="https://hi.test/leaf", url_hash="hileaf000001", body_path="leaf.txt"
         )

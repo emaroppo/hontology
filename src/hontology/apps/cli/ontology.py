@@ -9,8 +9,8 @@ import typer
 
 from hontology.apps.cli.common import emit, read_json
 from hontology.db.session import session_scope
+from hontology.ontology import portable, snapshots
 from hontology.ontology import service as ontology_service
-from hontology.ontology import snapshots
 
 app = typer.Typer(help="Manage ontologies.")
 
@@ -32,7 +32,7 @@ def ontology_list() -> None:
 def ontology_import(path: Path) -> None:
     """Create or merge an ontology from a JSON export."""
     with session_scope() as session:
-        ontology = ontology_service.import_ontology(session, read_json(path))
+        ontology = portable.import_ontology(session, read_json(path))
         session.flush()
         typer.echo(f"imported {ontology.slug!r} (id {ontology.id})")
 
@@ -41,7 +41,7 @@ def ontology_import(path: Path) -> None:
 def ontology_export(ontology_id: int, out: Path | None = None) -> None:
     """Write an ontology to a portable JSON file, or stdout."""
     with session_scope() as session:
-        payload = ontology_service.export_ontology(session, ontology_id)
+        payload = portable.export_ontology(session, ontology_id)
     emit(json.dumps(payload, indent=2, ensure_ascii=False), out)
 
 
@@ -95,7 +95,7 @@ def ontology_links_import(ontology_id: int, path: Path) -> None:
 @app.command("lint")
 def ontology_lint_command(ontology_id: int) -> None:
     """Health checks: strength drift, near-duplicates, thin definitions."""
-    from hontology.ontology import lint as lint_module
+    from hontology.ontology.lint import report as lint_module
 
     with session_scope() as session:
         result = lint_module.lint(session, ontology_id)

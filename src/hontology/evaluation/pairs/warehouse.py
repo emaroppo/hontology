@@ -17,7 +17,7 @@ from pathlib import Path
 import duckdb
 
 from hontology.config import get_settings
-from hontology.evaluation.metrics import format_ci, format_num
+from hontology.evaluation.metrics.intervals import format_ci, format_num
 from hontology.evaluation.pairs.evaluate import RunEvaluation
 
 SCHEMA = """

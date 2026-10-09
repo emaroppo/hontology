@@ -29,8 +29,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hontology.db.models import Candidate, Run, Verdict
-from hontology.evaluation import article
-from hontology.evaluation import metrics as metric_lib
+from hontology.evaluation.article.bootstrap import document_bootstrap
+from hontology.evaluation.metrics.calibration import calibration_bins
 from hontology.ontology import hierarchy
 from hontology.pipeline.judge import prompts
 from hontology.pipeline.runs import config as run_config
@@ -127,7 +127,7 @@ def evaluate(
     stated: dict[Key, float] = {}
     for run in runs:  # newest first, so a pair keeps the newest run's answer
         given, confidence = _given(session, run, truth, leaves, scope)
-        scores = article.document_bootstrap({k: truth[k] for k in given}, given, seed=seed)
+        scores = document_bootstrap({k: truth[k] for k in given}, given, seed=seed)
         per_run.append({"run_id": run.id, "name": run.name, "pairs": len(given), **scores})
         for key, matched in given.items():
             if key not in pooled:
@@ -139,11 +139,11 @@ def evaluate(
         "truth_pairs": len(truth),
         "pooled": {
             "pairs": len(pooled),
-            **article.document_bootstrap({k: truth[k] for k in pooled}, pooled, seed=seed),
+            **document_bootstrap({k: truth[k] for k in pooled}, pooled, seed=seed),
         },
         "runs": per_run,
         # Is the stated confidence a probability? Only pairs actually answered.
-        "calibration": metric_lib.calibration_bins(
+        "calibration": calibration_bins(
             [(stated[key], pooled[key] == truth[key]) for key in stated]
         ),
     }

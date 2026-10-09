@@ -47,38 +47,32 @@ class Step:
 def funnel(session: Session, run_id: int) -> dict:
     """Document and pair counts at each stage of one run."""
     run = get_run(session, run_id)
+    documents = _document_steps(session, run_id)
+    pairs = _pair_steps(session, run_id)
+    selected, judged = pairs[1].count, pairs[2].count
+    errored = count(session, Verdict.id, Verdict.run_id == run_id, Verdict.error.is_not(None))
+    return {
+        "run_id": run_id,
+        "run_name": run.name,
+        "documents": _render(documents),
+        "pairs": _render(pairs),
+        "errored_verdicts": errored,
+        # A judged count short of selected, with no errors to explain it, means
+        # the run stopped early rather than the model failing.
+        "unjudged_selected": max(0, selected - judged - errored),
+    }
 
+
+def _document_steps(session: Session, run_id: int) -> list[Step]:
     corpus = count(session, Document.id)
     fetched = count(session, Document.id, Document.fetched_at.is_not(None))
     usable = count(
         session, Document.id, Document.body_path.is_not(None), Document.is_junk.is_(False)
     )
-
     considered = count(
         session, func.distinct(Candidate.document_id), Candidate.run_id == run_id
     )
-    pool = count(session, Candidate.id, Candidate.run_id == run_id)
-    selected = count(
-        session, Candidate.id, Candidate.run_id == run_id, Candidate.selected.is_(True)
-    )
-
-    judged = count(
-        session,
-        Verdict.id,
-        Verdict.run_id == run_id,
-        Verdict.error.is_(None),
-        Verdict.matched.is_not(None),
-    )
-    errored = count(session, Verdict.id, Verdict.run_id == run_id, Verdict.error.is_not(None))
-    matched = count(
-        session,
-        Verdict.id,
-        Verdict.run_id == run_id,
-        Verdict.matched.is_(True),
-        Verdict.error.is_(None),
-    )
-
-    documents = [
+    return [
         Step("documents ingested", corpus, "everything the feed has yielded"),
         Step(
             "fetched",
@@ -96,7 +90,29 @@ def funnel(session: Session, run_id: int) -> dict:
             "bounded by the run's document limit and any ingest filter",
         ),
     ]
-    pairs = [
+
+
+def _pair_steps(session: Session, run_id: int) -> list[Step]:
+    """Pool, selected, judged and matched, in that order."""
+    pool = count(session, Candidate.id, Candidate.run_id == run_id)
+    selected = count(
+        session, Candidate.id, Candidate.run_id == run_id, Candidate.selected.is_(True)
+    )
+    judged = count(
+        session,
+        Verdict.id,
+        Verdict.run_id == run_id,
+        Verdict.error.is_(None),
+        Verdict.matched.is_not(None),
+    )
+    matched = count(
+        session,
+        Verdict.id,
+        Verdict.run_id == run_id,
+        Verdict.matched.is_(True),
+        Verdict.error.is_(None),
+    )
+    return [
         Step("candidate pairs (pool)", pool, "every concept ranked per document"),
         Step(
             "selected by the cutoff",
@@ -111,25 +127,15 @@ def funnel(session: Session, run_id: int) -> dict:
         ),
     ]
 
-    def render(steps: list[Step]) -> list[dict]:
-        top = steps[0].count
-        out: list[dict] = []
-        previous: int | None = None
-        for step in steps:
-            out.append(step.as_dict(previous, top))
-            previous = step.count
-        return out
 
-    return {
-        "run_id": run_id,
-        "run_name": run.name,
-        "documents": render(documents),
-        "pairs": render(pairs),
-        "errored_verdicts": errored,
-        # A judged count short of selected, with no errors to explain it, means
-        # the run stopped early rather than the model failing.
-        "unjudged_selected": max(0, selected - judged - errored),
-    }
+def _render(steps: list[Step]) -> list[dict]:
+    top = steps[0].count
+    out: list[dict] = []
+    previous: int | None = None
+    for step in steps:
+        out.append(step.as_dict(previous, top))
+        previous = step.count
+    return out
 
 
 def format_funnel(result: dict) -> str:

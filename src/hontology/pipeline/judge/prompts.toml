@@ -1,7 +1,7 @@
 # Every word the judge reads that is not the article or the ontology.
 #
-# How the pieces are put together, and which prompt id uses which, is in
-# prompts.py. Strings are TOML literal strings: exactly what the model sees,
+# How the pieces are put together is in wording.py, and which prompt id uses
+# which in prompts.py. Strings are TOML literal strings: exactly what the model sees,
 # nothing escaped. `{n}` and `{max_events}` are filled in when a prompt is built.
 #
 # Append-only. A prompt id's wording is part of every verdict recorded under it,

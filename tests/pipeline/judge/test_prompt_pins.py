@@ -13,11 +13,11 @@ import pytest
 from hontology.db.models import Run
 from hontology.pipeline.judge import prompts
 from hontology.pipeline.judge.run import PromptChanged, check_wording
-from hontology.pipeline.runs import versions
+from hontology.pipeline.runs import fingerprints
 
 
 def test_every_released_prompt_is_pinned_to_its_wording():
-    current = {pid: versions.prompt_fingerprint(pid) for pid in prompts.available()}
+    current = {pid: fingerprints.prompt_fingerprint(pid) for pid in prompts.available()}
     assert current == prompts.PINS, (
         "prompts.lock.json does not match the registered prompts. A new prompt id "
         "needs its fingerprint pinned; a pinned id whose fingerprint changed was "
@@ -42,7 +42,7 @@ def test_a_run_is_not_continued_under_other_wording():
 
 
 def test_matching_wording_passes():
-    check_wording(_run(versions.prompt_fingerprint("strict_v1")), "strict_v1")
+    check_wording(_run(fingerprints.prompt_fingerprint("strict_v1")), "strict_v1")
     check_wording(_run(None), "strict_v1")  # a run from before fingerprints
 
 

@@ -17,7 +17,7 @@ from hontology.db.base import among
 from hontology.db.lookups import concept_ids_by_name
 from hontology.db.models import TRUSTED_SOURCES, Document, PairLabel
 from hontology.evaluation.labels import bank as label_service
-from hontology.evaluation.labels.csv_io import cell
+from hontology.evaluation.labels.csv_format import cell
 from hontology.ontology import hierarchy
 
 DOCUMENT_LABEL_COLUMNS = ("position", "document_url", "title", "excerpt", "concepts", "note")

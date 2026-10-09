@@ -3,15 +3,13 @@
 A `Run` row is both the experiment's identity and its job record, so a run that
 dies leaves a row explaining how far it got rather than vanishing.
 
-Reuse is decided here. Two runs sharing a ``candidates_key`` share retrieval, and
-the second copies those rows instead of recomputing them — which is what makes
-iterating on a prompt cost only the judging.
+Reuse is decided here: a run whose ``candidates_key`` another run already built
+copies those rows (`pipeline.runs.reuse`) instead of recomputing them.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
@@ -24,7 +22,7 @@ from hontology.ontology import snapshots
 from hontology.pipeline.judge import run as judge_run_module
 from hontology.pipeline.retrieve import candidates as candidates_module
 from hontology.pipeline.runs import config as run_config
-from hontology.pipeline.runs import versions
+from hontology.pipeline.runs import fingerprints, reuse
 
 log = logging.getLogger(__name__)
 
@@ -78,52 +76,10 @@ def create_run(
     )
     # Fingerprints of the code and prompt text in force now, so the run's stage
     # versions stay right if either is edited later.
-    run.manifest = (run.manifest or {}) | {"versions": versions.recorded(run)}
+    run.manifest = (run.manifest or {}) | {"versions": fingerprints.recorded(run)}
     session.add(run)
     session.flush()
     return run
-
-
-def reusable_candidates_run(session: Session, run: Run) -> Run | None:
-    """A completed earlier run whose retrieval this one can adopt verbatim."""
-    return session.scalar(
-        select(Run)
-        .where(
-            Run.id != run.id,
-            Run.ontology_id == run.ontology_id,
-            Run.candidates_key == run.candidates_key,
-            Run.status.in_(("done", "judged", "candidates")),
-        )
-        .order_by(Run.id)
-        .limit(1)
-    )
-
-
-def clone_candidates(session: Session, rows: Iterable[Candidate], target_run_id: int) -> int:
-    """Add a copy of each candidate under *target_run_id*; returns how many."""
-    copied = 0
-    for row in rows:
-        session.add(
-            Candidate(
-                run_id=target_run_id,
-                document_id=row.document_id,
-                concept_id=row.concept_id,
-                source=row.source,
-                score=row.score,
-                rank=row.rank,
-                selected=row.selected,
-                matched_code=row.matched_code,
-                matched_level=row.matched_level,
-            )
-        )
-        copied += 1
-    session.flush()
-    return copied
-
-
-def copy_candidates(session: Session, source_run_id: int, target_run_id: int) -> int:
-    rows = list(session.scalars(select(Candidate).where(Candidate.run_id == source_run_id)))
-    return clone_candidates(session, rows, target_run_id)
 
 
 def pending_documents(
@@ -195,6 +151,38 @@ def execute(
     return result
 
 
+def _candidates_stage(
+    session: Session,
+    run: Run,
+    *,
+    document_limit: int,
+    refresh_embeddings: bool,
+    document_ids: list[int] | None,
+) -> tuple[dict, int | None]:
+    """Build *run*'s candidates, or adopt another run's: the stats, and the donor."""
+    documents = pending_documents(session, document_limit, document_ids=document_ids)
+    existing = session.scalar(
+        select(func.count(Candidate.id)).where(Candidate.run_id == run.id)
+    )
+    if existing:
+        return {"reused": "already built for this run", "pool_rows": existing}, None
+    donor = reuse.reusable_candidates_run(session, run)
+    if donor is not None:
+        copied = reuse.copy_candidates(session, donor.id, run.id)
+        log.info("candidates reused from run %s (%s rows)", donor.id, copied)
+        return {"reused_from_run": donor.id, "pool_rows": copied}, donor.id
+    stats = candidates_module.build_candidates(
+        session,
+        run.id,
+        ontology_id=run.ontology_id,
+        documents=documents,
+        config=run.config["candidates"],
+        embed_body_limit=run.config["common"]["embed_body_limit"],
+        refresh_embeddings=refresh_embeddings,
+    )
+    return stats, None
+
+
 def _execute_stages(
     session: Session,
     run: Run,
@@ -205,32 +193,13 @@ def _execute_stages(
     refresh_embeddings: bool,
     document_ids: list[int] | None,
 ) -> dict:
-    documents = pending_documents(session, document_limit, document_ids=document_ids)
-    reused_from = None
-
-    existing = session.scalar(
-        select(func.count(Candidate.id)).where(Candidate.run_id == run.id)
+    candidate_stats, reused_from = _candidates_stage(
+        session,
+        run,
+        document_limit=document_limit,
+        refresh_embeddings=refresh_embeddings,
+        document_ids=document_ids,
     )
-    if existing:
-        candidate_stats = {"reused": "already built for this run", "pool_rows": existing}
-    else:
-        donor = reusable_candidates_run(session, run)
-        if donor is not None:
-            copied = copy_candidates(session, donor.id, run.id)
-            reused_from = donor.id
-            candidate_stats = {"reused_from_run": donor.id, "pool_rows": copied}
-            log.info("candidates reused from run %s (%s rows)", donor.id, copied)
-        else:
-            candidate_stats = candidates_module.build_candidates(
-                session,
-                run.id,
-                ontology_id=run.ontology_id,
-                documents=documents,
-                config=run.config["candidates"],
-                embed_body_limit=run.config["common"]["embed_body_limit"],
-                refresh_embeddings=refresh_embeddings,
-            )
-
     run.stage = "judge"
     session.commit()
 

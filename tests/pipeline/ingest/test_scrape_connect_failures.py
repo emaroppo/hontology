@@ -10,7 +10,8 @@ import pytest
 
 from hontology.db.models import Document
 from hontology.db.session import session_scope
-from hontology.pipeline.ingest.articles import scrape
+from hontology.pipeline.ingest.articles import claims, host_scrape, scrape
+from hontology.pipeline.ingest.articles.fetch import RobotsCache
 
 pytestmark = pytest.mark.requires_db
 
@@ -23,8 +24,8 @@ def document_id(monkeypatch, tmp_path) -> int:
 
     settings = get_settings()
     monkeypatch.setattr(type(settings), "scrape_cache_dir", property(lambda self: tmp_path))
-    monkeypatch.setattr(scrape.RobotsCache, "allowed", lambda self, url: True)
-    monkeypatch.setattr(scrape.RobotsCache, "crawl_delay", lambda self, url: None)
+    monkeypatch.setattr(RobotsCache, "allowed", lambda self, url: True)
+    monkeypatch.setattr(RobotsCache, "crawl_delay", lambda self, url: None)
     with session_scope() as session:
         document = Document(url="https://flaky.test/a", url_hash="flakytest0001")
         session.add(document)
@@ -33,7 +34,7 @@ def document_id(monkeypatch, tmp_path) -> int:
 
 
 def attempt(monkeypatch, document_id: int, error: str) -> tuple[dict, Document]:
-    monkeypatch.setattr(scrape, "fetch_html", lambda url, **kw: (None, None, error))
+    monkeypatch.setattr(host_scrape, "fetch_html", lambda url, **kw: (None, None, error))
     with session_scope() as session:
         result = scrape.scrape_pending(session, document_ids=[document_id])
     with session_scope() as session:
@@ -49,7 +50,7 @@ def test_a_connection_failure_leaves_the_document_pending(monkeypatch, document_
 
 
 def test_it_fails_for_good_at_the_limit(monkeypatch, document_id):
-    for _ in range(scrape.MAX_CONNECT_FAILURES - 1):
+    for _ in range(host_scrape.MAX_CONNECT_FAILURES - 1):
         attempt(monkeypatch, document_id, DNS)
     result, document = attempt(monkeypatch, document_id, DNS)
     assert result["failed"] == 1
@@ -68,9 +69,9 @@ def test_a_connection_failure_is_handed_back_and_can_be_left_out(monkeypatch, do
     result, _ = attempt(monkeypatch, document_id, DNS)
     assert result["held_back"] == [document_id]
     with session_scope() as session:
-        assert scrape.pending_documents(session, 10, document_ids=[document_id]) != []
+        assert claims.pending_documents(session, 10, document_ids=[document_id]) != []
         assert (
-            scrape.pending_documents(
+            claims.pending_documents(
                 session, 10, document_ids=[document_id], exclude=[document_id]
             )
             == []

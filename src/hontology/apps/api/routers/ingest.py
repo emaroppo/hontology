@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from hontology.db.session import get_db
 from hontology.pipeline.ingest.articles import scrape as scrape_service
-from hontology.pipeline.ingest.feed import slices
+from hontology.pipeline.ingest.feed import catchup
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
@@ -42,14 +42,14 @@ class BackfillIn(BaseModel):
 @router.get("/status", response_model=IngestStatusOut)
 def ingest_status(db: Session = Depends(get_db)):
     """Watermark, lag and slice outcomes — whether the feed is being kept up with."""
-    return slices.status(db)
+    return catchup.status(db)
 
 
 @router.post("/catch-up")
 def catch_up(payload: CatchUpIn | None = None, db: Session = Depends(get_db)):
     """Process everything between the watermark and the newest published slice."""
     try:
-        return slices.catch_up(db, max_slices=(payload or CatchUpIn()).max_slices)
+        return catchup.catch_up(db, max_slices=(payload or CatchUpIn()).max_slices)
     except Exception as exc:  # noqa: BLE001 - reported rather than a 500 traceback
         raise HTTPException(
             http_status.HTTP_502_BAD_GATEWAY, f"catch-up failed: {exc}"
@@ -60,7 +60,7 @@ def catch_up(payload: CatchUpIn | None = None, db: Session = Depends(get_db)):
 def backfill(payload: BackfillIn, db: Session = Depends(get_db)):
     """Ingest an explicit historical window without moving the watermark."""
     try:
-        return slices.backfill(db, payload.start, payload.end)
+        return catchup.backfill(db, payload.start, payload.end)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             http_status.HTTP_502_BAD_GATEWAY, f"backfill failed: {exc}"

@@ -14,9 +14,11 @@ of loss nobody notices until the curation is long gone.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
-from sqlalchemy import delete, insert, select, text
+from sqlalchemy import Row, insert, select, text
 from sqlalchemy.orm import Session
 
 from hontology.db.models import (
@@ -28,11 +30,12 @@ from hontology.db.models import (
     SimilarityScore,
 )
 from hontology.pipeline.ingest.codes import themes
-from hontology.pipeline.retrieve.candidates import select_adaptive
-from hontology.pipeline.retrieve.embed import (
-    EmbeddingProvider,
-    embed_concepts,
-    ensure_embeddings,
+from hontology.pipeline.retrieve.embed import embed_concepts, ensure_embeddings
+from hontology.pipeline.retrieve.embedders import EmbeddingProvider
+from hontology.pipeline.retrieve.proposals import (
+    apply_links,
+    select_by_threshold,
+    select_per_concept,
 )
 
 # Cosine similarity via pgvector's distance operator. Vectors are normalized, so
@@ -137,6 +140,33 @@ def run_similarity(
     session.add(run)
     session.flush()
 
+    pairs = _score_pairs(session, run.id, model_id, concept_keys, code_keys)
+
+    n_linked = 0
+    n_manual = 0
+    if auto_link:
+        selected = (
+            select_per_concept(pairs, min_score=min_score, rel_margin=rel_margin, max_k=max_k)
+            if adaptive
+            else select_by_threshold(pairs, threshold)
+        )
+        n_linked, n_manual = apply_links(
+            session, run.id, ontology_id, system_id, level, selected
+        )
+
+    return SimilarityResult(
+        run_id=run.id, n_scores=len(pairs), n_linked=n_linked, n_manual_preserved=n_manual
+    )
+
+
+def _score_pairs(
+    session: Session,
+    run_id: int,
+    model_id: int,
+    concept_keys: dict[int, str],
+    code_keys: dict[int, str],
+) -> Sequence[Row[Any]]:
+    """Score every concept against every code, persisting each score."""
     pairs = session.execute(
         _PAIRWISE,
         {
@@ -151,7 +181,7 @@ def run_similarity(
             insert(SimilarityScore),
             [
                 {
-                    "run_id": run.id,
+                    "run_id": run_id,
                     "source_id": int(p.concept_id),
                     "target_id": int(p.code_id),
                     "score": float(p.score),
@@ -160,114 +190,7 @@ def run_similarity(
             ],
         )
         session.flush()
-
-    n_linked = 0
-    n_manual = 0
-    if auto_link:
-        selected = (
-            _select_adaptive(pairs, min_score=min_score, rel_margin=rel_margin, max_k=max_k)
-            if adaptive
-            else _select_threshold(pairs, threshold)
-        )
-        n_linked, n_manual = _apply_links(
-            session, run.id, ontology_id, system_id, level, selected
-        )
-
-    return SimilarityResult(
-        run_id=run.id, n_scores=len(pairs), n_linked=n_linked, n_manual_preserved=n_manual
-    )
-
-
-def _select_threshold(pairs, threshold: float) -> dict[tuple[int, int], float]:
-    best: dict[tuple[int, int], float] = {}
-    for p in pairs:
-        score = float(p.score)
-        if score < threshold:
-            continue
-        key = (int(p.concept_id), int(p.code_id))
-        if score > best.get(key, -1.0):
-            best[key] = score
-    return best
-
-
-def _select_adaptive(
-    pairs, *, min_score: float, rel_margin: float, max_k: int
-) -> dict[tuple[int, int], float]:
-    """Per-concept selection: keep codes within *rel_margin* of that concept's best.
-
-    A flat threshold suits concepts unevenly — a concept whose best match scores
-    0.8 and one whose best scores 0.5 need different cutoffs, and a single number
-    either floods the first with weak links or leaves the second with none.
-    """
-    by_concept: dict[int, dict[int, float]] = {}
-    for p in pairs:
-        by_concept.setdefault(int(p.concept_id), {})[int(p.code_id)] = float(p.score)
-
-    selected: dict[tuple[int, int], float] = {}
-    for concept_id, targets in by_concept.items():
-        ranked = sorted(targets.items(), key=lambda kv: kv[1], reverse=True)
-        for code_id, score in select_adaptive(
-            ranked, min_score=min_score, rel_margin=rel_margin, max_k=max_k
-        ):
-            selected[(concept_id, code_id)] = score
-    return selected
-
-
-def _apply_links(
-    session: Session,
-    run_id: int,
-    ontology_id: int,
-    system_id: int,
-    level: str,
-    selected: dict[tuple[int, int], float],
-) -> tuple[int, int]:
-    """Replace auto-proposed links for this level, leaving manual ones untouched."""
-    concept_ids = {
-        c.id for c in session.scalars(select(Concept).where(Concept.ontology_id == ontology_id))
-    }
-    level_code_ids = {
-        c.id
-        for c in session.scalars(
-            select(Code).where(Code.system_id == system_id, Code.level == level)
-        )
-    }
-
-    # Only auto-proposed rows (run id set) for this ontology and level are cleared.
-    session.execute(
-        delete(ConceptCode).where(
-            ConceptCode.similarity_run_id.is_not(None),
-            ConceptCode.concept_id.in_(concept_ids),
-            ConceptCode.code_id.in_(level_code_ids),
-        )
-    )
-    session.flush()
-
-    manual = {
-        (row.concept_id, row.code_id)
-        for row in session.scalars(
-            select(ConceptCode).where(
-                ConceptCode.concept_id.in_(concept_ids),
-                ConceptCode.code_id.in_(level_code_ids),
-            )
-        )
-    }
-
-    added = 0
-    for (concept_id, code_id), score in selected.items():
-        # Never duplicate a pair a human already asserted by hand.
-        if (concept_id, code_id) in manual:
-            continue
-        session.add(
-            ConceptCode(
-                concept_id=concept_id,
-                code_id=code_id,
-                similarity_score=score,
-                similarity_run_id=run_id,
-            )
-        )
-        added += 1
-    session.flush()
-    return added, len(manual)
+    return pairs
 
 
 def candidates_for_concept(

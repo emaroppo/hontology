@@ -12,7 +12,7 @@ import pytest
 from hontology.db.models import Candidate, Document, Run, Verdict
 from hontology.db.session import session_scope
 from hontology.evaluation.stages import judge_eval
-from hontology.ontology import service
+from hontology.ontology import portable, service
 
 pytestmark = pytest.mark.requires_db
 
@@ -41,7 +41,7 @@ def world():
     top-down judge reached Strike only and said yes: it never asked about Flood.
     """
     with session_scope() as session:
-        ontology = service.import_ontology(
+        ontology = portable.import_ontology(
             session,
             {
                 "export_version": 2,

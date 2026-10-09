@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from hontology.pipeline.retrieve.embed import content_key, normalize_for_embedding, query_prefix
+from hontology.pipeline.retrieve.embed import content_key
+from hontology.pipeline.retrieve.model_text import normalize_for_embedding, query_prefix
 
 
 class TestNormalization:
@@ -66,7 +67,8 @@ class TestPrefixes:
 def test_normalization_prevents_vector_collapse():
     """The actual failure: distinct labels collapsing onto identical vectors."""
     from hontology.config import get_settings
-    from hontology.pipeline.retrieve.embed import document_prefix, get_provider
+    from hontology.pipeline.retrieve.embed import get_provider
+    from hontology.pipeline.retrieve.model_text import document_prefix
 
     settings = get_settings()
     provider = get_provider("ollama")

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from hontology.pipeline.judge import prompts
+from hontology.pipeline.judge import wording
 from hontology.pipeline.runs.config import AGGREGATIONS
 
 __all__ = [
@@ -137,7 +137,7 @@ def parse_batch(raw: str, expected_concept_ids: list[int]) -> dict[int, dict]:
     return by_concept
 
 
-def parse_events(raw: str, limit: int = prompts.MAX_EVENTS) -> list[dict]:
+def parse_events(raw: str, limit: int = wording.MAX_EVENTS) -> list[dict]:
     """The events in an extraction reply, cleaned; at most *limit* of them."""
     payload = _json(raw)
     entries = payload.get("events")

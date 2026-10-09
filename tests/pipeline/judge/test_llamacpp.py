@@ -11,7 +11,7 @@ import pytest
 
 from hontology.pipeline.judge.providers.base import GenerationConfig, ProviderError
 from hontology.pipeline.judge.providers.llamacpp import LlamaCppChatProvider, model_stem
-from hontology.pipeline.retrieve import embed
+from hontology.pipeline.retrieve import embedders, model_text
 
 HOST = "http://llama:8080"
 MODEL_PATH = "/models/gemma-4-26B-A4B-it-Q8_0.gguf"
@@ -139,7 +139,7 @@ class TestContextWindow:
 
 class TestEmbeddings:
     def test_vectors_come_back_in_input_order(self, server):
-        provider = embed.LlamaCppEmbeddingProvider(HOST, batch_size=2)
+        provider = embedders.LlamaCppEmbeddingProvider(HOST, batch_size=2)
         vectors = provider.embed(["a", "b", "c"], model="gemma")
         assert vectors == [[0.0], [1.0], [0.0]]
         assert [p["input"] for p in server.posts] == [["a", "b"], ["c"]]
@@ -147,7 +147,7 @@ class TestEmbeddings:
     def test_a_server_without_embeddings_is_not_retried(self, server):
         server.embed_status = 501
         with pytest.raises(ProviderError) as info:
-            embed.LlamaCppEmbeddingProvider(HOST).embed(["a"], model="gemma")
+            embedders.LlamaCppEmbeddingProvider(HOST).embed(["a"], model="gemma")
         assert not info.value.retryable
 
 
@@ -158,5 +158,5 @@ class TestPrefixFamilies:
     )
     def test_every_name_for_the_same_weights_gets_the_prefix(self, model):
         """An exact-name miss silently embeds without the trained prefix."""
-        assert embed.query_prefix(model) == "search_query: "
-        assert embed.document_prefix(model) == "search_document: "
+        assert model_text.query_prefix(model) == "search_query: "
+        assert model_text.document_prefix(model) == "search_document: "

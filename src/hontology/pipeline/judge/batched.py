@@ -1,14 +1,14 @@
-"""Judging several concepts per call: one call per document, or top-down."""
+"""Judging several concepts per call: one call per document.
+
+`judge_call` is shared with hierarchical judging (`pipeline.judge.hierarchical`).
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 
-from sqlalchemy import select
-
-from hontology.db.models import Candidate, Concept, Document, Verdict
-from hontology.ontology import hierarchy
+from hontology.db.models import Candidate, Concept, Document
 from hontology.pipeline.judge.context import NO_BODY, Judging, share
 from hontology.pipeline.judge.parse import parse_batch
 from hontology.pipeline.judge.providers.base import ProviderError
@@ -79,116 +79,6 @@ def judge_call(
         judging.stats.judged += 1
         judging.stats.matched += int(result["matched"])
     return answers, omitted
-
-
-def judge_hierarchical(
-    judging: Judging,
-    *,
-    ontology_id: int,
-    candidates: list[Candidate],
-    limit: int | None,
-    progress: object | None,
-) -> dict:
-    """Judge each document top-down through the class hierarchy.
-
-    A document is judged if retrieval selected at least one leaf for it, the
-    same gate the flat arm passes through. The top-level classes are asked in
-    one call; then, round by round, the not-yet-answered children of every class
-    answered yes are asked, one call per sibling set, until nothing new opens.
-
-    - **Each class at most once per document.** A class with two parents
-      answered yes is asked under the first only: a second parent means
-      *either*, so one answer serves both.
-    - **No descent below a failure.** An errored call counts as not positive,
-      so the branch beneath it is left unasked rather than guessed at.
-    - **Leaves under a "no" get no row.** Metrics read them as negatives.
-    - **Resumable.** The descent state is rebuilt from the verdicts already
-      stored, so a restart continues mid-document without re-asking anything.
-    """
-    session, template, stats = judging.session, judging.template, judging.stats
-    children = hierarchy.children(session, ontology_id)
-    top = sorted(hierarchy.top_level(session, ontology_id))
-    documents = sorted({c.document_id for c in candidates})
-    stats.total = len(documents)
-    processed = 0
-    calls = 0
-    omitted_total = 0
-
-    for done_documents, document_id in enumerate(documents, start=1):
-        if limit is not None and processed >= limit:
-            break
-        document = session.get(Document, document_id)
-        if document is None:
-            continue
-        answered: dict[int, bool | None] = {
-            concept_id: (None if error else matched)
-            for concept_id, matched, error in session.execute(
-                select(Verdict.concept_id, Verdict.matched, Verdict.error).where(
-                    Verdict.run_id == judging.run_id, Verdict.document_id == document_id
-                )
-            )
-        }
-        body = judging.body(document)
-
-        while True:
-            sets: list[list[int]] = []
-            queued: set[int] = set()
-            pending_top = [c for c in top if c not in answered]
-            if pending_top:
-                sets.append(pending_top)
-                queued.update(pending_top)
-            for parent in sorted(c for c, yes in answered.items() if yes):
-                below = sorted(
-                    c for c in children.get(parent, ()) if c not in answered and c not in queued
-                )
-                if below:
-                    sets.append(below)
-                    queued.update(below)
-            if not sets:
-                break
-
-            for class_ids in sets:
-                concepts = judging.concepts(class_ids)
-                if not body:
-                    ids = [concept.id for concept in concepts]
-                    session.add_all(judging.failed(document_id, ids, NO_BODY))
-                    answered.update(dict.fromkeys(ids))
-                    session.commit()
-                    continue
-                # With routing questions, parents and leaves of one sibling set
-                # are asked in separate calls, so leaves see exactly the prompt
-                # the flat arm uses.
-                groups = (
-                    [
-                        ([c for c in concepts if children.get(c.id)], True),
-                        ([c for c in concepts if not children.get(c.id)], False),
-                    ]
-                    if template.build_route is not None
-                    else [(concepts, False)]
-                )
-                for group, routing in groups:
-                    if not group:
-                        continue
-                    answers, omitted = judge_call(
-                        judging, document, group, body, routing=routing
-                    )
-                    answered.update(answers)
-                    omitted_total += omitted
-                    processed += len(group)
-                    calls += 1
-                    session.commit()
-
-        if callable(progress):
-            progress(done_documents, len(documents))
-
-    result = stats.as_dict() | {
-        "mode": template.mode,
-        "documents": len(documents),
-        "calls": calls,
-        "omitted_by_model": omitted_total,
-    }
-    log.info("judge (hierarchical): %s", result)
-    return result
 
 
 def judge_batched(

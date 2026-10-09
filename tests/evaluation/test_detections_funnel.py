@@ -17,6 +17,7 @@ from sqlalchemy import select
 from hontology.db.models import Candidate, Document, FeedEvent, FeedSlice, Locus, Run, Verdict
 from hontology.db.session import session_scope
 from hontology.evaluation.labels import bank
+from hontology.evaluation.outputs import detection_rows
 from hontology.evaluation.outputs import detections as det
 from hontology.evaluation.outputs import funnel as funnel_module
 from hontology.ontology import service
@@ -144,7 +145,7 @@ class TestDetections:
         with session_scope() as session:
             rows = det.detections(session, run_with_output["run"])
         statuses = sorted(r.verification for r in rows)
-        assert statuses == [det.CONFIRMED, det.UNVERIFIED]
+        assert statuses == [detection_rows.CONFIRMED, detection_rows.UNVERIFIED]
 
     def test_the_date_comes_from_the_feed_not_the_scrape(self, run_with_output):
         """A verdict has no date — the model is asked whether, not when."""
@@ -167,7 +168,7 @@ class TestDetections:
         with session_scope() as session:
             rows = det.detections(session, run_with_output["run"], verified_only=True)
         assert len(rows) == 1
-        assert rows[0].verification == det.CONFIRMED
+        assert rows[0].verification == detection_rows.CONFIRMED
 
     def test_min_confidence_filters(self, run_with_output):
         with session_scope() as session:
@@ -176,7 +177,7 @@ class TestDetections:
     def test_csv_has_the_documented_columns(self, run_with_output):
         with session_scope() as session:
             rows = rows_of(det.export_detections(session, run_with_output["run"]))
-        assert list(rows[0]) == det.DETECTION_COLUMNS
+        assert list(rows[0]) == detection_rows.DETECTION_COLUMNS
 
     def test_a_missing_run_is_an_error(self, run_with_output):
         with session_scope() as session, pytest.raises(LookupError):
@@ -194,24 +195,29 @@ class TestEvents:
     def test_one_confirmation_confirms_the_event(self, run_with_output):
         with session_scope() as session:
             rows = det.events(session, run_with_output["run"])
-        assert rows[0].verification == det.CONFIRMED
+        assert rows[0].verification == detection_rows.CONFIRMED
         assert rows[0].confirmed == 1
 
     def test_an_event_is_rejected_only_when_every_document_is(self, run_with_output):
         """One bad article does not disprove an event the others evidence."""
-        event = det.Event(run_id=1, concept="Riot", locus_iso3="KEN", occurred_on="2026-08-26")
+        event = detection_rows.Event(
+            run_id=1, concept="Riot", locus_iso3="KEN", occurred_on="2026-08-26"
+        )
         event.document_ids = {1, 2}
         event.rejected = 1
-        assert event.verification == det.UNVERIFIED
+        assert event.verification == detection_rows.UNVERIFIED
         event.rejected = 2
-        assert event.verification == det.REJECTED
+        assert event.verification == detection_rows.REJECTED
 
     def test_summary_counts_by_status(self, run_with_output):
         with session_scope() as session:
             stats = det.summary(session, run_with_output["run"])
         assert stats["detections"] == 2
         assert stats["events"] == 1
-        assert stats["by_verification"] == {det.CONFIRMED: 1, det.UNVERIFIED: 1}
+        assert stats["by_verification"] == {
+            detection_rows.CONFIRMED: 1,
+            detection_rows.UNVERIFIED: 1,
+        }
 
 
 class TestFunnel:

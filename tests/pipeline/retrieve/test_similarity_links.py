@@ -15,7 +15,7 @@ from hontology.db.models import Code, ConceptCode, EmbeddingModel, SimilarityRun
 from hontology.db.session import session_scope
 from hontology.ontology import service
 from hontology.pipeline.ingest.codes import cameo
-from hontology.pipeline.retrieve import similarity
+from hontology.pipeline.retrieve import proposals, similarity
 
 pytestmark = pytest.mark.requires_db
 
@@ -101,7 +101,7 @@ def test_recompute_replaces_auto_links_but_keeps_manual_ones(fixture_ids):
     # A first run proposes Strike→14.
     with session_scope() as session:
         run_a = make_run(session)
-        similarity._apply_links(
+        proposals.apply_links(
             session,
             run_a,
             fixture_ids["ontology"],
@@ -117,7 +117,7 @@ def test_recompute_replaces_auto_links_but_keeps_manual_ones(fixture_ids):
     # A second run proposes something different at the same level.
     with session_scope() as session:
         run_b = make_run(session)
-        similarity._apply_links(
+        proposals.apply_links(
             session,
             run_b,
             fixture_ids["ontology"],
@@ -144,7 +144,7 @@ def test_recompute_does_not_duplicate_an_existing_manual_pair(fixture_ids):
 
     # The run proposes the very pair a human already asserted.
     with session_scope() as session:
-        added, manual = similarity._apply_links(
+        added, manual = proposals.apply_links(
             session,
             make_run(session),
             fixture_ids["ontology"],
@@ -167,7 +167,7 @@ def test_confirming_a_proposal_promotes_it_to_manual(fixture_ids):
 
     with session_scope() as session:
         run_id = make_run(session)
-        similarity._apply_links(
+        proposals.apply_links(
             session,
             run_id,
             fixture_ids["ontology"],
@@ -182,7 +182,7 @@ def test_confirming_a_proposal_promotes_it_to_manual(fixture_ids):
     with session_scope() as session:
         assert links_for(session, riot) == {codes["14"]: None}
         # A later run that no longer proposes it cannot remove it now.
-        similarity._apply_links(
+        proposals.apply_links(
             session,
             make_run(session),
             fixture_ids["ontology"],
@@ -212,7 +212,7 @@ def test_recompute_is_scoped_to_the_level_it_ran_on(fixture_ids):
 
     with session_scope() as session:
         run_event = make_run(session, "event")
-        similarity._apply_links(
+        proposals.apply_links(
             session,
             run_event,
             fixture_ids["ontology"],
@@ -222,7 +222,7 @@ def test_recompute_is_scoped_to_the_level_it_ran_on(fixture_ids):
         )
     with session_scope() as session:
         run_root = make_run(session, "root")
-        similarity._apply_links(
+        proposals.apply_links(
             session,
             run_root,
             fixture_ids["ontology"],
@@ -251,7 +251,7 @@ def test_adaptive_selection_keeps_near_ties_per_concept():
         Row(2, 10, 0.52),
         Row(2, 11, 0.30),
     ]
-    selected = similarity._select_adaptive(pairs, min_score=0.25, rel_margin=0.05, max_k=15)
+    selected = proposals.select_per_concept(pairs, min_score=0.25, rel_margin=0.05, max_k=15)
 
     assert (1, 10) in selected and (1, 11) in selected
     assert (1, 12) not in selected  # outside the margin
@@ -264,7 +264,7 @@ def test_adaptive_selection_drops_a_concept_with_no_decent_match():
         def __init__(self, concept_id, code_id, score):
             self.concept_id, self.code_id, self.score = concept_id, code_id, score
 
-    selected = similarity._select_adaptive(
+    selected = proposals.select_per_concept(
         [Row(1, 10, 0.10)], min_score=0.25, rel_margin=0.05, max_k=15
     )
     assert selected == {}

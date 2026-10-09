@@ -23,95 +23,18 @@ as that code has not changed since.
 
 from __future__ import annotations
 
-import functools
-import inspect
 import json
-from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hontology.db.models import (
-    Code,
-    CodeSystem,
-    Concept,
-    ConceptCode,
-    Document,
-    LinkSnapshot,
     OntologySnapshot,
     Run,
 )
 from hontology.pipeline.runs import config as run_config
 from hontology.pipeline.runs.config import stable_hash
-
-# ---------------------------------------------------------------------------
-# Code and prompt fingerprints
-# ---------------------------------------------------------------------------
-
-
-@functools.cache
-def retrieval_code_hash() -> str:
-    """The code that turns embeddings into a ranking and a ranking into a cut."""
-    from hontology.pipeline.retrieve import candidates, embed, tuning
-
-    parts = [
-        inspect.getsource(candidates.select_adaptive),
-        inspect.getsource(candidates.build_semantic),
-        candidates._NEAREST_CONCEPTS.text,
-        inspect.getsource(embed.concept_text),
-        inspect.getsource(embed.normalize_for_embedding),
-        inspect.getsource(embed._prefixes),
-        tuning._POOL.text,
-    ]
-    return stable_hash(parts, 12)
-
-
-@functools.cache
-def prompt_fingerprint(prompt_id: str) -> str:
-    """A hash of everything a template sends, rendered on fixed inputs.
-
-    Rendering rather than hashing source catches an edit to a shared constant
-    (a response shape, say) that a builder only refers to.
-    """
-    from hontology.pipeline.judge import prompts
-
-    template = prompts.get(prompt_id)
-    document = Document(url="https://example.test/a", title="Title")
-    concepts = [
-        Concept(id=1, name="Alpha", definition="D1", inclusion_criteria="I1"),
-        Concept(id=2, name="Beta", definition="D2", exclusion_criteria="E2"),
-    ]
-    event = {"description": "An event.", "country": "XX", "quote": "A quote."}
-    parts: list[Any] = [template.prompt_id, template.mode]
-    for name, value in vars(template).items():
-        if isinstance(value, str | int) or value is None:
-            parts.append((name, value))
-            continue
-        attempts = (
-            lambda f: f(document, concepts[0], "BODY", 100),
-            lambda f: f(document, concepts, "BODY", 100),
-            lambda f: f(event, concepts),
-            lambda f: f(event, concepts, True),
-        )
-        for attempt in attempts:
-            try:
-                parts.append((name, attempt(value)))
-                break
-            except Exception:  # noqa: BLE001, S112 - try the next call shape
-                continue
-        else:
-            parts.append((name, inspect.getsource(value)))
-    return stable_hash(parts, 12)
-
-
-def recorded(run: Run) -> dict:
-    """Fingerprints to stamp on a run at creation."""
-    judge = run_config.normalize(run.config or {})["judge"]
-    return {
-        "retrieval_code": retrieval_code_hash(),
-        "prompt": prompt_fingerprint(judge["prompt_id"]),
-    }
-
+from hontology.pipeline.runs.fingerprints import prompt_fingerprint, retrieval_code_hash
 
 # ---------------------------------------------------------------------------
 # Runs
@@ -215,62 +138,3 @@ def filter_versions(run: Run) -> list[str]:
     """The link snapshots a run fetched with; empty if it never applied the filter.
     Several when the links changed while it ran, window by window."""
     return list((run.manifest or {}).get("versions", {}).get("filter", []))
-
-
-# ---------------------------------------------------------------------------
-# Link snapshots
-# ---------------------------------------------------------------------------
-
-
-def current_links(session: Session, ontology_id: int) -> list[list]:
-    """``[[concept id, system slug, code], ...]``, sorted."""
-    rows = session.execute(
-        select(ConceptCode.concept_id, CodeSystem.slug, Code.code)
-        .join(Code, Code.id == ConceptCode.code_id)
-        .join(CodeSystem, CodeSystem.id == Code.system_id)
-        .join(Concept, Concept.id == ConceptCode.concept_id)
-        .where(Concept.ontology_id == ontology_id)
-    )
-    return sorted([concept_id, system, code] for concept_id, system, code in rows)
-
-
-def resolve_links(session: Session, ontology_id: int) -> LinkSnapshot | None:
-    """The snapshot of the live links, minting one if they changed. None when
-    there are no links, since an ontology without them has no filter."""
-    links = current_links(session, ontology_id)
-    if not links:
-        return None
-    digest = stable_hash(links, 64)
-    existing = session.scalar(
-        select(LinkSnapshot).where(
-            LinkSnapshot.ontology_id == ontology_id, LinkSnapshot.content_hash == digest
-        )
-    )
-    if existing is not None:
-        return existing
-    count = len(
-        list(
-            session.scalars(
-                select(LinkSnapshot.id).where(LinkSnapshot.ontology_id == ontology_id)
-            )
-        )
-    )
-    snapshot = LinkSnapshot(
-        ontology_id=ontology_id,
-        version=f"f{count + 1}",
-        content_hash=digest,
-        n_links=len(links),
-        payload=json.dumps(links),
-    )
-    session.add(snapshot)
-    session.flush()
-    return snapshot
-
-
-def link_snapshot(session: Session, ontology_id: int, version: str) -> list[list] | None:
-    snapshot = session.scalar(
-        select(LinkSnapshot).where(
-            LinkSnapshot.ontology_id == ontology_id, LinkSnapshot.version == version
-        )
-    )
-    return json.loads(snapshot.payload) if snapshot else None

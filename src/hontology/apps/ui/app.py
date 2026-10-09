@@ -1,6 +1,6 @@
 """The UI's entry point: navigation in the sidebar, shared settings top right.
 
-Run with ``streamlit run src/hontology/ui/app.py`` (``make ui``). Pages are
+Run with ``streamlit run src/hontology/apps/ui/app.py`` (``make ui``). Pages are
 listed here in pipeline order; each is an ordinary script in ``views/``,
 not ``pages/``: Streamlit lists a ``pages/`` folder on its own until this
 script has run, and a click in that moment opened a page without the settings.
@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import streamlit as st
 
-from hontology.apps.ui import shared
+from hontology.apps.ui import panel
 from hontology.apps.ui.client import Api
 
 st.set_page_config(page_title="hontology", page_icon="🧭", layout="wide")
 
-shared.settings(Api())
+panel.settings(Api())
 
 st.navigation(
     [

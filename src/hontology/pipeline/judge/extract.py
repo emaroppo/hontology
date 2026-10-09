@@ -39,61 +39,17 @@ from __future__ import annotations
 import json
 import logging
 
-import numpy as np
 from sqlalchemy import select
 
 from hontology.db.models import Candidate, Concept, Document, ExtractedEvent, Verdict
 from hontology.ontology import hierarchy
 from hontology.pipeline.judge import prompts
 from hontology.pipeline.judge.context import NO_BODY, Judging, share
-from hontology.pipeline.judge.parse import parse_batch, parse_choice, parse_events
+from hontology.pipeline.judge.events import Call, LeafRanker, Spend, classify_events
+from hontology.pipeline.judge.parse import parse_events
 from hontology.pipeline.judge.providers.base import Completion, ProviderError
-from hontology.pipeline.retrieve import embed
 
 log = logging.getLogger(__name__)
-
-
-class _LeafRanker:
-    """Orders leaves by how close their embedding is to an event's."""
-
-    def __init__(self, provider, model: str, leaves: list[Concept], k: int) -> None:
-        self.provider, self.model, self.k = provider, model, k
-        self.ids = [c.id for c in leaves]
-        prefix = embed.document_prefix(model)
-        self.vectors = self._unit(
-            [prefix + embed.concept_text(c, "name+definition") for c in leaves]
-        )
-
-    def _unit(self, texts: list[str]) -> np.ndarray:
-        texts = [embed.normalize_for_embedding(t) for t in texts]
-        vectors = np.array(self.provider.embed(texts, model=self.model), dtype=float)
-        return vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
-
-    def __call__(self, event: dict, allowed: set[int]) -> list[int]:
-        text = f"{event['description']}\n{event['evidence']}".strip()
-        scores = self.vectors @ self._unit([embed.query_prefix(self.model) + text])[0]
-        ranked = sorted(
-            (i for i in range(len(self.ids)) if self.ids[i] in allowed),
-            key=lambda i: (-scores[i], self.ids[i]),
-        )
-        return [self.ids[i] for i in ranked[: self.k]]
-
-
-class _Spend:
-    """What one article's calls cost, to be split across its verdict rows."""
-
-    def __init__(self) -> None:
-        self.input_tokens = 0
-        self.output_tokens = 0
-        self.seconds = 0.0
-        self.calls = 0
-
-    def add(self, completion: Completion) -> Completion:
-        self.input_tokens += completion.input_tokens or 0
-        self.output_tokens += completion.output_tokens or 0
-        self.seconds += completion.latency_s or 0.0
-        self.calls += 1
-        return completion
 
 
 def judge_extract(
@@ -123,14 +79,14 @@ def judge_extract(
     if template.leaf_top_k is not None:
         assert template.leaf_embed_model is not None and embedder is not None
         leaves = sorted(hierarchy.leaves(session, ontology_id))
-        rank = _LeafRanker(
+        rank = LeafRanker(
             embedder,
             template.leaf_embed_model,
             [concept(c) for c in leaves],
             template.leaf_top_k,
         )
 
-    def call(system: str | None, prompt: str, spend: _Spend) -> Completion:
+    def call(system: str | None, prompt: str, spend: Spend) -> Completion:
         return spend.add(judging.ask(system, prompt))
 
     documents = sorted({c.document_id for c in candidates})
@@ -152,41 +108,18 @@ def judge_extract(
         if document is None:
             continue
         processed += 1
-        spend = _Spend()
-        body = judging.body(document)
-        rows: list[Verdict] = []
-        event_rows: list[ExtractedEvent] = []
-        if not body:
-            rows = judging.failed(document_id, top, NO_BODY)
-        else:
-            try:
-                assert template.build_extract is not None
-                reply = call(
-                    template.extract_system,
-                    template.build_extract(
-                        document, [concept(c) for c in top], body, judging.body_limit
-                    ),
-                    spend,
-                )
-                events = parse_events(reply.text)
-            except (ProviderError, json.JSONDecodeError) as exc:
-                rows = judging.failed(
-                    document_id, top, f"event extraction failed: {exc}"[:1000]
-                )
-                events = None
-            if events is not None:
-                rows, event_rows = _classify(
-                    judging,
-                    events,
-                    document_id=document_id,
-                    top=top,
-                    children=children,
-                    concept=concept,
-                    call=call,
-                    spend=spend,
-                    rank=rank,
-                )
-                events_total += len(events)
+        spend = Spend()
+        rows, event_rows = _judge_document(
+            judging,
+            document,
+            top=top,
+            children=children,
+            concept=concept,
+            call=call,
+            spend=spend,
+            rank=rank,
+        )
+        events_total += len(event_rows)
 
         for position, row in enumerate(rows):
             row.input_tokens = share(spend.input_tokens, len(rows), position)
@@ -213,143 +146,42 @@ def judge_extract(
     return result
 
 
-def _classify(
+def _judge_document(
     judging: Judging,
-    events: list[dict],
+    document: Document,
     *,
-    document_id: int,
     top: list[int],
     children: dict[int, set[int]],
     concept,
-    call,
-    spend: _Spend,
-    rank=None,
+    call: Call,
+    spend: Spend,
+    rank: LeafRanker | None,
 ) -> tuple[list[Verdict], list[ExtractedEvent]]:
-    """Route each event down the hierarchy and choose at most one leaf for it."""
+    """List one article's events, then classify each: its verdicts and events."""
     template = judging.template
-    assert template.build_event_route is not None and template.build_choose is not None
-    parent_yes: dict[int, bool] = {}
-    weighed: set[int] = set()
-    chosen: dict[int, tuple[float, str, str]] = {}  # leaf -> confidence, evidence, country
-    event_rows: list[ExtractedEvent] = []
-
-    for ordinal, event in enumerate(events):
-        routed: list[int] = []
-        reached: set[int] = set()
-        choice: int | None = None
-        confidence: float | None = None
-        error: str | None = None
-        outcome = "rejected"
-        try:
-            frontier, seen, first = list(top), set(), True
-            while frontier:
-                seen |= set(frontier)
-                parents = [c for c in frontier if children.get(c)]
-                # At the top every class is a routing question, leaves included,
-                # beside "other"; below, a routed parent's leaves are candidates.
-                asked = frontier if first else parents
-                if not first:
-                    reached |= {c for c in frontier if not children.get(c)}
-                below: set[int] = set()
-                if asked:
-                    reply = call(
-                        template.event_top_system if first else template.event_route_system,
-                        template.build_event_route(
-                            event, [concept(c) for c in asked], other=first
-                        ),
-                        spend,
-                    )
-                    expected = [*asked, prompts.OTHER_ID] if first else asked
-                    answers = parse_batch(reply.text, expected)
-                    for c in asked:
-                        yes = bool(answers[c]["matched"])
-                        if children.get(c):
-                            parent_yes[c] = parent_yes.get(c, False) or yes
-                            if yes:
-                                routed.append(c)
-                                below |= set(children[c])
-                        elif yes:
-                            reached.add(c)
-                if first and rank is not None:
-                    # Below the top, the closest leaves under the classes answered
-                    # yes are the candidates, with no further routing.
-                    allowed = reached | _leaves_under(routed, children)
-                    reached = set(rank(event, allowed)) if allowed else set()
-                    break
-                first = False
-                frontier = sorted(below - seen)
-            # Nothing but "other" took it: rejected at the top, no choosing call.
-            if reached:
-                weighed |= reached
-                reply = call(
-                    template.choose_system,
-                    template.build_choose(event, [concept(c) for c in sorted(reached)]),
-                    spend,
-                )
-                choice, confidence, quote = parse_choice(reply.text, reached)
-                outcome = "classified" if choice is not None else "unclassified"
-                if choice is not None and (
-                    choice not in chosen or confidence > chosen[choice][0]
-                ):
-                    chosen[choice] = (confidence, quote or event["evidence"], event["country"])
-        except (ProviderError, json.JSONDecodeError) as exc:
-            error = str(exc)[:1000]
-            outcome = "error"
-            judging.stats.errors += 1
-        event_rows.append(
-            ExtractedEvent(
-                run_id=judging.run_id,
-                document_id=document_id,
-                ordinal=ordinal,
-                description=event["description"],
-                evidence=event["evidence"] or None,
-                status=event["status"] or None,
-                country=event["country"] or None,
-                concept_id=choice,
-                routed_through=routed,
-                confidence=confidence,
-                outcome=outcome,
-                error=error,
-            )
+    body = judging.body(document)
+    if not body:
+        return judging.failed(document.id, top, NO_BODY), []
+    try:
+        assert template.build_extract is not None
+        reply = call(
+            template.extract_system,
+            template.build_extract(
+                document, [concept(c) for c in top], body, judging.body_limit
+            ),
+            spend,
         )
-
-    rows = [
-        judging.verdict(document_id, c, matched=yes) for c, yes in sorted(parent_yes.items())
-    ]
-    for leaf in sorted(weighed):
-        confidence, evidence, country = chosen.get(leaf, (None, "", ""))
-        rows.append(
-            judging.verdict(
-                document_id,
-                leaf,
-                matched=leaf in chosen,
-                confidence=confidence,
-                evidence=evidence or None,
-                locus_id=judging.iso2_to_locus.get(country) if country else None,
-            )
-        )
-    if not rows:
-        # No events, or none reached anything: the article is a no at the top,
-        # and these rows carry what the extraction cost.
-        rows = [
-            judging.verdict(
-                document_id,
-                c,
-                matched=False,
-                evidence="no events extracted" if not events else None,
-            )
-            for c in top
-        ]
-    return rows, event_rows
-
-
-def _leaves_under(classes: list[int], children: dict[int, set[int]]) -> set[int]:
-    out: set[int] = set()
-    stack = list(classes)
-    while stack:
-        c = stack.pop()
-        if children.get(c):
-            stack.extend(children[c])
-        else:
-            out.add(c)
-    return out
+        events = parse_events(reply.text)
+    except (ProviderError, json.JSONDecodeError) as exc:
+        return judging.failed(document.id, top, f"event extraction failed: {exc}"[:1000]), []
+    return classify_events(
+        judging,
+        events,
+        document_id=document.id,
+        top=top,
+        children=children,
+        concept=concept,
+        call=call,
+        spend=spend,
+        rank=rank,
+    )

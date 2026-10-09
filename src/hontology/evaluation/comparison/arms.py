@@ -18,16 +18,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hontology.db.base import among
 from hontology.db.lookups import get_run
-from hontology.db.models import Candidate, Run
-from hontology.evaluation import article
+from hontology.db.models import Run
+from hontology.evaluation.article.bootstrap import document_bootstrap, paired_document_bootstrap
+from hontology.evaluation.article.sample_design import sample_status, window_weights
+from hontology.evaluation.article.verdicts import judged_keys, predictions
 from hontology.evaluation.calendar import events, score
+from hontology.evaluation.calendar.entry_score import judging_cost
+from hontology.evaluation.comparison.hierarchy_diagnostics import hierarchy_diagnostics
 from hontology.evaluation.labels.sample import EQUAL_PER_WINDOW
-from hontology.evaluation.metrics import mcnemar
+from hontology.evaluation.metrics.paired import mcnemar
 from hontology.evaluation.pairs.evaluate import label_map
 from hontology.ontology import hierarchy
 from hontology.pipeline.judge import prompts
@@ -110,18 +112,18 @@ def compare_arms(
     keys = set(truth)
     weights, groups = _weighting(manifest, keys)
     report["sample"]["allocation"] = manifest.get("allocation", "proportional")
-    predicted = {run_id: article.predictions(session, run_id, keys) for run_id in run_ids}
+    predicted = {run_id: predictions(session, run_id, keys) for run_id in run_ids}
     for run_id in run_ids:
         report["runs"][run_id]["article"] = _article_scores(
             session, run_id, truth, predicted[run_id], weights, groups, seed
         )
-    report["sample"]["status"] = article.sample_status(
+    report["sample"]["status"] = sample_status(
         report["runs"][baseline_id]["article"]["end_to_end"]
     )
     for arm_id in arm_ids:
         paired = mcnemar(truth, predicted[baseline_id], predicted[arm_id])
         report["comparisons"][arm_id] = {
-            "f1": article.paired_document_bootstrap(
+            "f1": paired_document_bootstrap(
                 truth,
                 predicted[baseline_id],
                 predicted[arm_id],
@@ -145,7 +147,7 @@ def _weighting(
     # An equal-per-window sample over-represents small windows; weighting each
     # document by its window's size keeps pooled scores an estimate of the frame.
     if manifest.get("allocation") == EQUAL_PER_WINDOW:
-        return article.window_weights(manifest, {doc_id for doc_id, _ in keys})
+        return window_weights(manifest, {doc_id for doc_id, _ in keys})
     return None, None
 
 
@@ -160,14 +162,14 @@ def _article_scores(
     *,
     judge_only: bool = True,
 ) -> dict:
-    judged = article.judged_keys(session, run_id, set(truth))
+    judged = judged_keys(session, run_id, set(truth))
     return {
-        "end_to_end": article.document_bootstrap(
+        "end_to_end": document_bootstrap(
             truth, predicted, seed=seed, weights=weights, groups=groups
         ),
         # Each bootstrap is seeded on its own, so leaving this one out moves no
         # other number; it is half the cost of scoring a run.
-        "judge_only": article.document_bootstrap(
+        "judge_only": document_bootstrap(
             {k: truth[k] for k in judged}, predicted, seed=seed, weights=weights, groups=groups
         )
         if judge_only
@@ -175,7 +177,7 @@ def _article_scores(
         "pairs_judged": len(judged),
         # On the labelled documents only, so arms that judged different
         # amounts of the calendar are compared on the same articles.
-        "cost_on_sample": score.judging_cost(session, run_id, {doc_id for doc_id, _ in truth}),
+        "cost_on_sample": judging_cost(session, run_id, {doc_id for doc_id, _ in truth}),
     }
 
 
@@ -205,7 +207,7 @@ def run_on_sample(
     if not truth:
         return out
     weights, groups = _weighting(manifest, set(truth))
-    predicted = article.predictions(session, run_id, set(truth))
+    predicted = predictions(session, run_id, set(truth))
     out["article"] = _article_scores(
         session, run_id, truth, predicted, weights, groups, seed, judge_only=judge_only
     )
@@ -225,99 +227,6 @@ def run_on_sample(
         if bool(predicted.get((doc_id, concept_id))) != expected
     ]
     return out
-
-
-def hierarchy_diagnostics(
-    session: Session,
-    run_id: int,
-    baseline_id: int,
-    ontology_id: int,
-    truth: dict[tuple[int, int], bool],
-) -> dict:
-    """Where a hierarchical run gains and loses, on the labelled sample.
-
-    Internal classes are never labelled; an internal class is positive on a
-    document exactly when one of the leaves beneath it is, which is what its
-    union-worded definition says. From that:
-
-    - **recall per level**, each level conditional on a parent having been
-      answered yes, so a miss is located at the level where it happened;
-    - **internal false positives**, kept apart because a class answered yes
-      with no labelled leaf beneath it may be a gap in the ontology rather
-      than a judge error;
-    - **coverage**, the run's correct leaf matches split by whether the
-      baseline's retrieval had selected that pair. A gain from reaching
-      leaves retrieval missed is coverage, not structure.
-    """
-    parent_map = hierarchy.parents(session, ontology_id)
-    child_map = hierarchy.children(session, ontology_id)
-    leaves = hierarchy.leaves(session, ontology_id)
-    internal = set(child_map)
-    documents = {doc_id for doc_id, _ in truth}
-
-    def below(class_id: int) -> set[int]:
-        found: set[int] = set()
-        stack = list(child_map.get(class_id, ()))
-        while stack:
-            current = stack.pop()
-            if current not in found:
-                found.add(current)
-                stack.extend(child_map.get(current, ()))
-        return found & leaves
-
-    full_truth = dict(truth)
-    for class_id in internal:
-        under = below(class_id)
-        for doc_id in documents:
-            full_truth[(doc_id, class_id)] = any(
-                truth.get((doc_id, leaf), False) for leaf in under
-            )
-
-    answered = article.answered(session, run_id, documents)
-
-    levels: dict[int, dict[str, int]] = {}
-    for (doc_id, class_id), expected in full_truth.items():
-        if not expected:
-            continue
-        parents = parent_map.get(class_id, set())
-        if parents and not any(answered.get((doc_id, p), False) for p in parents):
-            continue  # never reached: the miss belongs to a level above
-        level = levels.setdefault(hierarchy.depth(parent_map, class_id), {"n": 0, "hits": 0})
-        level["n"] += 1
-        level["hits"] += int(answered.get((doc_id, class_id), False))
-
-    internal_answers = [
-        (key, yes) for key, yes in answered.items() if key[1] in internal and yes
-    ]
-    selected = set(
-        session.execute(
-            select(Candidate.document_id, Candidate.concept_id).where(
-                Candidate.run_id == baseline_id,
-                Candidate.selected.is_(True),
-                among(Candidate.document_id, documents),
-            )
-        ).all()
-    )
-    true_leaf_hits = [
-        key for key, expected in truth.items() if expected and answered.get(key, False)
-    ]
-    return {
-        "recall_by_level": {
-            level: counts | {"recall": counts["hits"] / counts["n"] if counts["n"] else None}
-            for level, counts in sorted(levels.items())
-        },
-        "internal_answered_yes": len(internal_answers),
-        "internal_false_positives": sum(
-            1 for key, _ in internal_answers if not full_truth[key]
-        ),
-        "coverage": {
-            "true_positives": len(true_leaf_hits),
-            "baseline_had_selected": sum(1 for key in true_leaf_hits if key in selected),
-            "beyond_baseline_retrieval": sum(
-                1 for key in true_leaf_hits if key not in selected
-            ),
-        },
-    }
 
 
 def _is_hierarchical(run: Run) -> bool:

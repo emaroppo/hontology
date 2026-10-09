@@ -1,13 +1,4 @@
-"""Embedding providers and content-addressed embedding storage.
-
-Two details here are easy to get wrong and expensive to debug:
-
-**Task-instruction prefixes.** Several embedding models are trained asymmetrically
-and expect the *document* side and the *query* side to be prefixed differently.
-Embedding both sides identically with such a model still produces plausible
-vectors and plausible-looking cosine scores — it just retrieves noticeably worse,
-with nothing to indicate why. The prefixes are therefore part of the provider,
-not something a caller can forget.
+"""Embedding storage, content-addressed, and the text embedded for a concept.
 
 **Content-addressed keys.** An embedding is stored under
 ``"<fields>@<hash of the exact text>"``. Keying on the field composition alone
@@ -15,203 +6,27 @@ means an edited definition keeps its old vector under the same key, and retrieva
 silently keeps scoring wording that no longer exists. Hashing the text makes a
 change miss the cache, and lets several versions coexist so an old run replays
 against the vectors it actually used.
+
+The providers themselves are in `retrieve.embedders`, and the prefixes and case
+normalization every embedded string goes through in `retrieve.model_text`.
 """
 
 from __future__ import annotations
 
 import hashlib
-from pathlib import PurePosixPath
-from typing import Protocol, runtime_checkable
 
-import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from hontology.config import get_settings
 from hontology.db.models import Concept, Embedding, EmbeddingModel
-from hontology.pipeline.judge.providers import llamacpp
 from hontology.pipeline.judge.providers.base import ProviderError
-
-# Per-model-family (document_prefix, query_prefix), as given on each model's card
-# on Hugging Face (nomic-ai/nomic-embed-text-v1.5, mixedbread-ai/mxbai-embed-large-v1).
-# Models not listed get no prefix, which is the correct default for symmetric
-# models.
-_PREFIXES: dict[str, tuple[str, str]] = {
-    "nomic-embed-text": ("search_document: ", "search_query: "),
-    "mxbai-embed-large": (
-        "",
-        "Represent this sentence for searching relevant passages: ",
-    ),
-}
-
-
-def _prefixes(model: str) -> tuple[str, str]:
-    """Look a model up by family, not exact name.
-
-    The same weights go by many names — ``nomic-embed-text:latest`` in Ollama,
-    ``nomic-embed-text-v1.5.Q8_0`` as a GGUF file served by llama.cpp — and an
-    exact-match miss silently embeds without the prefix the model was trained on.
-    """
-    name = PurePosixPath(model).name.lower()
-    for family, prefixes in _PREFIXES.items():
-        if name.startswith(family):
-            return prefixes
-    return ("", "")
-
-
-def document_prefix(model: str) -> str:
-    return _prefixes(model)[0]
-
-
-def query_prefix(model: str) -> str:
-    return _prefixes(model)[1]
-
-
-def normalize_for_embedding(text: str) -> str:
-    """Lowercase text that is entirely upper case.
-
-    This is not cosmetic. Short ALL-CAPS strings make some embedding models
-    collapse: feeding seven distinct CAMEO root labels ("PROTEST", "ASSAULT",
-    "APPEAL", …) to nomic-embed-text returns only **three** distinct vectors, with
-    a mean pairwise cosine of 0.97 — several are bit-for-bit identical. Retrieval
-    then ranks essentially at random while looking perfectly healthy, because the
-    scores are plausible numbers in the right range.
-
-    Lowercasing the same seven labels yields seven distinct vectors with a mean
-    pairwise cosine of 0.65. Mixed-case prose is unaffected, so this is safe to
-    apply to every embedded string.
-    """
-    return text.lower() if text and not any(c.islower() for c in text if c.isalpha()) else text
-
-
-@runtime_checkable
-class EmbeddingProvider(Protocol):
-    name: str
-
-    def embed(self, texts: list[str], *, model: str) -> list[list[float]]: ...
-
-    def dimension(self, model: str) -> int: ...
-
-
-class _BatchedEmbedder(EmbeddingProvider):
-    batch_size: int
-
-    def embed(self, texts: list[str], *, model: str) -> list[list[float]]:
-        """Embed texts, batching so one request cannot grow unbounded."""
-        out: list[list[float]] = []
-        for start in range(0, len(texts), self.batch_size):
-            out.extend(self._embed_chunk(texts[start : start + self.batch_size], model))
-        return out
-
-    def _embed_chunk(self, chunk: list[str], model: str) -> list[list[float]]:
-        raise NotImplementedError
-
-    def dimension(self, model: str) -> int:
-        return len(self.embed(["dimension probe"], model=model)[0])
-
-
-class OllamaEmbeddingProvider(_BatchedEmbedder):
-    name = "ollama"
-
-    def __init__(self, host: str, *, batch_size: int = 64, timeout: float = 300.0) -> None:
-        self.host = host.rstrip("/")
-        self.batch_size = batch_size
-        self.timeout = timeout
-
-    def _embed_chunk(self, chunk: list[str], model: str) -> list[list[float]]:
-        try:
-            response = httpx.post(
-                f"{self.host}/api/embed",
-                # truncate: clip inputs that exceed the context window rather
-                # than returning 400, so one token-dense article cannot kill
-                # a whole run. Character limits upstream are the real control;
-                # this is the backstop.
-                json={"model": model, "input": chunk, "truncate": True},
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            body = response.json()
-        except httpx.HTTPStatusError as exc:
-            raise ProviderError(
-                f"ollama embed {exc.response.status_code} for {model!r}: "
-                f"{exc.response.text[:300]}",
-                retryable=exc.response.status_code >= 500,
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise ProviderError(f"ollama embed transport error: {exc}", retryable=True) from exc
-
-        vectors = body.get("embeddings")
-        if not vectors or len(vectors) != len(chunk):
-            raise ProviderError(
-                f"ollama embed: sent {len(chunk)} texts to {model!r}, got "
-                f"{len(vectors or [])} vectors back "
-                f"({body.get('error') or 'no error given'})"
-            )
-        return vectors
-
-
-class LlamaCppEmbeddingProvider(_BatchedEmbedder):
-    """``/v1/embeddings`` on a ``llama-server`` started with ``--embeddings``.
-
-    As with the chat provider, the requested model is checked against what the
-    server actually holds: an embedding server answers any model name with its
-    one model, and vectors filed under the wrong model name would poison the
-    cache for every later run that trusts the key.
-    """
-
-    name = "llamacpp"
-
-    def __init__(
-        self,
-        host: str,
-        api_key: str | None = None,
-        *,
-        batch_size: int = 32,
-        timeout: float = 300.0,
-    ) -> None:
-        self.host = host.rstrip("/")
-        self.api_key = api_key
-        self.batch_size = batch_size
-        self.timeout = timeout
-        self._resolved: dict[str, str] = {}
-
-    def embed(self, texts: list[str], *, model: str) -> list[list[float]]:
-        if model not in self._resolved:
-            self._resolved[model] = llamacpp.resolve_model(self.host, model, self.api_key)
-        return super().embed(texts, model=model)
-
-    def _embed_chunk(self, chunk: list[str], model: str) -> list[list[float]]:
-        try:
-            response = httpx.post(
-                f"{self.host}/v1/embeddings",
-                json={"model": self._resolved[model], "input": chunk},
-                headers=llamacpp.headers(self.api_key),
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            body = response.json()
-        except httpx.HTTPStatusError as exc:
-            # 501 is a server started without --embeddings, and the body
-            # says so; a too-long input is a 500 naming the batch size.
-            raise ProviderError(
-                f"llama.cpp embed {exc.response.status_code} for {model!r}: "
-                f"{exc.response.text[:300]}",
-                retryable=exc.response.status_code >= 500 and exc.response.status_code != 501,
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise ProviderError(
-                f"llama.cpp embed transport error: {exc}", retryable=True
-            ) from exc
-
-        data = body.get("data") or []
-        if len(data) != len(chunk):
-            raise ProviderError(
-                f"llama.cpp embed: sent {len(chunk)} texts to {model!r}, got "
-                f"{len(data)} vectors back"
-            )
-        # The API carries an index per vector; order by it rather than trust
-        # the response order.
-        return [item["embedding"] for item in sorted(data, key=lambda d: d["index"])]
+from hontology.pipeline.retrieve.embedders import (
+    EmbeddingProvider,
+    LlamaCppEmbeddingProvider,
+    OllamaEmbeddingProvider,
+)
+from hontology.pipeline.retrieve.model_text import document_prefix, normalize_for_embedding
 
 
 def get_provider(name: str) -> EmbeddingProvider:

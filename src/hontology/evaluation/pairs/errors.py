@@ -24,8 +24,8 @@ from sqlalchemy.orm import Session
 
 from hontology.db.lookups import concept_names, get_run
 from hontology.db.models import Document, PairLabel
-from hontology.evaluation.article import clean_verdicts
-from hontology.evaluation.metrics import format_num
+from hontology.evaluation.article.verdicts import clean_verdicts
+from hontology.evaluation.metrics.intervals import format_num
 from hontology.evaluation.pairs import evaluate as evaluate_module
 
 

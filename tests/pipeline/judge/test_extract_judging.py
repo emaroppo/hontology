@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from hontology.db.models import Candidate, Document, ExtractedEvent, Run, Verdict
 from hontology.db.session import session_scope
-from hontology.ontology import service
+from hontology.ontology import portable, service
 from hontology.pipeline.judge import prompts
 from hontology.pipeline.judge import run as judge_module
 from hontology.pipeline.judge.providers.base import Completion, ProviderError
@@ -88,7 +88,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(type(settings), "scrape_cache_dir", property(lambda self: tmp_path))
     (tmp_path / "ex.txt").write_text("An article about trade measures.")
     with session_scope() as session:
-        ontology = service.import_ontology(session, PAYLOAD)
+        ontology = portable.import_ontology(session, PAYLOAD)
         names = {c.id: c.name for c in service.list_concepts(session, ontology.id)}
         ids = {name: cid for cid, name in names.items()}
         document = Document(

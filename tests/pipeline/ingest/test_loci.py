@@ -10,22 +10,23 @@ import pytest
 
 from hontology.db.session import session_scope
 from hontology.pipeline.ingest.codes import loci
+from hontology.pipeline.ingest.codes.fips import ISO2_TO_FIPS
 
 
 def test_fips_and_iso2_collide_with_different_meanings():
     """Comparing feed codes to ISO codes as strings mislabels these silently."""
     # ISO BG is Bulgaria; FIPS BG is Bangladesh.
-    assert loci.ISO2_TO_FIPS["BG"] == "BU"  # Bulgaria's FIPS is BU, not BG
-    assert loci.ISO2_TO_FIPS["BD"] == "BG"  # Bangladesh's FIPS *is* BG
+    assert ISO2_TO_FIPS["BG"] == "BU"  # Bulgaria's FIPS is BU, not BG
+    assert ISO2_TO_FIPS["BD"] == "BG"  # Bangladesh's FIPS *is* BG
 
     # ISO RS is Serbia; FIPS RS is Russia.
-    assert loci.ISO2_TO_FIPS["RS"] == "RI"  # Serbia's FIPS is RI
-    assert loci.ISO2_TO_FIPS["RU"] == "RS"  # Russia's FIPS *is* RS
+    assert ISO2_TO_FIPS["RS"] == "RI"  # Serbia's FIPS is RI
+    assert ISO2_TO_FIPS["RU"] == "RS"  # Russia's FIPS *is* RS
 
 
 def test_mapping_is_injective():
     """Two countries sharing a FIPS code would make the reverse lookup ambiguous."""
-    fips = list(loci.ISO2_TO_FIPS.values())
+    fips = list(ISO2_TO_FIPS.values())
     assert len(fips) == len(set(fips))
 
 

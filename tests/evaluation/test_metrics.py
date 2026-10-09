@@ -8,15 +8,11 @@ from __future__ import annotations
 
 import pytest
 
-from hontology.evaluation.metrics import (
-    Confusion,
-    bootstrap_f1,
-    calibration_bins,
-    mcnemar,
-    retrieval_metrics,
-    wilson,
-    with_intervals,
-)
+from hontology.evaluation.metrics.calibration import calibration_bins
+from hontology.evaluation.metrics.confusion import Confusion
+from hontology.evaluation.metrics.intervals import bootstrap_f1, wilson, with_intervals
+from hontology.evaluation.metrics.paired import mcnemar
+from hontology.evaluation.metrics.retrieval import retrieval_metrics
 
 
 class TestConfusion:

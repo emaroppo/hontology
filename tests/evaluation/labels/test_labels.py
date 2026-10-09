@@ -11,6 +11,7 @@ import pytest
 from hontology.db.models import Document, PairLabel
 from hontology.db.session import session_scope
 from hontology.evaluation.labels import bank as labels
+from hontology.evaluation.labels import staleness
 from hontology.ontology import service, snapshots
 
 pytestmark = pytest.mark.requires_db
@@ -59,10 +60,10 @@ class TestProvenance:
             )
 
         with session_scope() as session:
-            trusted = labels.trusted_labels(session, bank["ontology"])
+            trusted = staleness.trusted_labels(session, bank["ontology"])
             assert trusted == []
 
-            with_machine = labels.trusted_labels(
+            with_machine = staleness.trusted_labels(
                 session, bank["ontology"], include_machine=True
             )
             assert len(with_machine) == 1
@@ -82,7 +83,7 @@ class TestProvenance:
             labels.adjudicate(session, label_id, matched=True, note="confirmed")
 
         with session_scope() as session:
-            assert len(labels.trusted_labels(session, bank["ontology"])) == 1
+            assert len(staleness.trusted_labels(session, bank["ontology"])) == 1
             assert session.get(PairLabel, label_id).source == labels.ADJUDICATED
 
     def test_adjudication_can_flip_the_verdict(self, bank):
@@ -114,7 +115,7 @@ class TestProvenance:
                 source=labels.HUMAN,
             )
         with session_scope() as session:
-            assert len(labels.trusted_labels(session, bank["ontology"])) == 1
+            assert len(staleness.trusted_labels(session, bank["ontology"])) == 1
 
     def test_both_polarities_are_storable(self, bank):
         """A rejected match is the label precision is measured from."""
@@ -126,7 +127,7 @@ class TestProvenance:
                 session, document_id=bank["docs"][1], concept_id=bank["riot"], matched=False
             )
         with session_scope() as session:
-            summary = labels.stats(session, bank["ontology"])
+            summary = staleness.stats(session, bank["ontology"])
             assert summary["positives"] == 1
             assert summary["negatives"] == 1
 
@@ -139,7 +140,7 @@ class TestProvenance:
                 session, document_id=bank["docs"][0], concept_id=bank["riot"], matched=False
             )
         with session_scope() as session:
-            summary = labels.stats(session, bank["ontology"])
+            summary = staleness.stats(session, bank["ontology"])
             assert summary["total"] == 1
             assert summary["negatives"] == 1
 
@@ -158,13 +159,14 @@ class TestStaleness:
             snapshots.resolve_current(session, bank["ontology"])
 
         with session_scope() as session:
-            stale = labels.stale_label_ids(session, bank["ontology"])
+            stale = staleness.stale_label_ids(session, bank["ontology"])
             assert len(stale) == 1
             # Excluded from the default denominator.
-            assert labels.trusted_labels(session, bank["ontology"]) == []
+            assert staleness.trusted_labels(session, bank["ontology"]) == []
             # Available on request, with the count visible either way.
             assert (
-                len(labels.trusted_labels(session, bank["ontology"], include_stale=True)) == 1
+                len(staleness.trusted_labels(session, bank["ontology"], include_stale=True))
+                == 1
             )
 
     def test_editing_one_concept_does_not_rot_the_others(self, bank):
@@ -182,7 +184,7 @@ class TestStaleness:
             snapshots.resolve_current(session, bank["ontology"])
 
         with session_scope() as session:
-            surviving = labels.trusted_labels(session, bank["ontology"])
+            surviving = staleness.trusted_labels(session, bank["ontology"])
             assert len(surviving) == 1
             assert surviving[0].concept_id == bank["strike"]
 
@@ -198,8 +200,8 @@ class TestStaleness:
             snapshots.resolve_current(session, bank["ontology"])
 
         with session_scope() as session:
-            assert labels.stale_label_ids(session, bank["ontology"]) == set()
-            assert len(labels.trusted_labels(session, bank["ontology"])) == 1
+            assert staleness.stale_label_ids(session, bank["ontology"]) == set()
+            assert len(staleness.trusted_labels(session, bank["ontology"])) == 1
 
     def test_re_adjudicating_clears_staleness(self, bank):
         """A human re-reading against the new wording makes the label valid again."""
@@ -213,12 +215,12 @@ class TestStaleness:
             snapshots.resolve_current(session, bank["ontology"])
 
         with session_scope() as session:
-            assert len(labels.stale_label_ids(session, bank["ontology"])) == 1
+            assert len(staleness.stale_label_ids(session, bank["ontology"])) == 1
             labels.adjudicate(session, label_id, matched=True)
 
         with session_scope() as session:
-            assert labels.stale_label_ids(session, bank["ontology"]) == set()
-            assert len(labels.trusted_labels(session, bank["ontology"])) == 1
+            assert staleness.stale_label_ids(session, bank["ontology"]) == set()
+            assert len(staleness.trusted_labels(session, bank["ontology"])) == 1
 
     def test_stats_surface_the_stale_count(self, bank):
         with session_scope() as session:
@@ -229,4 +231,4 @@ class TestStaleness:
             service.update_concept(session, bank["riot"], definition="Different wording now.")
             snapshots.resolve_current(session, bank["ontology"])
         with session_scope() as session:
-            assert labels.stats(session, bank["ontology"])["stale"] == 1
+            assert staleness.stats(session, bank["ontology"])["stale"] == 1

@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from hontology.apps.api.routers._common import run_or_404, truth_or_404
 from hontology.db.models import Candidate, Run
 from hontology.db.session import get_db
-from hontology.pipeline.retrieve import live, tuning
+from hontology.pipeline.retrieve import live, pasted, tuning
 from hontology.pipeline.runs import versions
 
 router = APIRouter(prefix="/retrieval", tags=["retrieval"])
@@ -183,7 +183,6 @@ def rank_text(payload: TextIn, db: Session = Depends(get_db)):
     """Rank the leaves against pasted text with *run_id*'s retrieval and cut it.
     The text is embedded and dropped; nothing about it is stored."""
     from hontology.pipeline.judge.providers.base import ProviderError
-    from hontology.pipeline.retrieve import live
 
     run = run_or_404(db, payload.run_id)
     cutoff = (
@@ -192,7 +191,7 @@ def rank_text(payload: TextIn, db: Session = Depends(get_db)):
         else tuning.run_cutoff(versions.source_run(db, run))
     )
     try:
-        return live.rank_text(db, run, payload.text, cutoff, pool_size=payload.pool_size)
+        return pasted.rank_text(db, run, payload.text, cutoff, pool_size=payload.pool_size)
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except ProviderError as exc:

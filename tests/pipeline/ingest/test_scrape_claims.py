@@ -16,7 +16,8 @@ from sqlalchemy import create_engine, delete
 from sqlalchemy.orm import Session, sessionmaker
 
 from hontology.db.models import Document
-from hontology.pipeline.ingest.articles.scrape import pending_documents, wait_for_claimed
+from hontology.pipeline.ingest.articles.claims import pending_documents
+from hontology.pipeline.ingest.articles.scrape import wait_for_claimed
 
 pytestmark = pytest.mark.requires_db
 
@@ -81,7 +82,7 @@ def test_waiting_returns_once_the_claim_is_committed(two_sessions):
 
 
 def test_one_scraper_at_a_time_holds_a_host():
-    from hontology.pipeline.ingest.articles.scrape import host_lock
+    from hontology.pipeline.ingest.articles.claims import host_lock
 
     order: list[str] = []
 

@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from hontology.db.models import Ontology
 from hontology.db.models.ontology import PRECURSOR_OF, SUBCLASS_OF
-from hontology.ontology import service
+from hontology.ontology import portable, service
 
 HON = Namespace("https://github.com/emaroppo/hontology/ns#")
 ONTOLOGY_BASE = "https://github.com/emaroppo/hontology/ontology/"
@@ -48,7 +48,7 @@ def _slug(name: str) -> str:
 
 
 def to_graph(payload: dict[str, Any]) -> Graph:
-    """An exported ontology dict (as `service.export_ontology` returns) as a graph."""
+    """An exported ontology dict (as `portable.export_ontology` returns) as a graph."""
     base = Namespace(f"{ONTOLOGY_BASE}{payload['slug']}#")
     graph = Graph()
     graph.bind("owl", OWL)
@@ -97,7 +97,7 @@ def to_graph(payload: dict[str, Any]) -> Graph:
 
 
 def from_graph(graph: Graph) -> dict[str, Any]:
-    """A graph back into the dict `service.import_ontology` takes."""
+    """A graph back into the dict `portable.import_ontology` takes."""
     header = next(graph.subjects(RDF.type, OWL.Ontology), None)
     if header is None:
         raise service.Conflict("no owl:Ontology in the file")
@@ -140,7 +140,7 @@ def from_graph(graph: Graph) -> dict[str, Any]:
 
     description = graph.value(header, RDFS.comment)
     return {
-        "export_version": service.EXPORT_VERSION,
+        "export_version": portable.EXPORT_VERSION,
         "slug": str(slug),
         "name": str(graph.value(header, RDFS.label) or slug),
         "description": str(description) if description is not None else None,
@@ -154,11 +154,11 @@ def _text(value: Any) -> str | None:
 
 
 def export_turtle(session: Session, ontology_id: int) -> str:
-    return to_graph(service.export_ontology(session, ontology_id)).serialize(format="turtle")
+    return to_graph(portable.export_ontology(session, ontology_id)).serialize(format="turtle")
 
 
 def import_turtle(session: Session, text: str, *, allow_text_change: bool = False) -> Ontology:
     """Import a Turtle file. Rewording existing classes is refused by default,
     since this is the path a hierarchy arrives by and labels depend on wording."""
     payload = from_graph(Graph().parse(data=text, format="turtle"))
-    return service.import_ontology(session, payload, allow_text_change=allow_text_change)
+    return portable.import_ontology(session, payload, allow_text_change=allow_text_change)

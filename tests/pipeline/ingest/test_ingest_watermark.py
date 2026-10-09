@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy.pool import NullPool
 
 from hontology.db.session import session_scope
-from hontology.pipeline.ingest.feed import gdelt, slices
+from hontology.pipeline.ingest.feed import catchup, gdelt, slices, store, watermark
 from hontology.pipeline.ingest.feed.scheduler import try_lock, unlock
 
 pytestmark = pytest.mark.requires_db
@@ -21,7 +21,7 @@ FEED = "test_feed"
 
 
 def set_slice_status(session, key: str, status: str) -> None:
-    row = slices._get_or_create_slice(session, key, FEED)
+    row = store.get_or_create_slice(session, key, FEED)
     row.status = status
     session.flush()
 
@@ -29,33 +29,33 @@ def set_slice_status(session, key: str, status: str) -> None:
 class TestWatermarkAdvance:
     def test_first_advance_accepts_any_slice(self):
         with session_scope() as session:
-            assert slices.advance_watermark(session, "20260826120000", FEED) is True
-            assert slices.get_watermark(session, FEED).last_slice_key == "20260826120000"
+            assert watermark.advance_watermark(session, "20260826120000", FEED) is True
+            assert watermark.get_watermark(session, FEED).last_slice_key == "20260826120000"
 
     def test_advances_to_the_immediate_successor(self):
         with session_scope() as session:
-            slices.advance_watermark(session, "20260826120000", FEED)
-            assert slices.advance_watermark(session, "20260826121500", FEED) is True
-            assert slices.get_watermark(session, FEED).last_slice_key == "20260826121500"
+            watermark.advance_watermark(session, "20260826120000", FEED)
+            assert watermark.advance_watermark(session, "20260826121500", FEED) is True
+            assert watermark.get_watermark(session, FEED).last_slice_key == "20260826121500"
 
     def test_refuses_to_skip_a_slice(self):
         """A later success must not mark an earlier unfinished slice as done."""
         with session_scope() as session:
-            slices.advance_watermark(session, "20260826120000", FEED)
+            watermark.advance_watermark(session, "20260826120000", FEED)
             # 12:15 was never processed; jumping to 12:30 would silently lose it.
-            assert slices.advance_watermark(session, "20260826123000", FEED) is False
-            assert slices.get_watermark(session, FEED).last_slice_key == "20260826120000"
+            assert watermark.advance_watermark(session, "20260826123000", FEED) is False
+            assert watermark.get_watermark(session, FEED).last_slice_key == "20260826120000"
 
     def test_refuses_to_move_backwards(self):
         with session_scope() as session:
-            slices.advance_watermark(session, "20260826123000", FEED)
-            assert slices.advance_watermark(session, "20260826120000", FEED) is False
-            assert slices.get_watermark(session, FEED).last_slice_key == "20260826123000"
+            watermark.advance_watermark(session, "20260826123000", FEED)
+            assert watermark.advance_watermark(session, "20260826120000", FEED) is False
+            assert watermark.get_watermark(session, FEED).last_slice_key == "20260826123000"
 
     def test_re_advancing_to_the_same_slice_is_refused(self):
         with session_scope() as session:
-            slices.advance_watermark(session, "20260826120000", FEED)
-            assert slices.advance_watermark(session, "20260826120000", FEED) is False
+            watermark.advance_watermark(session, "20260826120000", FEED)
+            assert watermark.advance_watermark(session, "20260826120000", FEED) is False
 
 
 class TestSliceStatus:
@@ -82,7 +82,7 @@ class TestSliceStatus:
             set_slice_status(session, "20260826120000", "failed")
         with session_scope() as session:
             # Not short-circuited: it will attempt the fetch again.
-            row = slices._get_or_create_slice(session, "20260826120000", FEED)
+            row = store.get_or_create_slice(session, "20260826120000", FEED)
             assert row.status not in slices.TERMINAL
 
 
@@ -90,14 +90,14 @@ class TestBackfill:
     def test_backfill_does_not_move_the_watermark(self):
         """Backfilling history must not convince the scheduler it is current."""
         with session_scope() as session:
-            slices.advance_watermark(session, "20260826120000", FEED)
+            watermark.advance_watermark(session, "20260826120000", FEED)
 
         with session_scope() as session:
-            before = slices.get_watermark(session, FEED).last_slice_key
+            before = watermark.get_watermark(session, FEED).last_slice_key
             # Mark an old window terminal without touching the watermark.
             for key in ["20260101000000", "20260101001500"]:
                 set_slice_status(session, key, "ok")
-            after = slices.get_watermark(session, FEED).last_slice_key
+            after = watermark.get_watermark(session, FEED).last_slice_key
 
         assert before == after == "20260826120000"
 
@@ -105,13 +105,13 @@ class TestBackfill:
 class TestLag:
     def test_lag_reflects_the_watermark(self):
         with session_scope() as session:
-            slices.advance_watermark(session, gdelt.slice_key(datetime.now(UTC)), FEED)
-            info = slices.status(session, feed=FEED)
+            watermark.advance_watermark(session, gdelt.slice_key(datetime.now(UTC)), FEED)
+            info = catchup.status(session, feed=FEED)
             assert info["lag_slices"] == 0
 
     def test_lag_is_none_before_any_ingest(self):
         with session_scope() as session:
-            info = slices.status(session, feed=FEED)
+            info = catchup.status(session, feed=FEED)
             assert info["watermark"] is None
             assert info["lag_slices"] is None
 

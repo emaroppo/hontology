@@ -12,12 +12,9 @@ import pytest
 
 from hontology.db.models import Document, Run, Verdict
 from hontology.db.session import session_scope
-from hontology.evaluation.labels import bank, queue
-from hontology.evaluation.labels.queue import (
-    CONF_MIN_SAMPLES,
-    build_queue,
-    usable_confidence_runs,
-)
+from hontology.evaluation.labels import bank, confidence
+from hontology.evaluation.labels.confidence import CONF_MIN_SAMPLES, usable_confidence_runs
+from hontology.evaluation.labels.queue import build_queue
 from hontology.ontology import service
 
 pytestmark = pytest.mark.requires_db
@@ -250,6 +247,6 @@ class TestQueuePriority:
 
 def test_thresholds_are_documented_constants():
     """These numbers decide what counts as signal; they should not drift silently."""
-    assert queue.CONF_MIN_SAMPLES >= 10
-    assert 0 < queue.CONF_MIN_STD < 0.5
-    assert queue.CONF_INTERIOR_LO < queue.CONF_INTERIOR_HI
+    assert confidence.CONF_MIN_SAMPLES >= 10
+    assert 0 < confidence.CONF_MIN_STD < 0.5
+    assert confidence.CONF_INTERIOR_LO < confidence.CONF_INTERIOR_HI

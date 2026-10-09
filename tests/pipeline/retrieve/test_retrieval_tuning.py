@@ -15,7 +15,7 @@ from hontology.apps.api.main import app
 from hontology.db.models import Candidate, Document, PairLabel, Run
 from hontology.db.session import session_scope
 from hontology.ontology import service
-from hontology.pipeline.retrieve import candidates, live, tuning
+from hontology.pipeline.retrieve import candidates, live, pasted, tuning
 
 pytestmark = pytest.mark.requires_db
 
@@ -290,7 +290,7 @@ def test_pasted_text_ranks_as_a_stored_article_would(embedded, monkeypatch):
     from sqlalchemy import func, select
 
     from hontology.db.models import Embedding
-    from hontology.pipeline.retrieve import embed, live
+    from hontology.pipeline.retrieve import embed
 
     class Provider:
         name = "ollama"
@@ -306,7 +306,7 @@ def test_pasted_text_ranks_as_a_stored_article_would(embedded, monkeypatch):
     with session_scope() as session:
         before = session.scalar(select(func.count(Embedding.id)))
         run = session.get(Run, embedded["run"])
-        result = live.rank_text(
+        result = pasted.rank_text(
             session, run, "Dockworkers stopped work.", tuning.Cutoff(selection="top-k", top_k=1)
         )
         assert session.scalar(select(func.count(Embedding.id))) == before

@@ -16,7 +16,7 @@ from sqlalchemy import select
 from hontology.db.models import FeedArticle, FeedSlice
 from hontology.db.session import session_scope
 from hontology.pipeline.ingest.codes.loci import by_fips
-from hontology.pipeline.ingest.feed import gdelt, slices
+from hontology.pipeline.ingest.feed import gdelt, parse, repair, slices
 
 KEY = "20250923120000"
 
@@ -32,13 +32,13 @@ def _record(
     quotations: str = "",
 ) -> str:
     row = [""] * 27
-    row[gdelt.GKG_COL_RECORD_ID] = record_id
-    row[gdelt.GKG_COL_DATE] = KEY
-    row[gdelt.GKG_COL_COLLECTION] = collection
-    row[gdelt.GKG_COL_DOCUMENT] = url
-    row[gdelt.GKG_COL_THEMES] = themes
-    row[gdelt.GKG_COL_THEMES_V2] = themes_v2
-    row[gdelt.GKG_COL_LOCATIONS] = locations
+    row[parse.GKG_COL_RECORD_ID] = record_id
+    row[parse.GKG_COL_DATE] = KEY
+    row[parse.GKG_COL_COLLECTION] = collection
+    row[parse.GKG_COL_DOCUMENT] = url
+    row[parse.GKG_COL_THEMES] = themes
+    row[parse.GKG_COL_THEMES_V2] = themes_v2
+    row[parse.GKG_COL_LOCATIONS] = locations
     row[22] = quotations
     return "\t".join(row)
 
@@ -63,7 +63,7 @@ PAYLOAD = _zip(
 
 class TestParse:
     def test_themes_and_countries_are_read(self):
-        records = {r["record_id"]: r for r in gdelt.parse_gkg(PAYLOAD)}
+        records = {r["record_id"]: r for r in parse.parse_gkg(PAYLOAD)}
         assert records["r1"]["themes"] == {"MARITIME", "WB_167_PORTS"}
         assert records["r3"]["countries"] == {"HK", "US"}
         assert records["r1"]["url"] == "https://a.test/port"
@@ -71,13 +71,13 @@ class TestParse:
     def test_only_web_articles_are_kept(self):
         """Other collections identify documents by something other than a URL."""
         payload = _zip(_record("r1", "not-a-url", collection="2", locations=US))
-        assert list(gdelt.parse_gkg(payload)) == []
+        assert list(parse.parse_gkg(payload)) == []
 
     def test_v2_themes_are_the_fallback(self):
         payload = _zip(
             _record("r1", "https://a.test", themes_v2="CYBER_ATTACK,120;SHORTAGE,40")
         )
-        assert next(gdelt.parse_gkg(payload))["themes"] == {"CYBER_ATTACK", "SHORTAGE"}
+        assert next(parse.parse_gkg(payload))["themes"] == {"CYBER_ATTACK", "SHORTAGE"}
 
     def test_a_stray_quote_does_not_swallow_the_next_record(self):
         """A quoting-aware reader would merge r2 into r1's quotation field."""
@@ -85,7 +85,7 @@ class TestParse:
             _record("r1", "https://a.test", quotations='he said "the port is'),
             _record("r2", "https://b.test"),
         )
-        assert [r["record_id"] for r in gdelt.parse_gkg(payload)] == ["r1", "r2"]
+        assert [r["record_id"] for r in parse.parse_gkg(payload)] == ["r1", "r2"]
 
 
 class TestCovers:
@@ -183,17 +183,17 @@ class TestScopedIngest:
 def test_the_export_reads_the_action_country_not_its_type():
     """Column 51 is ActionGeo_Type (1-5); the FIPS country is column 53. Reading
     51 once left every one of 14.6 million events without a country."""
-    row = [""] * gdelt.EXPORT_COLUMNS
-    row[gdelt.COL_EVENT_ID] = "1"
-    row[gdelt.COL_EVENT_BASE_CODE] = "143"
+    row = [""] * parse.EXPORT_COLUMNS
+    row[parse.COL_EVENT_ID] = "1"
+    row[parse.COL_EVENT_BASE_CODE] = "143"
     row[51] = "1"
     row[52] = "Kenya"
     row[53] = "KE"
-    row[gdelt.COL_SOURCE_URL] = "https://e.test/1"
+    row[parse.COL_SOURCE_URL] = "https://e.test/1"
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr("x.export.CSV", "\t".join(row) + "\n")
-    (record,) = gdelt.parse_export(buffer.getvalue())
+    (record,) = parse.parse_export(buffer.getvalue())
     assert record["country"] == "KE"
 
 
@@ -206,12 +206,12 @@ def test_repair_gives_old_events_their_country():
     from hontology.db.models import FeedEvent
 
     key = "20250101000000"
-    row = [""] * gdelt.EXPORT_COLUMNS
-    row[gdelt.COL_EVENT_BASE_CODE] = "143"
-    row[gdelt.COL_SOURCE_URL] = "https://e.test/r"
+    row = [""] * parse.EXPORT_COLUMNS
+    row[parse.COL_EVENT_BASE_CODE] = "143"
+    row[parse.COL_SOURCE_URL] = "https://e.test/r"
     lines = []
     for event_id, fips in (("e1", "KE"), ("e2", "US")):
-        row[gdelt.COL_EVENT_ID], row[53] = event_id, fips
+        row[parse.COL_EVENT_ID], row[53] = event_id, fips
         lines.append("\t".join(row))
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -231,9 +231,9 @@ def test_repair_gives_old_events_their_country():
         )
 
     with session_scope() as session:
-        assert key in slices.slices_missing_export_loci(session)
-        loci = slices.export_loci(buffer.getvalue(), by_fips(session))
-        assert slices.apply_export_loci(session, key, loci) == 2
+        assert key in repair.slices_missing_export_loci(session)
+        loci = repair.export_loci(buffer.getvalue(), by_fips(session))
+        assert repair.apply_export_loci(session, key, loci) == 2
 
     with session_scope() as session:
         lookup = by_fips(session)
@@ -241,4 +241,4 @@ def test_repair_gives_old_events_their_country():
             session.execute(select(FeedEvent.feed_event_id, FeedEvent.locus_id)).all()
         )
         assert located == {"e1": lookup["KE"].id, "e2": lookup["US"].id}
-        assert key not in slices.slices_missing_export_loci(session)
+        assert key not in repair.slices_missing_export_loci(session)

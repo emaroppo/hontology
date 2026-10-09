@@ -24,7 +24,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from hontology.evaluation.metrics import format_num
+from hontology.evaluation.metrics.intervals import format_num
 from hontology.evaluation.pairs import evaluate as evaluate_module
 
 

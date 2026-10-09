@@ -23,7 +23,7 @@ def labels_export(
     observations: bool = Observations,
 ) -> None:
     """Export the bank as CSV, keyed by document URL and concept name."""
-    from hontology.evaluation.labels import csv_io as label_io
+    from hontology.evaluation.labels import csv_export as label_io
 
     exporter = label_io.export_observations if observations else label_io.export_labels
     with session_scope() as session:

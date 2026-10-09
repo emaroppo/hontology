@@ -9,7 +9,7 @@ from hontology.apps.api.main import app
 from hontology.db.models import Document
 from hontology.db.session import session_scope
 from hontology.evaluation.labels import bank as label_service
-from hontology.ontology import service
+from hontology.ontology import portable, service
 
 pytestmark = pytest.mark.requires_db
 
@@ -38,7 +38,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(type(settings), "scrape_cache_dir", property(lambda self: tmp_path))
     (tmp_path / "a.txt").write_text("A tariff was imposed on steel.")
     with session_scope() as session:
-        ontology = service.import_ontology(session, PAYLOAD)
+        ontology = portable.import_ontology(session, PAYLOAD)
         ids = {c.name: c.id for c in service.list_concepts(session, ontology.id)}
         documents = [
             Document(url=f"https://ex.test/{i}", url_hash=f"doclabel{i:04d}", title=f"Doc {i}")

@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from hontology.db.models import Candidate, Document, Run, Verdict
 from hontology.db.session import session_scope
-from hontology.ontology import service
+from hontology.ontology import portable, service
 from hontology.pipeline.judge import run as judge_module
 from hontology.pipeline.judge.providers.base import Completion, ProviderError
 from hontology.pipeline.runs.config import normalize
@@ -79,7 +79,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(type(settings), "scrape_cache_dir", property(lambda self: tmp_path))
     (tmp_path / "hj.txt").write_text("A government banned imports as part of sanctions.")
     with session_scope() as session:
-        ontology = service.import_ontology(session, PAYLOAD)
+        ontology = portable.import_ontology(session, PAYLOAD)
         names = {c.id: c.name for c in service.list_concepts(session, ontology.id)}
         ids = {name: cid for cid, name in names.items()}
         document = Document(
@@ -220,7 +220,7 @@ def test_cost_is_recorded_per_answered_class(world, monkeypatch):
 
 
 def test_reused_retrieval_copies_only_the_window_once(world):
-    from hontology.evaluation.calendar.runner import copy_window_candidates
+    from hontology.evaluation.calendar.window_work import copy_window_candidates
 
     with session_scope() as session:
         source = session.get(Run, world["run"])
@@ -271,7 +271,7 @@ def test_reused_retrieval_refuses_a_reworded_leaf(world):
 
 
 def test_diagnostics_locate_hits_by_level_and_coverage(world, monkeypatch):
-    from hontology.evaluation.comparison.arms import hierarchy_diagnostics
+    from hontology.evaluation.comparison.hierarchy_diagnostics import hierarchy_diagnostics
 
     judge(world, FakeJudge(world["names"], yes={"Trade", "Sanction", "Ban"}), monkeypatch)
     leaves = ("Tariff", "Ban", "Embargo", "Hack")
@@ -296,7 +296,7 @@ def test_diagnostics_place_a_miss_at_its_level(world, monkeypatch):
     judge(world, FakeJudge(world["names"], yes={"Trade", "Ban"}), monkeypatch)
     leaves = ("Tariff", "Ban", "Embargo", "Hack")
     truth = {(world["document"], world["ids"][n]): n == "Ban" for n in leaves}
-    from hontology.evaluation.comparison.arms import hierarchy_diagnostics
+    from hontology.evaluation.comparison.hierarchy_diagnostics import hierarchy_diagnostics
 
     with session_scope() as session:
         ontology_id = session.get(Run, world["run"]).ontology_id

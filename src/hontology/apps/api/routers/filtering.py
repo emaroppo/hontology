@@ -19,7 +19,7 @@ from hontology.db.models import Concept, LinkSnapshot, Run
 from hontology.db.session import get_db
 from hontology.evaluation.calendar import events
 from hontology.evaluation.stages import filter_eval
-from hontology.pipeline.runs import versions
+from hontology.pipeline.runs import link_versions, versions
 
 router = APIRouter(prefix="/filtering", tags=["filtering"])
 
@@ -54,7 +54,7 @@ def _names(db: Session, ontology_id: int) -> dict[int, str]:
 def list_versions(ontology_id: int, db: Session = Depends(get_db)):
     """Link snapshots, newest first, with the runs that fetched with each, and
     which one (if any) the live links currently are."""
-    live = versions.current_links(db, ontology_id)
+    live = link_versions.current_links(db, ontology_id)
     used: dict[str, list[int]] = {}
     for run in db.scalars(select(Run).where(Run.ontology_id == ontology_id)):
         for version in versions.filter_versions(run):
@@ -121,7 +121,7 @@ def evaluate_cost(payload: EvaluateIn, db: Session = Depends(get_db)):
 @router.post("/versions/snapshot")
 def snapshot(ontology_id: int, db: Session = Depends(get_db)):
     """Keep the live links as a version, minting one only if they changed."""
-    found = versions.resolve_links(db, ontology_id)
+    found = link_versions.resolve_links(db, ontology_id)
     if found is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "this ontology has no links")
     return {"version": found.version, "n_links": found.n_links}

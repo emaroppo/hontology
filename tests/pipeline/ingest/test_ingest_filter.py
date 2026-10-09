@@ -172,7 +172,8 @@ class TestNoLinks:
 class TestScrapeIntegration:
     def test_the_filter_gates_which_documents_are_fetched(self, setup, monkeypatch):
         """The whole point: the budget goes to documents the ontology can use."""
-        from hontology.pipeline.ingest.articles import scrape
+        from hontology.pipeline.ingest.articles import host_scrape, scrape
+        from hontology.pipeline.ingest.articles.fetch import RobotsCache
 
         with session_scope() as session:
             keep = add_document(session, "8")
@@ -186,8 +187,8 @@ class TestScrapeIntegration:
             attempted.append(url)
             return None, 404, "HTTP 404"
 
-        monkeypatch.setattr(scrape, "fetch_html", fake_fetch)
-        monkeypatch.setattr(scrape.RobotsCache, "allowed", lambda self, url: True)
+        monkeypatch.setattr(host_scrape, "fetch_html", fake_fetch)
+        monkeypatch.setattr(RobotsCache, "allowed", lambda self, url: True)
 
         with session_scope() as session:
             scrape.scrape_pending(session, limit=10, ontology_id=setup["ontology"])
@@ -196,7 +197,8 @@ class TestScrapeIntegration:
         assert not any("flt.test/9" in url for url in attempted)
 
     def test_without_an_ontology_nothing_is_filtered(self, setup, monkeypatch):
-        from hontology.pipeline.ingest.articles import scrape
+        from hontology.pipeline.ingest.articles import host_scrape, scrape
+        from hontology.pipeline.ingest.articles.fetch import RobotsCache
 
         with session_scope() as session:
             doc = add_document(session, "10")
@@ -204,9 +206,11 @@ class TestScrapeIntegration:
 
         attempted: list[str] = []
         monkeypatch.setattr(
-            scrape, "fetch_html", lambda url, **kw: (attempted.append(url), (None, 404, "x"))[1]
+            host_scrape,
+            "fetch_html",
+            lambda url, **kw: (attempted.append(url), (None, 404, "x"))[1],
         )
-        monkeypatch.setattr(scrape.RobotsCache, "allowed", lambda self, url: True)
+        monkeypatch.setattr(RobotsCache, "allowed", lambda self, url: True)
 
         with session_scope() as session:
             scrape.scrape_pending(session, limit=10)
@@ -216,6 +220,7 @@ class TestScrapeIntegration:
     def test_an_unfilterable_ontology_fetches_nothing_and_says_so(self, setup, monkeypatch):
         """Silently fetching zero would look like the feed had gone quiet."""
         from hontology.pipeline.ingest.articles import scrape
+        from hontology.pipeline.ingest.articles.fetch import RobotsCache
 
         with session_scope() as session:
             other = service.create_ontology(session, slug="test-filter-3", name="No links")
@@ -223,7 +228,7 @@ class TestScrapeIntegration:
             doc = add_document(session, "11")
             add_event(session, setup, doc, base="145")
 
-        monkeypatch.setattr(scrape.RobotsCache, "allowed", lambda self, url: True)
+        monkeypatch.setattr(RobotsCache, "allowed", lambda self, url: True)
 
         with session_scope() as session:
             result = scrape.scrape_pending(session, limit=10, ontology_id=other_id)

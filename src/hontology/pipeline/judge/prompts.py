@@ -17,17 +17,27 @@ whose wording has drifted from its pin, and the tests refuse an unpinned one.
 from __future__ import annotations
 
 import json
-import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from hontology.db.models import Concept, Document
+from hontology.pipeline.judge.wording import (
+    MAX_EVENTS,
+    SYSTEM,
+    build_batch_strict,
+    build_choose,
+    build_concept_first,
+    build_event_route,
+    build_extract,
+    build_route,
+    build_strict,
+)
 
-# The wording lives in prompts.toml; this module only assembles it.
-_WORDING = tomllib.loads(Path(__file__).with_name("prompts.toml").read_text(encoding="utf-8"))
-_SYSTEM, _SHAPE, _TEXT = _WORDING["system"], _WORDING["shape"], _WORDING["text"]
-# Each released prompt id's fingerprint (runs.versions.prompt_fingerprint).
+# The wording lives in prompts.toml, assembled by judge.wording; this module
+# says which prompt id is which.
+
+# Each released prompt id's fingerprint (runs.fingerprints.prompt_fingerprint).
 # Judging refuses a pinned id whose wording no longer matches; see judge.run.
 PINS: dict[str, str] = json.loads(
     Path(__file__).with_name("prompts.lock.json").read_text(encoding="utf-8")
@@ -44,11 +54,6 @@ HIERARCHICAL = "hierarchical"
 EXTRACT = "extract"
 # Modes that judge top-down through the hierarchy, gated on any selected leaf.
 TOP_DOWN_MODES = (HIERARCHICAL, EXTRACT)
-
-MAX_EVENTS: int = _WORDING["max_events"]
-RESPONSE_SHAPE: str = _SHAPE["pair"]
-# At the top level an event may also be "other": none of the classes.
-OTHER_ID = 0
 
 
 @dataclass(frozen=True)
@@ -139,128 +144,11 @@ def available() -> list[str]:
     return sorted(_REGISTRY)
 
 
-def _trim(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 3] + "..."
-
-
-def _article(document: Document, body: str, body_limit: int) -> str:
-    return (
-        f"=== Article ===\n"
-        f"url: {document.url}\n"
-        f"title: {document.title or ''}\n"
-        f"body: {_trim(body, body_limit)}\n\n"
-    )
-
-
-def _questions(entries) -> str:
-    """Routing questions, as ``(concept_id, question)`` pairs."""
-    return "\n\n".join(f"[concept_id {i}]\nquestion: {q}" for i, q in entries)
-
-
-def _concept_block(concept: Concept) -> str:
-    parts = [f"name: {concept.name}"]
-    if concept.definition:
-        parts.append(f"definition: {concept.definition}")
-    # The criteria are the user's boundary-drawing, so they go in verbatim rather
-    # than being summarized into the definition.
-    if concept.inclusion_criteria:
-        parts.append(f"counts when: {concept.inclusion_criteria}")
-    if concept.exclusion_criteria:
-        parts.append(f"does NOT count when: {concept.exclusion_criteria}")
-    return "\n".join(parts)
-
-
-def _event_block(event: dict) -> str:
-    return (
-        f"description: {event.get('description', '')}\n"
-        f"status: {event.get('status', '')}\n"
-        f"country: {event.get('country', '')}\n"
-        f"evidence: {event.get('evidence', '')}"
-    )
-
-
-# ===========================================================================
-# Builders
-# ===========================================================================
-
-
-def _build_strict(document: Document, concept: Concept, body: str, body_limit: int) -> str:
-    return (
-        _article(document, body, body_limit)
-        + f"=== Concept ===\n{_concept_block(concept)}\n\n{RESPONSE_SHAPE}\n"
-    )
-
-
-def _build_concept_first(
-    document: Document, concept: Concept, body: str, body_limit: int
-) -> str:
-    return (
-        f"=== Concept ===\n{_concept_block(concept)}\n\n"
-        + _article(document, body, body_limit)
-        + f"{RESPONSE_SHAPE}\n"
-    )
-
-
-def _build_batch_strict(
-    document: Document, concepts: list[Concept], body: str, body_limit: int
-) -> str:
-    blocks = "\n\n".join(
-        f"[concept_id {concept.id}]\n{_concept_block(concept)}" for concept in concepts
-    )
-    return (
-        _article(document, body, body_limit) + f"{_TEXT['batch'].format(n=len(concepts))}\n\n"
-        f"=== Concepts ===\n{blocks}\n\n"
-        f"{_SHAPE['batch']}\n"
-    )
-
-
-def _build_route(
-    document: Document, concepts: list[Concept], body: str, body_limit: int
-) -> str:
-    # A parent's text is its routing question, held as ontology content.
-    blocks = _questions((c.id, c.definition or c.name) for c in concepts)
-    return (
-        _article(document, body, body_limit) + f"{_TEXT['route'].format(n=len(concepts))}\n\n"
-        f"=== Questions ===\n{blocks}\n\n"
-        f"{_SHAPE['batch'].replace('concept listed', 'question listed')}\n"
-    )
-
-
-def _build_extract(document: Document, top: list[Concept], body: str, body_limit: int) -> str:
-    # The top-level classes say what is in scope, so the list stays on topic.
-    kinds = "\n".join(f"- {c.name}: {c.definition or c.name}" for c in top)
-    return (
-        _article(document, body, body_limit)
-        + f"=== Kinds of event in scope ===\n{kinds}\n\n{_SHAPE['extract']}\n"
-    )
-
-
-def _build_event_route(event: dict, concepts: list[Concept], other: bool = False) -> str:
-    entries = [(c.id, c.definition or c.name) for c in concepts]
-    if other:
-        entries.append((OTHER_ID, _TEXT["other_question"]))
-    return (
-        f"=== Event ===\n{_event_block(event)}\n\n"
-        f"{_TEXT['event_route'].format(n=len(entries))}\n\n"
-        f"=== Questions ===\n{_questions(entries)}\n\n"
-        f"{_SHAPE['event_route']}\n"
-    )
-
-
-def _build_choose(event: dict, concepts: list[Concept]) -> str:
-    blocks = "\n\n".join(f"[concept_id {c.id}]\n{_concept_block(c)}" for c in concepts)
-    return (
-        f"=== Event ===\n{_event_block(event)}\n\n"
-        f"=== Concepts: choose at most one ===\n{blocks}\n\n"
-        f"{_SHAPE['choose']}\n"
-    )
-
-
 # ===========================================================================
 # Registered prompt ids. Why each wording is what it is: see prompts.toml.
 # ===========================================================================
 
-register(PromptTemplate("strict_v1", PER_PAIR, _SYSTEM["strict"], _build_strict))
+register(PromptTemplate("strict_v1", PER_PAIR, SYSTEM["strict"], build_strict))
 
 # Identical guidance and response shape; only the ORDER differs. Putting the
 # article first makes it a stable prefix across every concept tested against that
@@ -268,9 +156,9 @@ register(PromptTemplate("strict_v1", PER_PAIR, _SYSTEM["strict"], _build_strict)
 # N calls for one article. strict_v1 puts the article first for exactly that
 # reason; this variant puts the concept first so the effect can be measured
 # rather than assumed.
-register(PromptTemplate("concept_first_v1", PER_PAIR, _SYSTEM["strict"], _build_concept_first))
+register(PromptTemplate("concept_first_v1", PER_PAIR, SYSTEM["strict"], build_concept_first))
 
-register(PromptTemplate("lenient_v1", PER_PAIR, _SYSTEM["lenient"], _build_strict))
+register(PromptTemplate("lenient_v1", PER_PAIR, SYSTEM["lenient"], build_strict))
 
 # One call per document, judging every candidate at once, with strict_v1's
 # guidance so the only difference is construction: far fewer calls and one copy
@@ -281,9 +169,9 @@ register(
     PromptTemplate(
         "strict_batch_v1",
         PER_DOCUMENT,
-        _SYSTEM["strict"],
-        _build_strict,
-        build_batch=_build_batch_strict,
+        SYSTEM["strict"],
+        build_strict,
+        build_batch=build_batch_strict,
     )
 )
 
@@ -300,8 +188,8 @@ register(
     replace(
         get("hier_batch_v1"),
         prompt_id="hier_batch_v2",
-        route_system=_SYSTEM["route"],
-        build_route=_build_route,
+        route_system=SYSTEM["route"],
+        build_route=build_route,
     )
 )
 
@@ -316,15 +204,15 @@ register(
     PromptTemplate(
         "extract_v1",
         EXTRACT,
-        _SYSTEM["strict"],
-        _build_strict,
-        extract_system=_SYSTEM["extract"].replace("{max_events}", str(MAX_EVENTS)),
-        build_extract=_build_extract,
-        event_top_system=_SYSTEM["event_top"],
-        event_route_system=_SYSTEM["event_route"],
-        build_event_route=_build_event_route,
-        choose_system=_SYSTEM["choose"],
-        build_choose=_build_choose,
+        SYSTEM["strict"],
+        build_strict,
+        extract_system=SYSTEM["extract"].replace("{max_events}", str(MAX_EVENTS)),
+        build_extract=build_extract,
+        event_top_system=SYSTEM["event_top"],
+        event_route_system=SYSTEM["event_route"],
+        build_event_route=build_event_route,
+        choose_system=SYSTEM["choose"],
+        build_choose=build_choose,
     )
 )
 

@@ -20,9 +20,12 @@ from sqlalchemy.orm import Session
 
 from hontology.db.lookups import get_run
 from hontology.db.models import Candidate, Observation, Verdict
-from hontology.evaluation import article
-from hontology.evaluation import metrics as metric_lib
-from hontology.evaluation.labels import bank as label_service
+from hontology.evaluation.article.verdicts import answered, clean_verdicts
+from hontology.evaluation.labels import staleness
+from hontology.evaluation.metrics.calibration import calibration_bins
+from hontology.evaluation.metrics.confusion import Confusion
+from hontology.evaluation.metrics.intervals import format_ci, format_num, with_intervals
+from hontology.evaluation.metrics.retrieval import retrieval_metrics
 
 
 @dataclass
@@ -50,7 +53,7 @@ def label_map(
 ) -> dict[tuple[int, int], bool]:
     return {
         (label.document_id, label.concept_id): label.matched
-        for label in label_service.trusted_labels(
+        for label in staleness.trusted_labels(
             session,
             ontology_id,
             include_machine=include_machine,
@@ -61,7 +64,7 @@ def label_map(
 
 def verdict_map(session: Session, run_id: int) -> dict[tuple[int, int], bool]:
     """Only clean verdicts. An errored pair is not a prediction."""
-    return article.answered(session, run_id)
+    return answered(session, run_id)
 
 
 def evaluate_run(
@@ -82,9 +85,9 @@ def evaluate_run(
     )
 
     # --- judge ------------------------------------------------------------
-    confusion = metric_lib.Confusion()
+    confusion = Confusion()
     calibration_pairs: list[tuple[float, bool]] = []
-    for verdict in article.clean_verdicts(session, run_id):
+    for verdict in clean_verdicts(session, run_id):
         key = (verdict.document_id, verdict.concept_id)
         if key not in truth:
             continue
@@ -104,7 +107,7 @@ def evaluate_run(
         if candidate.selected:
             selected.add(key)
 
-    retrieval = metric_lib.retrieval_metrics(truth, pool, selected)
+    retrieval = retrieval_metrics(truth, pool, selected)
 
     # --- end to end -------------------------------------------------------
     observations = list(
@@ -132,9 +135,9 @@ def evaluate_run(
         run_name=run.name,
         ontology_version=run.ontology_version,
         n_labels=len(truth),
-        judge=metric_lib.with_intervals(confusion, seed=seed),
+        judge=with_intervals(confusion, seed=seed),
         retrieval=retrieval.as_dict(),
-        calibration=metric_lib.calibration_bins(calibration_pairs),
+        calibration=calibration_bins(calibration_pairs),
         liveness=_liveness(session, run_id),
         observations={
             "total": len(observations),
@@ -173,8 +176,8 @@ def format_report(evaluation: RunEvaluation) -> str:
             ("recall", "recall_ci"),
             ("f1", "f1_ci"),
         ):
-            shown = metric_lib.format_num(judge[name])
-            lines.append(f"  {name:<10} {shown}  {metric_lib.format_ci(*judge[ci_key])}")
+            shown = format_num(judge[name])
+            lines.append(f"  {name:<10} {shown}  {format_ci(*judge[ci_key])}")
     lines.append("")
 
     lines.append("RETRIEVAL")
@@ -184,7 +187,7 @@ def format_report(evaluation: RunEvaluation) -> str:
     )
     coverage = retrieval["coverage"]
     precision = retrieval["precision"]
-    lines.append(f"  precision  {metric_lib.format_num(precision)}")
+    lines.append(f"  precision  {format_num(precision)}")
     lines.append(
         f"  coverage   {coverage:.3f}   <- precision's denominator; unlabelled "
         f"candidates are unknown, not wrong"
@@ -192,8 +195,8 @@ def format_report(evaluation: RunEvaluation) -> str:
         else "  coverage   —"
     )
     for k, value in sorted(retrieval["recall_at_k"].items()):
-        lines.append(f"  recall@{k:<3} {metric_lib.format_num(value)}")
-    lines.append(f"  mrr        {metric_lib.format_num(retrieval['mrr'])}")
+        lines.append(f"  recall@{k:<3} {format_num(value)}")
+    lines.append(f"  mrr        {format_num(retrieval['mrr'])}")
     cutoff = retrieval["cutoff_recall"]
     lines.append(
         f"  cutoff     {cutoff:.3f}   <- of positives that WERE ranked, how many survived"
