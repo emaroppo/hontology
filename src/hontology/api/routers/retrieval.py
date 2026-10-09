@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from hontology.db.models import Candidate, Run
 from hontology.db.session import get_db
 from hontology.evalkit import versions
-from hontology.retrieve import tuning
+from hontology.retrieve import live, tuning
 
 router = APIRouter(prefix="/retrieval", tags=["retrieval"])
 
@@ -168,7 +168,7 @@ def evaluate_version(payload: LiveIn, db: Session = Depends(get_db)):
     article under *cutoff*. Nothing is embedded or stored."""
     run = _run(db, payload.run_id)
     labels = _truth(db, run, ExploreIn(annotator=payload.annotator))
-    return tuning.live_report(
+    return live.live_report(
         db,
         run,
         tuning.Cutoff(**payload.cutoff.model_dump()),
@@ -192,7 +192,7 @@ def rank_text(payload: TextIn, db: Session = Depends(get_db)):
     """Rank the leaves against pasted text with *run_id*'s retrieval and cut it.
     The text is embedded and dropped; nothing about it is stored."""
     from hontology.judge.providers.base import ProviderError
-    from hontology.retrieve import adhoc
+    from hontology.retrieve import live
 
     run = _run(db, payload.run_id)
     cutoff = (
@@ -201,7 +201,7 @@ def rank_text(payload: TextIn, db: Session = Depends(get_db)):
         else tuning.run_cutoff(versions.source_run(db, run))
     )
     try:
-        return adhoc.rank_text(db, run, payload.text, cutoff, pool_size=payload.pool_size)
+        return live.rank_text(db, run, payload.text, cutoff, pool_size=payload.pool_size)
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except ProviderError as exc:

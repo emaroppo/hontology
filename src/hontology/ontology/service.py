@@ -212,35 +212,6 @@ def set_group_members(
     session.flush()
 
 
-def fork_group(session: Session, group_id: int, *, name: str) -> ConceptGroup:
-    """Copy a group and its weighted membership into an editable variant.
-
-    The copy keeps ``parent_id`` pointing at the original, and its own edge
-    weights, so retuning the variant never disturbs what it was forked from.
-    """
-    original = session.get(ConceptGroup, group_id)
-    if original is None:
-        raise NotFound(f"group {group_id} does not exist")
-
-    fork = ConceptGroup(
-        ontology_id=original.ontology_id,
-        name=name,
-        description=original.description,
-        parent_id=original.id,
-    )
-    session.add(fork)
-    session.flush()
-
-    for member in original.members:
-        session.add(
-            ConceptGroupMember(
-                group_id=fork.id, concept_id=member.concept_id, weight=member.weight
-            )
-        )
-    session.flush()
-    return fork
-
-
 # ---------------------------------------------------------------------------
 # Import / export
 # ---------------------------------------------------------------------------

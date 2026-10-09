@@ -258,13 +258,3 @@ def build_candidates(
 
     log.info("candidates (%s): %s", config["source"], stats.as_dict())
     return stats.as_dict() | {"source": config["source"]}
-
-
-def selected_pairs(session: Session, run_id: int) -> list[Candidate]:
-    return list(
-        session.scalars(
-            select(Candidate)
-            .where(Candidate.run_id == run_id, Candidate.selected.is_(True))
-            .order_by(Candidate.document_id, Candidate.concept_id)
-        )
-    )

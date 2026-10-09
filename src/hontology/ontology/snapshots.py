@@ -114,12 +114,7 @@ def resolve_current(session: Session, ontology_id: int) -> SnapshotRef:
 
     existing = _registered(session, ontology_id, digest)
     if existing is not None:
-        return SnapshotRef(
-            version=existing.version,
-            content_hash=existing.content_hash,
-            n_concepts=existing.n_concepts,
-            created=False,
-        )
+        return _ref(existing)
 
     count = (
         session.scalar(
@@ -177,6 +172,10 @@ def resolve(session: Session, ontology_id: int, spec: str | None) -> SnapshotRef
         raise ValueError(
             f"unknown ontology version {spec!r}; known: {', '.join(known) or '(none)'}"
         )
+    return _ref(snapshot)
+
+
+def _ref(snapshot: OntologySnapshot) -> SnapshotRef:
     return SnapshotRef(
         version=snapshot.version,
         content_hash=snapshot.content_hash,

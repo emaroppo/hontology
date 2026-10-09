@@ -15,7 +15,7 @@ from hontology.api.main import app
 from hontology.db.models import Candidate, Document, PairLabel, Run
 from hontology.db.session import session_scope
 from hontology.ontology import service
-from hontology.retrieve import candidates, tuning
+from hontology.retrieve import candidates, live, tuning
 
 pytestmark = pytest.mark.requires_db
 
@@ -256,10 +256,10 @@ def embedded():
 def test_a_version_is_scored_on_every_embedded_labelled_article(embedded):
     with session_scope() as session:
         run = session.get(Run, embedded["run"])
-        top1 = tuning.live_report(
+        top1 = live.live_report(
             session, run, tuning.Cutoff(selection="top-k", top_k=1), embedded["labels"]
         )
-        top2 = tuning.live_report(
+        top2 = live.live_report(
             session, run, tuning.Cutoff(selection="top-k", top_k=2), embedded["labels"]
         )
     # The unembedded article is counted, not ranked, and its match not scored.
@@ -274,7 +274,7 @@ def test_a_version_is_scored_on_every_embedded_labelled_article(embedded):
 def test_a_shallow_pool_counts_as_never_ranked(embedded):
     with session_scope() as session:
         run = session.get(Run, embedded["run"])
-        report = tuning.live_report(
+        report = live.live_report(
             session,
             run,
             tuning.Cutoff(selection="top-k", top_k=5),
@@ -290,7 +290,7 @@ def test_pasted_text_ranks_as_a_stored_article_would(embedded, monkeypatch):
     from sqlalchemy import func, select
 
     from hontology.db.models import Embedding
-    from hontology.retrieve import adhoc, embed
+    from hontology.retrieve import embed, live
 
     class Provider:
         name = "ollama"
@@ -306,7 +306,7 @@ def test_pasted_text_ranks_as_a_stored_article_would(embedded, monkeypatch):
     with session_scope() as session:
         before = session.scalar(select(func.count(Embedding.id)))
         run = session.get(Run, embedded["run"])
-        result = adhoc.rank_text(
+        result = live.rank_text(
             session, run, "Dockworkers stopped work.", tuning.Cutoff(selection="top-k", top_k=1)
         )
         assert session.scalar(select(func.count(Embedding.id))) == before

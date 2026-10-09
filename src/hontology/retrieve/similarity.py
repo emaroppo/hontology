@@ -28,6 +28,7 @@ from hontology.db.models import (
     SimilarityScore,
 )
 from hontology.ingest import themes
+from hontology.retrieve.candidates import select_adaptive
 from hontology.retrieve.embed import (
     EmbeddingProvider,
     embed_concepts,
@@ -205,12 +206,9 @@ def _select_adaptive(
     selected: dict[tuple[int, int], float] = {}
     for concept_id, targets in by_concept.items():
         ranked = sorted(targets.items(), key=lambda kv: kv[1], reverse=True)
-        if not ranked or ranked[0][1] < min_score:
-            continue
-        cutoff = max(min_score, ranked[0][1] - rel_margin)
-        for code_id, score in ranked[:max_k]:
-            if score < cutoff:
-                break
+        for code_id, score in select_adaptive(
+            ranked, min_score=min_score, rel_margin=rel_margin, max_k=max_k
+        ):
             selected[(concept_id, code_id)] = score
     return selected
 
