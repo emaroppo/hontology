@@ -15,14 +15,14 @@ be read.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hontology.db.models import Run, Verdict
+from hontology.db.models import Run
 from hontology.evalkit import evaluate as evaluate_module
 from hontology.evalkit import metrics as metric_lib
+from hontology.evalkit.article import clean_verdicts
 
 
 @dataclass
@@ -38,17 +38,7 @@ class Comparison:
     verdict: str
 
     def as_dict(self) -> dict:
-        return {
-            "run_a": self.run_a,
-            "run_b": self.run_b,
-            "name_a": self.name_a,
-            "name_b": self.name_b,
-            "n_shared_labelled": self.n_shared_labelled,
-            "metrics_a": self.metrics_a,
-            "metrics_b": self.metrics_b,
-            "paired": self.paired,
-            "verdict": self.verdict,
-        }
+        return asdict(self)
 
 
 def compare_runs(
@@ -161,11 +151,7 @@ def cross_document_agreement(session: Session, run_id: int) -> dict:
     shows — and those pairs are the best labelling candidates.
     """
     groups: dict[tuple[int, int | None], list[bool]] = defaultdict(list)
-    for verdict in session.scalars(
-        select(Verdict).where(Verdict.run_id == run_id, Verdict.error.is_(None))
-    ):
-        if verdict.matched is None:
-            continue
+    for verdict in clean_verdicts(session, run_id):
         groups[(verdict.concept_id, verdict.locus_id)].append(bool(verdict.matched))
 
     multi = 0

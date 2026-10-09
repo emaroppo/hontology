@@ -11,6 +11,7 @@ iterating on a prompt cost only the judging.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
@@ -98,8 +99,9 @@ def reusable_candidates_run(session: Session, run: Run) -> Run | None:
     )
 
 
-def copy_candidates(session: Session, source_run_id: int, target_run_id: int) -> int:
-    rows = list(session.scalars(select(Candidate).where(Candidate.run_id == source_run_id)))
+def clone_candidates(session: Session, rows: Iterable[Candidate], target_run_id: int) -> int:
+    """Add a copy of each candidate under *target_run_id*; returns how many."""
+    copied = 0
     for row in rows:
         session.add(
             Candidate(
@@ -114,8 +116,14 @@ def copy_candidates(session: Session, source_run_id: int, target_run_id: int) ->
                 matched_level=row.matched_level,
             )
         )
+        copied += 1
     session.flush()
-    return len(rows)
+    return copied
+
+
+def copy_candidates(session: Session, source_run_id: int, target_run_id: int) -> int:
+    rows = list(session.scalars(select(Candidate).where(Candidate.run_id == source_run_id)))
+    return clone_candidates(session, rows, target_run_id)
 
 
 def pending_documents(

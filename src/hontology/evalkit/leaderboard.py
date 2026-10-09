@@ -21,8 +21,9 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from hontology.db.lookups import get_run
 from hontology.db.models import Candidate, Run, Verdict
-from hontology.evalkit import arms, calendar, versions
+from hontology.evalkit import arms, calendar, calendar_score, versions
 
 
 def coverage(session: Session, run: Run, document_ids: set[int]) -> int:
@@ -125,13 +126,11 @@ def rows(
 
 def calendar_recall(session: Session, run_id: int, calendar_path: str | None = None) -> dict:
     """A run's calendar scores, on its own calendar unless another is given."""
-    run = session.get(Run, run_id)
-    if run is None:
-        raise LookupError(f"run {run_id} does not exist")
+    run = get_run(session, run_id)
     path = calendar_path or ((run.manifest or {}).get("documents") or {}).get("calendar")
     if not path:
         raise ValueError(f"run {run_id} did not work through a calendar; name one")
-    result = calendar.evaluate(session, run_id, calendar.load(Path(path)))
+    result = calendar_score.evaluate(session, run_id, calendar.load(Path(path)))
     summary = result["summary"]
     return {
         "calendar": path,

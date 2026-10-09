@@ -24,8 +24,6 @@ prevent, just one stage further out.
 
 from __future__ import annotations
 
-import csv
-import io
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -33,16 +31,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hontology.db.base import among
+from hontology.db.lookups import concept_names, get_run
 from hontology.db.models import (
     TRUSTED_SOURCES,
-    Concept,
     Document,
     FeedEvent,
     Locus,
     PairLabel,
-    Run,
     Verdict,
 )
+from hontology.evalkit.label_io import to_csv
 
 DETECTION_COLUMNS = [
     "run_id",
@@ -99,22 +97,8 @@ class Detection:
     ontology_version: str
 
     def as_row(self) -> dict:
-        return {
-            "run_id": self.run_id,
-            "concept": self.concept,
-            "locus_iso3": self.locus_iso3 or "",
-            "locus_iso2": self.locus_iso2 or "",
-            "occurred_on": self.occurred_on or "",
-            "document_url": self.document_url,
-            "document_title": self.document_title or "",
-            "confidence": self.confidence if self.confidence is not None else "",
-            "vote_fraction": self.vote_fraction if self.vote_fraction is not None else "",
-            "evidence": self.evidence or "",
-            "verification": self.verification,
-            "model": self.model or "",
-            "prompt_id": self.prompt_id or "",
-            "ontology_version": self.ontology_version,
-        }
+        values = ((column, getattr(self, column)) for column in DETECTION_COLUMNS)
+        return {column: "" if value is None else value for column, value in values}
 
 
 @dataclass
@@ -200,14 +184,9 @@ def detections(
     verified_only: bool = False,
 ) -> list[Detection]:
     """Every matched pair for a run, with its verification status."""
-    run = session.get(Run, run_id)
-    if run is None:
-        raise LookupError(f"run {run_id} does not exist")
+    run = get_run(session, run_id)
 
-    concepts = {
-        c.id: c.name
-        for c in session.scalars(select(Concept).where(Concept.ontology_id == run.ontology_id))
-    }
+    concepts = concept_names(session, run.ontology_id)
     loci = {locus.id: locus for locus in session.scalars(select(Locus))}
     labels = {
         (label.document_id, label.concept_id): label
@@ -295,22 +274,14 @@ def events(session: Session, run_id: int, **kwargs) -> list[Event]:
     return rows
 
 
-def _to_csv(rows: list[dict], columns: list[str]) -> str:
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=columns, lineterminator="\n")
-    writer.writeheader()
-    writer.writerows(rows)
-    return buffer.getvalue()
-
-
 def export_detections(session: Session, run_id: int, **kwargs) -> str:
-    return _to_csv(
+    return to_csv(
         [d.as_row() for d in detections(session, run_id, **kwargs)], DETECTION_COLUMNS
     )
 
 
 def export_events(session: Session, run_id: int, **kwargs) -> str:
-    return _to_csv([e.as_row() for e in events(session, run_id, **kwargs)], EVENT_COLUMNS)
+    return to_csv([e.as_row() for e in events(session, run_id, **kwargs)], EVENT_COLUMNS)
 
 
 def summary(session: Session, run_id: int) -> dict:

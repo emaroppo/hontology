@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from hontology.db.lookups import concepts_by_id
 from hontology.db.models import Candidate, Concept, Document, PairLabel, Run, Verdict
 
 # Thresholds for deciding whether a run's confidence carries usable signal.
@@ -174,10 +175,7 @@ def build_queue(
         ):
             by_pair.setdefault((candidate.document_id, candidate.concept_id), [])
 
-    concepts = {
-        c.id: c
-        for c in session.scalars(select(Concept).where(Concept.ontology_id == ontology_id))
-    }
+    concepts = concepts_by_id(session, ontology_id)
     max_labels = max(label_counts.values(), default=0) or 1
 
     items: list[QueueItem] = []

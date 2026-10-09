@@ -55,9 +55,6 @@ def list_versions(session: Session, ontology_id: int) -> list[dict]:
     return list(grouped.values())
 
 
-SCOPES = ("responsible", "retrieved")
-
-
 def _given(
     session: Session, run: Run, truth: dict[Key, bool], leaves: set[int], scope: str
 ) -> tuple[dict[Key, bool], dict[Key, float]]:

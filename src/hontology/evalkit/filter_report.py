@@ -24,7 +24,8 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hontology.db.models import Code, Concept, Document, PairLabel
+from hontology.db.lookups import concepts_by_id
+from hontology.db.models import Code, Document, PairLabel
 from hontology.ingest import filter as ingest_filter
 
 
@@ -76,9 +77,7 @@ def report(session: Session, ontology_id: int) -> dict:
     code_rows = {
         c.code: c for c in session.scalars(select(Code).where(Code.code.in_(list(links))))
     }
-    concept_ids = {
-        c.id for c in session.scalars(select(Concept).where(Concept.ontology_id == ontology_id))
-    }
+    concept_ids = set(concepts_by_id(session, ontology_id))
 
     labels_by_document: dict[int, list[PairLabel]] = defaultdict(list)
     for label in session.scalars(

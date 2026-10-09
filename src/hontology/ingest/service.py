@@ -25,6 +25,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from hontology.config import get_settings
+from hontology.db.lookups import count
 from hontology.db.models import Document, FeedArticle, FeedEvent, FeedSlice, IngestWatermark
 from hontology.ingest import gdelt
 from hontology.ingest.loci import by_fips
@@ -292,14 +293,7 @@ def _store_gkg(
 def _count_unfetched(session: Session, doc_ids: list[int]) -> int:
     if not doc_ids:
         return 0
-    return (
-        session.scalar(
-            select(func.count(Document.id)).where(
-                Document.id.in_(doc_ids), Document.fetched_at.is_(None)
-            )
-        )
-        or 0
-    )
+    return count(session, Document.id, Document.id.in_(doc_ids), Document.fetched_at.is_(None))
 
 
 # ---------------------------------------------------------------------------
@@ -374,8 +368,8 @@ def status(session: Session, *, feed: str = FEED) -> dict:
     now = datetime.now(UTC)
 
     counts: dict[str, int] = {
-        str(status): int(count)
-        for status, count in session.execute(
+        str(status): int(n)
+        for status, n in session.execute(
             select(FeedSlice.status, func.count(FeedSlice.id))
             .where(FeedSlice.feed == feed)
             .group_by(FeedSlice.status)
@@ -386,11 +380,8 @@ def status(session: Session, *, feed: str = FEED) -> dict:
         "watermark": mark.last_slice_key,
         "lag_slices": gdelt.lag_slices(mark.last_slice_key, now),
         "slice_counts": counts,
-        "documents": session.scalar(select(func.count(Document.id))) or 0,
-        "documents_unfetched": session.scalar(
-            select(func.count(Document.id)).where(Document.fetched_at.is_(None))
-        )
-        or 0,
+        "documents": count(session, Document.id),
+        "documents_unfetched": count(session, Document.id, Document.fetched_at.is_(None)),
     }
 
 

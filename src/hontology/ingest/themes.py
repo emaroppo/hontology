@@ -25,11 +25,10 @@ from __future__ import annotations
 
 import re
 
-import httpx
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hontology.db.models import Code, CodeSystem
+from hontology.db.models import Code
+from hontology.ingest import cameo
 
 THEMES_SLUG = "gkg-themes"
 THEMES_LEVEL = "theme"
@@ -78,23 +77,13 @@ def proposal_text(theme: str, name: str | None) -> str | None:
 
 
 def fetch_lookup(url: str = THEMES_LOOKUP_URL, *, timeout: float = 60.0) -> str:
-    response = httpx.get(url, timeout=timeout, follow_redirects=True)
-    response.raise_for_status()
-    return response.text
+    return cameo.fetch_lookup(url, timeout=timeout)
 
 
 def load_themes(session: Session, rows: list[tuple[str, int]], *, source_url: str) -> dict:
     """Upsert the theme system and its codes. Idempotent, like the CAMEO loader."""
-    system = session.scalar(select(CodeSystem).where(CodeSystem.slug == THEMES_SLUG))
-    if system is None:
-        system = CodeSystem(slug=THEMES_SLUG, name="GDELT GKG themes", source_url=source_url)
-        session.add(system)
-        session.flush()
-
-    existing = {
-        code.code: code
-        for code in session.scalars(select(Code).where(Code.system_id == system.id))
-    }
+    system = cameo.get_or_create_system(session, THEMES_SLUG, "GDELT GKG themes", source_url)
+    existing = cameo.codes_by_string(session, system.id)
     inserted = 0
     for theme, count in rows:
         name = f"{theme} ({count:,} uses)"

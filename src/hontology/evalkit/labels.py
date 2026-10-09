@@ -23,8 +23,7 @@ version moves on.
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date as _date
 
 from sqlalchemy import func, select
@@ -38,8 +37,6 @@ from hontology.db.models import (
     PairLabel,
 )
 from hontology.ontology import snapshots
-
-log = logging.getLogger(__name__)
 
 MACHINE = "machine"
 ADJUDICATED = "adjudicated"
@@ -58,15 +55,7 @@ class LabelStats:
     pending_adjudication: int = 0
 
     def as_dict(self) -> dict:
-        return {
-            "total": self.total,
-            "by_source": self.by_source,
-            "positives": self.positives,
-            "negatives": self.negatives,
-            "trusted": self.trusted,
-            "stale": self.stale,
-            "pending_adjudication": self.pending_adjudication,
-        }
+        return asdict(self)
 
 
 # ---------------------------------------------------------------------------

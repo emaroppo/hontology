@@ -13,12 +13,14 @@ its denominator is not a measurement.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hontology.db.models import Candidate, Observation, Run, Verdict
+from hontology.db.lookups import get_run
+from hontology.db.models import Candidate, Observation, Verdict
+from hontology.evalkit import article
 from hontology.evalkit import labels as label_service
 from hontology.evalkit import metrics as metric_lib
 
@@ -36,17 +38,7 @@ class RunEvaluation:
     observations: dict
 
     def as_dict(self) -> dict:
-        return {
-            "run_id": self.run_id,
-            "run_name": self.run_name,
-            "ontology_version": self.ontology_version,
-            "n_labels": self.n_labels,
-            "judge": self.judge,
-            "retrieval": self.retrieval,
-            "calibration": self.calibration,
-            "liveness": self.liveness,
-            "observations": self.observations,
-        }
+        return asdict(self)
 
 
 def label_map(
@@ -69,13 +61,7 @@ def label_map(
 
 def verdict_map(session: Session, run_id: int) -> dict[tuple[int, int], bool]:
     """Only clean verdicts. An errored pair is not a prediction."""
-    return {
-        (v.document_id, v.concept_id): bool(v.matched)
-        for v in session.scalars(
-            select(Verdict).where(Verdict.run_id == run_id, Verdict.error.is_(None))
-        )
-        if v.matched is not None
-    }
+    return article.answered(session, run_id)
 
 
 def evaluate_run(
@@ -86,9 +72,7 @@ def evaluate_run(
     include_stale: bool = False,
     seed: int = 0,
 ) -> RunEvaluation:
-    run = session.get(Run, run_id)
-    if run is None:
-        raise LookupError(f"run {run_id} does not exist")
+    run = get_run(session, run_id)
 
     truth = label_map(
         session,
@@ -100,11 +84,9 @@ def evaluate_run(
     # --- judge ------------------------------------------------------------
     confusion = metric_lib.Confusion()
     calibration_pairs: list[tuple[float, bool]] = []
-    for verdict in session.scalars(
-        select(Verdict).where(Verdict.run_id == run_id, Verdict.error.is_(None))
-    ):
+    for verdict in article.clean_verdicts(session, run_id):
         key = (verdict.document_id, verdict.concept_id)
-        if key not in truth or verdict.matched is None:
+        if key not in truth:
             continue
         expected = truth[key]
         confusion.add(expected=expected, predicted=bool(verdict.matched))
@@ -191,8 +173,7 @@ def format_report(evaluation: RunEvaluation) -> str:
             ("recall", "recall_ci"),
             ("f1", "f1_ci"),
         ):
-            value = judge[name]
-            shown = f"{value:.3f}" if value is not None else "—"
+            shown = metric_lib.format_num(judge[name])
             lines.append(f"  {name:<10} {shown}  {metric_lib.format_ci(*judge[ci_key])}")
     lines.append("")
 
@@ -203,7 +184,7 @@ def format_report(evaluation: RunEvaluation) -> str:
     )
     coverage = retrieval["coverage"]
     precision = retrieval["precision"]
-    lines.append(f"  precision  {precision:.3f}" if precision is not None else "  precision  —")
+    lines.append(f"  precision  {metric_lib.format_num(precision)}")
     lines.append(
         f"  coverage   {coverage:.3f}   <- precision's denominator; unlabelled "
         f"candidates are unknown, not wrong"
@@ -211,10 +192,8 @@ def format_report(evaluation: RunEvaluation) -> str:
         else "  coverage   —"
     )
     for k, value in sorted(retrieval["recall_at_k"].items()):
-        shown = f"{value:.3f}" if value is not None else "—"
-        lines.append(f"  recall@{k:<3} {shown}")
-    mrr = retrieval["mrr"]
-    lines.append(f"  mrr        {mrr:.3f}" if mrr is not None else "  mrr        —")
+        lines.append(f"  recall@{k:<3} {metric_lib.format_num(value)}")
+    lines.append(f"  mrr        {metric_lib.format_num(retrieval['mrr'])}")
     cutoff = retrieval["cutoff_recall"]
     lines.append(
         f"  cutoff     {cutoff:.3f}   <- of positives that WERE ranked, how many survived"

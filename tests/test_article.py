@@ -10,7 +10,7 @@ from sqlalchemy import select
 from hontology.db.models import Document, PairLabel, Run, Verdict
 from hontology.db.session import session_scope
 from hontology.evalkit import article, sample
-from hontology.evalkit.label_io import import_document_labels
+from hontology.evalkit.document_labels import import_document_labels
 from hontology.ontology import service
 
 

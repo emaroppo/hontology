@@ -85,8 +85,6 @@ JUDGE_DEFAULTS: dict[str, Any] = {
     "generation": dict(GENERATION_DEFAULTS),
 }
 
-SECTIONS = ("common", "candidates", "judge")
-
 # How repeated samples resolve to one verdict. Kept here so the config layer can
 # reject an unknown value without importing the judge.
 AGGREGATIONS = ("majority", "unanimous", "any")
@@ -174,9 +172,10 @@ def _check_routing(judge: dict) -> None:
             raise ConfigError("judge.routing.data_collection must be deny or allow")
 
 
-def _hash(payload: dict) -> str:
+def stable_hash(payload: Any, n: int = 12) -> str:
+    """The first *n* hex digits of a SHA-256 over *payload*'s canonical JSON."""
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:n]
 
 
 def stage_keys(normalized: dict, ontology_version: str) -> dict[str, str]:
@@ -188,7 +187,7 @@ def stage_keys(normalized: dict, ontology_version: str) -> dict[str, str]:
     """
     common = normalized["common"]
 
-    candidates_key = _hash(
+    candidates_key = stable_hash(
         {
             "ontology_version": ontology_version,
             # Only the limit that actually affects retrieval.
@@ -196,7 +195,7 @@ def stage_keys(normalized: dict, ontology_version: str) -> dict[str, str]:
             "candidates": normalized["candidates"],
         }
     )
-    judge_key = _hash(
+    judge_key = stable_hash(
         {
             "ontology_version": ontology_version,
             "judge_body_limit": common["judge_body_limit"],

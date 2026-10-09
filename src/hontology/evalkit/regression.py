@@ -25,6 +25,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from hontology.evalkit import evaluate as evaluate_module
+from hontology.evalkit.metrics import format_num
 
 
 @dataclass
@@ -97,7 +98,7 @@ def check(session: Session, run_id: int, baseline: Baseline) -> dict:
             {"metric": name, "floor": floor, "limit": limit, "actual": actual, "ok": ok}
         )
         if not ok:
-            shown = f"{actual:.3f}" if actual is not None else "—"
+            shown = format_num(actual)
             failures.append(f"{name}: {shown} below floor {limit:.3f}")
 
     # --- gate 3: is there anything to check at all -------------------------

@@ -18,6 +18,7 @@ import duckdb
 
 from hontology.config import get_settings
 from hontology.evalkit.evaluate import RunEvaluation
+from hontology.evalkit.metrics import format_ci, format_num
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS run_metrics (
@@ -156,17 +157,11 @@ def format_leaderboard(rows: list[dict]) -> str:
     ]
     lines.append("-" * 104)
     for row in rows:
-
-        def fmt(value, width=6):
-            return f"{value:>{width}.3f}" if value is not None else " " * (width - 1) + "—"
-
-        interval = (
-            f"[{row['f1_lo']:.3f}, {row['f1_hi']:.3f}]" if row["f1_lo"] is not None else ""
-        )
+        interval = format_ci(row["f1_lo"], row["f1_hi"])
         lines.append(
             f"{row['run_id']:>4}  {(row['run_name'] or '')[:24]:<24} "
-            f"{row['n_labels']:>5}  {fmt(row['f1'])}  {interval:<16} "
-            f"{fmt(row['precision'])} {fmt(row['recall'])}  "
+            f"{row['n_labels']:>5}  {format_num(row['f1'], 6)}  {interval:<16} "
+            f"{format_num(row['precision'], 6)} {format_num(row['recall'], 6)}  "
             f"{(row['prompt_id'] or '')[:18]:<18} {row['liveness_errors']:>5}"
         )
     return "\n".join(lines)

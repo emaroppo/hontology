@@ -36,10 +36,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hontology.db.base import among
+from hontology.db.lookups import concepts_by_id
 from hontology.db.models import (
     Code,
     CodeSystem,
-    Concept,
     ConceptCode,
     Document,
     FeedArticle,
@@ -70,9 +70,7 @@ def concept_code_map(
     Empty when the ontology has no curated links, which callers must treat as
     "cannot filter" rather than "nothing matches".
     """
-    concept_ids = {
-        c.id for c in session.scalars(select(Concept).where(Concept.ontology_id == ontology_id))
-    }
+    concept_ids = set(concepts_by_id(session, ontology_id))
     if not concept_ids:
         return {}
 
@@ -90,6 +88,13 @@ def concept_code_map(
 def concept_theme_map(session: Session, ontology_id: int) -> dict[str, set[int]]:
     """``{GKG theme: concepts linked to it}`` for one ontology."""
     return concept_code_map(session, ontology_id, system=THEMES_SLUG)
+
+
+def has_links(session: Session, ontology_id: int) -> bool:
+    """Whether the ontology links any concept to a CAMEO code or a GKG theme."""
+    return bool(
+        concept_code_map(session, ontology_id) or concept_theme_map(session, ontology_id)
+    )
 
 
 def resolve_event(event: Any, links: dict[str, set[int]]) -> tuple[str, str, set[int]] | None:

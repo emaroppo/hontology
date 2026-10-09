@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from hontology.db.base import among
 from hontology.db.models import Concept, Document
 from hontology.db.session import get_db
-from hontology.evalkit import label_io
+from hontology.evalkit import document_labels, label_io
 from hontology.evalkit import labels as label_service
 from hontology.evalkit import queue as queue_service
 from hontology.ontology import hierarchy
@@ -307,7 +307,9 @@ def leaves(ontology_id: int, db: Session = Depends(get_db)):
 @router.post("/documents/status")
 def documents_status(payload: DocumentStatusIn, db: Session = Depends(get_db)):
     """Each document's labelling state, in the order asked."""
-    status_by_id = label_io.document_label_status(db, payload.ontology_id, payload.document_ids)
+    status_by_id = document_labels.document_label_status(
+        db, payload.ontology_id, payload.document_ids
+    )
     documents = {
         d.id: d
         for d in db.scalars(select(Document).where(among(Document.id, payload.document_ids)))
@@ -331,7 +333,7 @@ def document_for_labelling(document_id: int, ontology_id: int, db: Session = Dep
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"document {document_id} not found")
-    state = label_io.document_label_status(db, ontology_id, [document_id])[document_id]
+    state = document_labels.document_label_status(db, ontology_id, [document_id])[document_id]
     return {
         "document_id": document.id,
         "url": document.url,
@@ -347,7 +349,7 @@ def label_document(document_id: int, payload: DocumentLabelIn, db: Session = Dep
     if db.get(Document, document_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"document {document_id} not found")
     try:
-        report = label_io.label_document(
+        report = document_labels.label_document(
             db,
             payload.ontology_id,
             document_id,

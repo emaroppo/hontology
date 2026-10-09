@@ -22,7 +22,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from hontology.db.models import AnnotationSet, MachineAnnotation
-from hontology.evalkit.label_io import parse_document_labels
+from hontology.evalkit.document_labels import parse_document_labels
 from hontology.evalkit.labels import trusted_labels
 from hontology.ontology import service, snapshots
 

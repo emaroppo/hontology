@@ -22,8 +22,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hontology.db.base import among
-from hontology.db.models import Candidate, Run, Verdict
-from hontology.evalkit import article, calendar
+from hontology.db.lookups import get_run
+from hontology.db.models import Candidate, Run
+from hontology.evalkit import article, calendar, calendar_score
 from hontology.evalkit.evaluate import label_map
 from hontology.evalkit.metrics import mcnemar
 from hontology.evalkit.sample import EQUAL_PER_WINDOW
@@ -74,14 +75,12 @@ def compare_arms(
     seed: int = 0,
     labels: dict | None = None,
 ) -> dict:
-    baseline = session.get(Run, baseline_id)
-    if baseline is None:
-        raise LookupError(f"run {baseline_id} does not exist")
+    baseline = get_run(session, baseline_id)
     run_ids = [baseline_id, *arm_ids]
 
     report: dict = {"baseline": baseline_id, "arms": arm_ids, "runs": {}, "comparisons": {}}
     for run_id in run_ids:
-        result = calendar.evaluate(session, run_id, entries, before=before, after=after)
+        result = calendar_score.evaluate(session, run_id, entries, before=before, after=after)
         run = session.get(Run, run_id)
         report["runs"][run_id] = {
             "ontology_version": run.ontology_version if run else None,
@@ -175,7 +174,7 @@ def _article_scores(
         "pairs_judged": len(judged),
         # On the labelled documents only, so arms that judged different
         # amounts of the calendar are compared on the same articles.
-        "cost_on_sample": calendar.judging_cost(
+        "cost_on_sample": calendar_score.judging_cost(
             session, run_id, {doc_id for doc_id, _ in truth}
         ),
     }
@@ -196,9 +195,7 @@ def run_on_sample(
     Scored against the labels of the run's own ontology, over the labelled prefix
     of the frozen order.
     """
-    run = session.get(Run, run_id)
-    if run is None:
-        raise LookupError(f"run {run_id} does not exist")
+    run = get_run(session, run_id)
     sample = labelled_sample(session, run.ontology_id, manifest, labels)
     truth = sample["truth"]
     out: dict = {
@@ -277,17 +274,7 @@ def hierarchy_diagnostics(
                 truth.get((doc_id, leaf), False) for leaf in under
             )
 
-    answered = {
-        (doc_id, concept_id): bool(matched)
-        for doc_id, concept_id, matched in session.execute(
-            select(Verdict.document_id, Verdict.concept_id, Verdict.matched).where(
-                Verdict.run_id == run_id,
-                among(Verdict.document_id, documents),
-                Verdict.error.is_(None),
-                Verdict.matched.is_not(None),
-            )
-        )
-    }
+    answered = article.answered(session, run_id, documents)
 
     levels: dict[int, dict[str, int]] = {}
     for (doc_id, class_id), expected in full_truth.items():
@@ -341,149 +328,3 @@ def _is_hierarchical(run: Run) -> bool:
 
 def load_manifest(path: Path | None) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8")) if path is not None else None
-
-
-def _ci(value: float | None, ci: list[float | None] | tuple) -> str:
-    if value is None:
-        return "-"
-    low, high = (list(ci) + [None, None])[:2]
-    if low is None or high is None:
-        return f"{value:.2f}"
-    return f"{value:.2f} ({low:.2f}\u2013{high:.2f})"
-
-
-def _rate_cell(stat: dict | None) -> str:
-    if not stat or stat.get("n") in (None, 0):
-        return "-"
-    return f"{stat['hits']}/{stat['n']} = " + _ci(stat["rate"], stat.get("ci", [None, None]))
-
-
-def render_markdown(report: dict) -> str:
-    """The arms report as Markdown tables, for the results write-up.
-
-    Every number carries its interval, and cost is shown beside the scores it
-    bought. Article-level cost is on the labelled documents only, so an arm
-    that judged more of the calendar does not look more expensive for it.
-    """
-    baseline = report["baseline"]
-    runs = report["runs"]
-    name = {
-        run_id: f"{run_id} (baseline)" if run_id == baseline else str(run_id) for run_id in runs
-    }
-    out: list[str] = []
-    out.append("| Run | Ontology version | Prompt |\n| --- | --- | --- |")
-    for r in runs:
-        version = runs[r].get("ontology_version") or "-"
-        out.append(f"| {name[r]} | {version} | {runs[r].get('prompt_id') or '-'} |")
-
-    sample = report.get("sample")
-    if sample and any("article" in runs[r] for r in runs):
-        status = sample.get("status") or {}
-        out.append(
-            f"\n## Article level\n\nLabelled sample: the first {sample['labelled_prefix']} "
-            "documents of the frozen order "
-            f"(manifest {str(sample.get('manifest_sha256'))[:12]}). "
-            "Intervals are 95%, resampling whole documents. End to end, a pair never "
-            "judged counts as no; judge only scores the pairs each run judged."
-            + (
-                " Every calendar window has an equal share of the sample, so each "
-                "document is weighted by its window's size over the number labelled "
-                "from it, and the bootstrap resamples within windows; the McNemar "
-                "counts below are unweighted."
-                if sample.get("allocation") == EQUAL_PER_WINDOW
-                else ""
-            )
-        )
-        out.append(
-            "\n| Run | Precision | Recall | F1 | Judge-only precision | Judge-only recall "
-            "| Pairs judged | Tokens on sample | Seconds on sample |\n"
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
-        )
-        for r in runs:
-            a = runs[r].get("article")
-            if not a:
-                continue
-            e, j, c = a["end_to_end"], a["judge_only"], a.get("cost_on_sample") or {}
-            tokens = (c.get("input_tokens") or 0) + (c.get("output_tokens") or 0)
-            out.append(
-                f"| {name[r]} | {_ci(e['precision'], e['precision_ci'])} "
-                f"| {_ci(e['recall'], e['recall_ci'])} | {_ci(e['f1'], e['f1_ci'])} "
-                f"| {_ci(j['precision'], j['precision_ci'])} "
-                f"| {_ci(j['recall'], j['recall_ci'])} "
-                f"| {a['pairs_judged']} | {tokens:,} | {c.get('seconds', 0):,.0f} |"
-            )
-        if status:
-            widths = status.get("half_widths") or {}
-            out.append(
-                f"\nStopping rule: the baseline's 95% intervals must reach "
-                f"\u00b1{status.get('target', 0.05):.2f}. "
-                f"Now \u00b1{widths.get('precision') or 0:.2f} "
-                f"on precision and \u00b1{widths.get('recall') or 0:.2f} on recall, over "
-                f"{status.get('positives')} positive pairs: "
-                f"{'met' if status.get('target_met') else 'not met, keep labelling'}."
-            )
-
-    comparisons = report.get("comparisons") or {}
-    if comparisons:
-        out.append(
-            "\n## Against the baseline\n\nAn arm counts as an improvement only if the "
-            "paired interval on its F1 difference lies above zero.\n\n"
-            "| Arm | F1 difference | Improvement | Discordant pairs | Only baseline right "
-            "| Only arm right | McNemar p |\n| --- | --- | --- | --- | --- | --- | --- |"
-        )
-        for r, comparison in comparisons.items():
-            f1, mc = comparison["f1"], comparison["mcnemar"]
-            p = "-" if mc.get("p_value") is None else f"{mc['p_value']:.3f}"
-            out.append(
-                f"| {r} | {_ci(f1['difference'], f1['difference_ci'])} "
-                f"| {'yes' if f1['improvement'] else 'no'} | {mc['discordant']} "
-                f"| {mc['only_a_correct']} | {mc['only_b_correct']} | {p} |"
-            )
-        for r, comparison in comparisons.items():
-            h = comparison.get("hierarchy")
-            if not h:
-                continue
-            out.append(
-                f"\n### Hierarchy diagnostics, run {r}\n\n"
-                "Recall at each level counts only classes whose parent was answered yes, "
-                "so a miss shows at the level where it happened.\n\n"
-                "| Level | Recall | Hits / positives |\n| --- | --- | --- |"
-            )
-            for level, row in h["recall_by_level"].items():
-                value = "-" if row.get("recall") is None else f"{row['recall']:.2f}"
-                out.append(f"| {level} | {value} | {row['hits']}/{row['n']} |")
-            cov = h["coverage"]
-            out.append(
-                f"\nParent classes answered yes: {h['internal_answered_yes']}, of which "
-                f"{h['internal_false_positives']} with no labelled leaf below "
-                "(gap candidates). "
-                f"Correct leaf matches: {cov['true_positives']}, of which "
-                f"{cov['beyond_baseline_retrieval']} on pairs the baseline's retrieval had "
-                "not selected (coverage, not structure)."
-            )
-
-    out.append(
-        "\n## Calendar\n\nVerified counts a detection only once a person has confirmed it "
-        "is the calendar's event; until matches are reviewed, verified rates stay at "
-        "zero, so the raw rate is shown beside each. Rates carry Wilson 95% "
-        "intervals.\n\n"
-        "| Run | | Events found | Precursors found | False alarms on controls "
-        "| Verdicts | Tokens | Seconds |\n"
-        "| --- | --- | --- | --- | --- | --- | --- | --- |"
-    )
-    for r in runs:
-        cal, cost = runs[r]["calendar"], runs[r]["cost"]
-        v = cal.get("verified") or {}
-        tokens = cost["input_tokens"] + cost["output_tokens"]
-        out.append(
-            f"| {name[r]} | raw | {_rate_cell(cal.get('event_recall'))} "
-            f"| {_rate_cell(cal.get('precursor_recall'))} "
-            f"| {_rate_cell(cal.get('false_alarm_rate'))} "
-            f"| {cost['pairs']:,} | {tokens:,} | {cost['seconds']:,.0f} |"
-        )
-        out.append(
-            f"| | verified | {_rate_cell(v.get('event_recall'))} "
-            f"| {_rate_cell(v.get('precursor_recall'))} "
-            f"| {_rate_cell(v.get('false_alarm_rate'))} | | | |"
-        )
-    return "\n".join(out) + "\n"

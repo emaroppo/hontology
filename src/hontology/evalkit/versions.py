@@ -24,7 +24,6 @@ as that code has not changed since.
 from __future__ import annotations
 
 import functools
-import hashlib
 import inspect
 import json
 from typing import Any
@@ -43,12 +42,7 @@ from hontology.db.models import (
     Run,
 )
 from hontology.evalkit import config as run_config
-
-
-def _hash(payload: Any, n: int = 10) -> str:
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:n]
-
+from hontology.evalkit.config import stable_hash
 
 # ---------------------------------------------------------------------------
 # Code and prompt fingerprints
@@ -69,7 +63,7 @@ def retrieval_code_hash() -> str:
         inspect.getsource(embed._prefixes),
         tuning._POOL.text,
     ]
-    return _hash(parts, 12)
+    return stable_hash(parts, 12)
 
 
 @functools.cache
@@ -107,7 +101,7 @@ def prompt_fingerprint(prompt_id: str) -> str:
                 continue
         else:
             parts.append((name, inspect.getsource(value)))
-    return _hash(parts, 12)
+    return stable_hash(parts, 12)
 
 
 def recorded(run: Run) -> dict:
@@ -174,7 +168,7 @@ def retrieval_version(session: Session, run: Run) -> dict:
     code = (source.manifest or {}).get("versions", {}).get("retrieval_code")
     code = code or retrieval_code_hash()
     return {
-        "version": "r-" + _hash([settings, leaves, code]),
+        "version": "r-" + stable_hash([settings, leaves, code], 10),
         "settings": settings,
         "ontology_version": source.ontology_version,
         "leaves": len(leaves),
@@ -191,13 +185,14 @@ def judge_version(session: Session, run: Run) -> dict:
     prompt = prompt or prompt_fingerprint(judge["prompt_id"])
     return {
         "version": "j-"
-        + _hash(
+        + stable_hash(
             [
                 judge,
                 config["common"]["judge_body_limit"],
                 snapshot.content_hash if snapshot else run.ontology_version,
                 prompt,
-            ]
+            ],
+            10,
         ),
         "provider": judge["provider"],
         "model": judge["model"],
@@ -245,7 +240,7 @@ def resolve_links(session: Session, ontology_id: int) -> LinkSnapshot | None:
     links = current_links(session, ontology_id)
     if not links:
         return None
-    digest = _hash(links, 64)
+    digest = stable_hash(links, 64)
     existing = session.scalar(
         select(LinkSnapshot).where(
             LinkSnapshot.ontology_id == ontology_id, LinkSnapshot.content_hash == digest

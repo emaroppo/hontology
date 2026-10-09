@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hontology.evalkit.arms import render_markdown
+from hontology.evalkit.arms_report import render_markdown
 
 
 def scores(p: float, r: float, f: float) -> dict:

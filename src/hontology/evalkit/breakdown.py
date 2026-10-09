@@ -17,9 +17,11 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hontology.db.models import Category, Concept, Locus, Run, Verdict
+from hontology.db.lookups import concepts_by_id, get_run
+from hontology.db.models import Category, Locus
 from hontology.evalkit import evaluate as evaluate_module
 from hontology.evalkit import metrics as metric_lib
+from hontology.evalkit.article import clean_verdicts
 from hontology.ontology import hierarchy
 
 # "family" is a class's top-level ancestor in the hierarchy; "category" is the
@@ -64,9 +66,7 @@ def breakdown(
     if dimension not in DIMENSIONS:
         raise ValueError(f"unknown dimension {dimension!r}; expected one of {DIMENSIONS}")
 
-    run = session.get(Run, run_id)
-    if run is None:
-        raise LookupError(f"run {run_id} does not exist")
+    run = get_run(session, run_id)
 
     truth = evaluate_module.label_map(
         session,
@@ -75,10 +75,7 @@ def breakdown(
         include_stale=include_stale,
     )
 
-    concepts = {
-        c.id: c
-        for c in session.scalars(select(Concept).where(Concept.ontology_id == run.ontology_id))
-    }
+    concepts = concepts_by_id(session, run.ontology_id)
     categories = {c.id: c.name for c in session.scalars(select(Category))}
     loci = {locus.id: locus.name for locus in session.scalars(select(Locus))}
     parent_map = hierarchy.parents(session, run.ontology_id)
@@ -89,11 +86,9 @@ def breakdown(
         return [(str(t), concepts[t].name) for t in sorted(tops or [concept_id])]
 
     slices: dict[str, Slice] = {}
-    for verdict in session.scalars(
-        select(Verdict).where(Verdict.run_id == run_id, Verdict.error.is_(None))
-    ):
+    for verdict in clean_verdicts(session, run_id):
         key = (verdict.document_id, verdict.concept_id)
-        if key not in truth or verdict.matched is None:
+        if key not in truth:
             continue
 
         concept = concepts.get(verdict.concept_id)
@@ -141,15 +136,12 @@ def format_breakdown(rows: list[dict], dimension: str) -> str:
     ]
     lines.append("-" * 92)
     for row in rows:
-
-        def fmt(value):
-            return f"{value:>6.3f}" if value is not None else "     —"
-
-        low, high = row["precision_ci"]
-        interval = f"[{low:.2f}, {high:.2f}]" if low is not None else ""
+        interval = metric_lib.format_ci(*row["precision_ci"], digits=2)
+        precision, recall, f1 = (
+            metric_lib.format_num(row[name], 6) for name in ("precision", "recall", "f1")
+        )
         lines.append(
             f"{row['label'][:28]:<28} {row['n']:>4} {row['tp']:>3} {row['fp']:>3} "
-            f"{row['fn']:>3}  {fmt(row['precision'])} {fmt(row['recall'])} "
-            f"{fmt(row['f1'])}   {interval}"
+            f"{row['fn']:>3}  {precision} {recall} {f1}   {interval}"
         )
     return "\n".join(lines)

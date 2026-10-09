@@ -21,10 +21,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from hontology.db.models import Candidate, Document, Run, Verdict
+from hontology.db.lookups import count, get_run
+from hontology.db.models import Candidate, Document, Verdict
 
 
 @dataclass
@@ -45,67 +46,36 @@ class Step:
 
 def funnel(session: Session, run_id: int) -> dict:
     """Document and pair counts at each stage of one run."""
-    run = session.get(Run, run_id)
-    if run is None:
-        raise LookupError(f"run {run_id} does not exist")
+    run = get_run(session, run_id)
 
-    corpus = session.scalar(select(func.count(Document.id))) or 0
-    fetched = (
-        session.scalar(select(func.count(Document.id)).where(Document.fetched_at.is_not(None)))
-        or 0
-    )
-    usable = (
-        session.scalar(
-            select(func.count(Document.id)).where(
-                Document.body_path.is_not(None), Document.is_junk.is_(False)
-            )
-        )
-        or 0
+    corpus = count(session, Document.id)
+    fetched = count(session, Document.id, Document.fetched_at.is_not(None))
+    usable = count(
+        session, Document.id, Document.body_path.is_not(None), Document.is_junk.is_(False)
     )
 
-    considered = (
-        session.scalar(
-            select(func.count(func.distinct(Candidate.document_id))).where(
-                Candidate.run_id == run_id
-            )
-        )
-        or 0
+    considered = count(
+        session, func.distinct(Candidate.document_id), Candidate.run_id == run_id
     )
-    pool = (
-        session.scalar(select(func.count(Candidate.id)).where(Candidate.run_id == run_id)) or 0
-    )
-    selected = (
-        session.scalar(
-            select(func.count(Candidate.id)).where(
-                Candidate.run_id == run_id, Candidate.selected.is_(True)
-            )
-        )
-        or 0
+    pool = count(session, Candidate.id, Candidate.run_id == run_id)
+    selected = count(
+        session, Candidate.id, Candidate.run_id == run_id, Candidate.selected.is_(True)
     )
 
-    judged = (
-        session.scalar(
-            select(func.count(Verdict.id)).where(
-                Verdict.run_id == run_id, Verdict.error.is_(None), Verdict.matched.is_not(None)
-            )
-        )
-        or 0
+    judged = count(
+        session,
+        Verdict.id,
+        Verdict.run_id == run_id,
+        Verdict.error.is_(None),
+        Verdict.matched.is_not(None),
     )
-    errored = (
-        session.scalar(
-            select(func.count(Verdict.id)).where(
-                Verdict.run_id == run_id, Verdict.error.is_not(None)
-            )
-        )
-        or 0
-    )
-    matched = (
-        session.scalar(
-            select(func.count(Verdict.id)).where(
-                Verdict.run_id == run_id, Verdict.matched.is_(True), Verdict.error.is_(None)
-            )
-        )
-        or 0
+    errored = count(session, Verdict.id, Verdict.run_id == run_id, Verdict.error.is_not(None))
+    matched = count(
+        session,
+        Verdict.id,
+        Verdict.run_id == run_id,
+        Verdict.matched.is_(True),
+        Verdict.error.is_(None),
     )
 
     documents = [

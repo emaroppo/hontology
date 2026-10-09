@@ -17,13 +17,16 @@ while a false negative usually means retrieval or the definition is too narrow.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hontology.db.models import Concept, Document, PairLabel, Run, Verdict
+from hontology.db.lookups import concept_names, get_run
+from hontology.db.models import Document, PairLabel
 from hontology.evalkit import evaluate as evaluate_module
+from hontology.evalkit.article import clean_verdicts
+from hontology.evalkit.metrics import format_num
 
 
 @dataclass
@@ -43,21 +46,7 @@ class ErrorRow:
     label_source: str
 
     def as_dict(self) -> dict:
-        return {
-            "kind": self.kind,
-            "document_id": self.document_id,
-            "concept_id": self.concept_id,
-            "concept_name": self.concept_name,
-            "document_url": self.document_url,
-            "document_title": self.document_title,
-            "expected": self.expected,
-            "predicted": self.predicted,
-            "confidence": self.confidence,
-            "evidence": self.evidence,
-            "reasoning": self.reasoning,
-            "label_note": self.label_note,
-            "label_source": self.label_source,
-        }
+        return asdict(self)
 
 
 def triage(
@@ -75,9 +64,7 @@ def triage(
     diagnostic than one it nearly got right, because it points at a systematic
     misreading rather than a borderline call.
     """
-    run = session.get(Run, run_id)
-    if run is None:
-        raise LookupError(f"run {run_id} does not exist")
+    run = get_run(session, run_id)
 
     truth = evaluate_module.label_map(
         session,
@@ -85,21 +72,16 @@ def triage(
         include_machine=include_machine,
         include_stale=include_stale,
     )
-    concepts = {
-        c.id: c.name
-        for c in session.scalars(select(Concept).where(Concept.ontology_id == run.ontology_id))
-    }
+    concepts = concept_names(session, run.ontology_id)
     labels = {
         (label.document_id, label.concept_id): label
         for label in session.scalars(select(PairLabel))
     }
 
     rows: list[ErrorRow] = []
-    for verdict in session.scalars(
-        select(Verdict).where(Verdict.run_id == run_id, Verdict.error.is_(None))
-    ):
+    for verdict in clean_verdicts(session, run_id):
         key = (verdict.document_id, verdict.concept_id)
-        if key not in truth or verdict.matched is None:
+        if key not in truth:
             continue
 
         expected = truth[key]
@@ -167,7 +149,7 @@ def format_triage(rows: list[ErrorRow], *, max_chars: int = 200) -> str:
     lines: list[str] = []
     for row in rows:
         marker = "FP" if row.kind == "false_positive" else "FN"
-        confidence = f"{row.confidence:.2f}" if row.confidence is not None else "—"
+        confidence = format_num(row.confidence, digits=2)
         lines.append(
             f"[{marker}] {row.concept_name}  conf={confidence}  "
             f"{(row.document_title or row.document_url)[:60]}"

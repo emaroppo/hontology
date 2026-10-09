@@ -61,6 +61,22 @@ def fetch_lookup(url: str = CAMEO_LOOKUP_URL, *, timeout: float = 30.0) -> str:
     return response.text
 
 
+def get_or_create_system(session: Session, slug: str, name: str, source_url: str) -> CodeSystem:
+    system = session.scalar(select(CodeSystem).where(CodeSystem.slug == slug))
+    if system is None:
+        system = CodeSystem(slug=slug, name=name, source_url=source_url)
+        session.add(system)
+        session.flush()
+    return system
+
+
+def codes_by_string(session: Session, system_id: int) -> dict[str, Code]:
+    return {
+        code.code: code
+        for code in session.scalars(select(Code).where(Code.system_id == system_id))
+    }
+
+
 def load_codes(
     session: Session, rows: list[tuple[str, str]], *, source_url: str | None = None
 ) -> dict:
@@ -69,20 +85,10 @@ def load_codes(
     Idempotent: re-running updates descriptions in place and adds anything new,
     so refreshing the codebook never duplicates or orphans a curated association.
     """
-    system = session.scalar(select(CodeSystem).where(CodeSystem.slug == CAMEO_SLUG))
-    if system is None:
-        system = CodeSystem(
-            slug=CAMEO_SLUG,
-            name="CAMEO event codes",
-            source_url=source_url or CAMEO_LOOKUP_URL,
-        )
-        session.add(system)
-        session.flush()
-
-    existing = {
-        code.code: code
-        for code in session.scalars(select(Code).where(Code.system_id == system.id))
-    }
+    system = get_or_create_system(
+        session, CAMEO_SLUG, "CAMEO event codes", source_url or CAMEO_LOOKUP_URL
+    )
+    existing = codes_by_string(session, system.id)
 
     inserted = 0
     updated = 0

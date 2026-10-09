@@ -30,11 +30,10 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from hontology.evalkit import calendar, versions
+from hontology.ingest.cameo import CAMEO_SLUG
+from hontology.ingest.themes import THEMES_SLUG
 
 Key = tuple[str, str]  # (system slug, code)
-
-_CAMEO = "cameo"
-_THEMES = "gkg-themes"
 
 # For each event, the code the filter checks: its most specific one present.
 _EVENT_CODE = "COALESCE(NULLIF(event_code, ''), NULLIF(base_code, ''), NULLIF(root_code, ''))"
@@ -61,7 +60,7 @@ def document_keys(
     out: dict[int, set[Key]] = defaultdict(set)
     if not document_ids:
         return out
-    cameo, themes = _codes(links, _CAMEO), _codes(links, _THEMES)
+    cameo, themes = _codes(links, CAMEO_SLUG), _codes(links, THEMES_SLUG)
     if cameo:
         for doc, code in session.execute(
             text(
@@ -70,7 +69,7 @@ def document_keys(
             ),
             {"docs": document_ids, "codes": cameo},
         ):
-            out[doc].add((_CAMEO, code))
+            out[doc].add((CAMEO_SLUG, code))
     if themes:
         for doc, theme in session.execute(
             text(
@@ -80,7 +79,7 @@ def document_keys(
             ),
             {"docs": document_ids, "themes": themes},
         ):
-            out[doc].add((_THEMES, theme))
+            out[doc].add((THEMES_SLUG, theme))
     return out
 
 
@@ -222,7 +221,7 @@ def corpus_cost(session: Session, links: list[list]) -> dict:
         f"{system}:{code}": {"admitted": admitted, "only_this": only, "downloaded": downloaded}
         for system, code, admitted, only, downloaded in session.execute(
             _CORPUS_COST,
-            {"cameo": _codes(links, _CAMEO), "themes": _codes(links, _THEMES)},
+            {"cameo": _codes(links, CAMEO_SLUG), "themes": _codes(links, THEMES_SLUG)},
         )
     }
     return {"codes": rows}

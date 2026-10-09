@@ -134,10 +134,17 @@ def bootstrap_f1(
     )
 
 
-def format_ci(low: float | None, high: float | None) -> str:
+def format_ci(low: float | None, high: float | None, *, digits: int = 3) -> str:
     if low is None or high is None:
         return ""
-    return f"[{low:.3f}, {high:.3f}]"
+    return f"[{low:.{digits}f}, {high:.{digits}f}]"
+
+
+def format_num(value: float | None, width: int = 0, *, digits: int = 3) -> str:
+    """*value* to *digits* places, right-aligned in *width*; a dash when absent."""
+    if value is None:
+        return " " * (width - 1) + "—"
+    return f"{value:>{width}.{digits}f}" if width else f"{value:.{digits}f}"
 
 
 def with_intervals(confusion: Confusion, *, seed: int = 0) -> dict:

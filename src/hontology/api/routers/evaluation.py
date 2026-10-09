@@ -324,7 +324,7 @@ def compare_arms(payload: ArmsIn, db: Session = Depends(get_db)):
     """Arms against a baseline on the labelled sample, paired, as `eval arms`
     reports them, with the same Markdown tables. Calendar scores are left to
     each run's own view, since they take minutes."""
-    from hontology.evalkit import arms
+    from hontology.evalkit import arms, arms_report
 
     baseline = db.get(Run, payload.baseline)
     if baseline is None:
@@ -337,4 +337,4 @@ def compare_arms(payload: ArmsIn, db: Session = Depends(get_db)):
         _manifest(payload.manifest_path),
         labels=_labels(db, baseline.ontology_id, payload.annotator),
     )
-    return {"report": report, "markdown": arms.render_markdown(report)}
+    return {"report": report, "markdown": arms_report.render_markdown(report)}

@@ -1033,7 +1033,7 @@ def labels_sample_sheet(
     import csv
 
     from hontology.db.models import Concept, Document
-    from hontology.evalkit.label_io import DOCUMENT_LABEL_COLUMNS
+    from hontology.evalkit.document_labels import DOCUMENT_LABEL_COLUMNS
 
     record = json.loads(manifest_path.read_text(encoding="utf-8"))
     chunk = record["order"][start - 1 : start - 1 + count]
@@ -1089,7 +1089,7 @@ def labels_sample_sheet(
 @labels_app.command("import-documents")
 def labels_import_documents(ontology_id: int, path: Path) -> None:
     """Read whole-document labels: listed concepts positive, all others negative."""
-    from hontology.evalkit.label_io import import_document_labels
+    from hontology.evalkit.document_labels import import_document_labels
 
     with session_scope() as session:
         report = import_document_labels(session, ontology_id, path.read_text(encoding="utf-8"))
@@ -1329,11 +1329,11 @@ def eval_calendar(
     out: Path | None = typer.Option(None, help="Also write the full result as JSON."),
 ) -> None:
     """Event-level results against a calendar of known events. Needs no labels."""
-    from hontology.evalkit import calendar
+    from hontology.evalkit import calendar, calendar_score
     from hontology.evalkit.metrics import format_ci
 
     with session_scope() as session:
-        result = calendar.evaluate(
+        result = calendar_score.evaluate(
             session, run_id, calendar.load(calendar_path), before=before, after=after
         )
     if out is not None:
@@ -1445,8 +1445,8 @@ def eval_arms(
 ) -> None:
     """The pre-registered comparison: every arm against the baseline, both levels."""
     from hontology.db.models import Run
-    from hontology.evalkit import annotations, arms, calendar
-    from hontology.evalkit.label_io import document_label_map
+    from hontology.evalkit import annotations, arms, arms_report, calendar
+    from hontology.evalkit.document_labels import document_label_map
 
     if labels_path is not None and annotator is not None:
         raise typer.BadParameter("give --labels or --annotator, not both")
@@ -1478,7 +1478,7 @@ def eval_arms(
     if out is not None:
         out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     if markdown is not None:
-        markdown.write_text(arms.render_markdown(report), encoding="utf-8")
+        markdown.write_text(arms_report.render_markdown(report), encoding="utf-8")
 
     def rate(stat: dict) -> str:
         value = "-" if stat["rate"] is None else f"{stat['rate']:.2f}"
@@ -1544,12 +1544,12 @@ def eval_calendar_review_export(
     """
     import csv
 
-    from hontology.evalkit import calendar
+    from hontology.evalkit import calendar, calendar_score
 
     entries = calendar.load(calendar_path)
     by_id = {e.id: e for e in entries}
     with session_scope() as session:
-        result = calendar.evaluate(session, run_id, entries, before=before, after=after)
+        result = calendar_score.evaluate(session, run_id, entries, before=before, after=after)
     rows = []
     for row in result["entries"]:
         if row["verified"] is not None:

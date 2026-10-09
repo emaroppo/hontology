@@ -6,7 +6,7 @@ ingested in both feeds; from then on its documents are fixed, so it can be
 scraped, deduplicated, retrieved and judged without waiting for any other.
 
 All entries feed **one run**, so the result is scored once with
-`evalkit.calendar.evaluate`. Retrieval appends rather than rebuilds, and the
+`evalkit.calendar_score.evaluate`. Retrieval appends rather than rebuilds, and the
 judge skips pairs already done, which also makes the whole loop resumable: a
 restart re-checks each entry and does only what is missing.
 
@@ -20,15 +20,18 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hontology.db.base import among
+from hontology.db.lookups import count
 from hontology.db.models import Candidate, Concept, Document, FeedSlice, Run, Verdict
 from hontology.evalkit import versions
 from hontology.evalkit.calendar import Entry, window_documents
+from hontology.evalkit.runner import clone_candidates
 from hontology.ingest import dedup, scrape, service
 from hontology.ingest import filter as ingest_filter
 from hontology.ingest.dedup import representative_of
@@ -40,6 +43,30 @@ log = logging.getLogger(__name__)
 
 SLICES_PER_DAY = 96
 SCRAPE_BATCH = 200
+
+
+def _window_slices(
+    session: Session, entry: Entry, places: list[int], *, before: int, after: int
+) -> Iterator[tuple[str, list[tuple[str, str, bool]]]]:
+    """Per feed, the window's slices as ``(key, status, covers)``.
+
+    A GKG slice covers the entry only if its scope includes all of *places*.
+    """
+    start, end = entry.window(before, after)
+    for feed in (service.FEED, service.FEED_GKG):
+        rows = session.execute(
+            select(FeedSlice.slice_key, FeedSlice.status, FeedSlice.scope).where(
+                FeedSlice.feed == feed,
+                FeedSlice.sliced_at >= start,
+                FeedSlice.sliced_at < end,
+            )
+        )
+        gkg = feed == service.FEED_GKG
+        covered = [
+            (key, status, not gkg or scope is None or set(places) <= set(scope))
+            for key, status, scope in rows
+        ]
+        yield feed, covered
 
 
 def window_status(
@@ -57,17 +84,9 @@ def window_status(
     needed = int((end - start) / timedelta(days=1)) * SLICES_PER_DAY
     complete = True
     failed: list[tuple[str, str]] = []
-    for feed in (service.FEED, service.FEED_GKG):
-        rows = session.execute(
-            select(FeedSlice.slice_key, FeedSlice.status, FeedSlice.scope).where(
-                FeedSlice.feed == feed,
-                FeedSlice.sliced_at >= start,
-                FeedSlice.sliced_at < end,
-            )
-        ).all()
+    for feed, rows in _window_slices(session, entry, places, before=before, after=after):
         done = 0
-        for key, status, scope in rows:
-            covers = feed != service.FEED_GKG or scope is None or set(places) <= set(scope)
+        for key, status, covers in rows:
             if status in service.TERMINAL and covers:
                 done += 1
             elif status == "failed" or status in service.TERMINAL:
@@ -87,16 +106,8 @@ def window_unobservable(
     its event would be a miss the detector never had a chance at, and a control
     would pass for the same reason; such a window is set aside instead.
     """
-    start, end = entry.window(before, after)
-    for feed in (service.FEED, service.FEED_GKG):
-        for status, scope in session.execute(
-            select(FeedSlice.status, FeedSlice.scope).where(
-                FeedSlice.feed == feed,
-                FeedSlice.sliced_at >= start,
-                FeedSlice.sliced_at < end,
-            )
-        ):
-            covers = feed != service.FEED_GKG or scope is None or set(places) <= set(scope)
+    for _feed, rows in _window_slices(session, entry, places, before=before, after=after):
+        for _key, status, covers in rows:
             if covers and status in service.TERMINAL and status != "missing":
                 return False
     return True
@@ -148,11 +159,7 @@ def process_entry(
         # built would otherwise be judged against articles that did not exist yet,
         # find nothing in scope, and be marked done.
         ontology_id = run.ontology_id
-        has_links = bool(
-            ingest_filter.concept_code_map(session, ontology_id)
-            or ingest_filter.concept_theme_map(session, ontology_id)
-        )
-        if has_links:
+        if ingest_filter.has_links(session, ontology_id):
             matches = ingest_filter.matching_documents(
                 session, ontology_id, document_ids=sorted(window)
             )
@@ -223,24 +230,19 @@ def process_entry(
 
     remaining = None
     if budget is not None:
-        judged = (
-            session.scalar(
-                select(func.count(Verdict.id)).where(
-                    Verdict.run_id == run.id, among(Verdict.document_id, representatives)
-                )
-            )
-            or 0
+        judged = count(
+            session,
+            Verdict.id,
+            Verdict.run_id == run.id,
+            among(Verdict.document_id, representatives),
         )
         remaining = max(0, budget - judged)
-    pairs = (
-        session.scalar(
-            select(func.count(Candidate.id)).where(
-                Candidate.run_id == run.id,
-                Candidate.selected.is_(True),
-                among(Candidate.document_id, representatives),
-            )
-        )
-        or 0
+    pairs = count(
+        session,
+        Candidate.id,
+        Candidate.run_id == run.id,
+        Candidate.selected.is_(True),
+        among(Candidate.document_id, representatives),
     )
     judged_now = None
     if judge and (remaining is None or remaining > 0):
@@ -303,25 +305,12 @@ def copy_window_candidates(
             .distinct()
         )
     )
-    for row in session.scalars(
+    rows = session.scalars(
         select(Candidate).where(
             Candidate.run_id == source_run_id, among(Candidate.document_id, retrieved - present)
         )
-    ):
-        session.add(
-            Candidate(
-                run_id=target_run_id,
-                document_id=row.document_id,
-                concept_id=row.concept_id,
-                source=row.source,
-                score=row.score,
-                rank=row.rank,
-                selected=row.selected,
-                matched_code=row.matched_code,
-                matched_level=row.matched_level,
-            )
-        )
-    session.flush()
+    )
+    clone_candidates(session, rows, target_run_id)
     return retrieved
 
 

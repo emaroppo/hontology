@@ -12,7 +12,7 @@ import httpx
 import pytest
 import respx
 
-from hontology.ingest.scrape import HostLimiter, RobotsCache, fetch_html, host_of
+from hontology.ingest.fetch import HostLimiter, RobotsCache, fetch_html, host_of
 
 AGENT = "hontology-test"
 
@@ -273,7 +273,7 @@ class TestBoundedFetch:
 
     @respx.mock
     def test_an_oversized_page_is_refused(self, monkeypatch):
-        monkeypatch.setattr("hontology.ingest.scrape.MAX_PAGE_BYTES", 10)
+        monkeypatch.setattr("hontology.ingest.fetch.MAX_PAGE_BYTES", 10)
         respx.get("https://big.test/a").mock(
             return_value=httpx.Response(200, content=b"x" * 100)
         )

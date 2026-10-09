@@ -23,7 +23,7 @@ from hontology.db.models import (
     Verdict,
 )
 from hontology.db.session import session_scope
-from hontology.evalkit import calendar
+from hontology.evalkit import calendar, calendar_score
 from hontology.ingest.loci import by_fips
 from hontology.ontology import service
 
@@ -217,7 +217,7 @@ class TestEvaluate:
     def _result(self, world):
         run_id, entries = world
         with session_scope() as session:
-            return calendar.evaluate(session, run_id, entries)
+            return calendar_score.evaluate(session, run_id, entries)
 
     def test_stages_count_each_documents_progress(self, world):
         rows = {r["id"]: r for r in self._result(world)["entries"]}
@@ -252,7 +252,7 @@ class TestEvaluate:
         run_id, _ = world
         entries = calendar.load(write(tmp_path, "x,positive,Volcano,HKG,2025-09-23,,,,,"))
         with session_scope() as session, pytest.raises(calendar.CalendarError, match="Volcano"):
-            calendar.evaluate(session, run_id, entries)
+            calendar_score.evaluate(session, run_id, entries)
 
     def test_a_copy_reads_its_representatives_verdict(self, world):
         """A Japanese outlet republishing the US article: the copy is never
