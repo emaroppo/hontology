@@ -63,6 +63,32 @@ class RetrievalCalls(ApiBase):
             timeout=300,
         )
 
+    def retrieval_strategies(self) -> list[dict]:
+        return self._request("GET", "/retrieval/strategies")
+
+    def retrieval_strategy(
+        self,
+        run_id: int,
+        prompt_id: str,
+        cutoff: dict,
+        *,
+        text: str | None = None,
+        document_id: int | None = None,
+    ) -> dict:
+        """A prompt's retrieval run on one article or pasted text; not stored."""
+        return self._request(
+            "POST",
+            "/retrieval/strategy",
+            json={
+                "run_id": run_id,
+                "prompt_id": prompt_id,
+                "cutoff": cutoff,
+                "text": text,
+                "document_id": document_id,
+            },
+            timeout=600,
+        )
+
     def retrieval_versions(self, ontology_id: int) -> list[dict]:
         return self._request("GET", "/retrieval/versions", params={"ontology_id": ontology_id})
 

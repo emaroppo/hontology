@@ -116,7 +116,7 @@ def judge(world, provider, monkeypatch, **kwargs):
         return judge_module.judge_run(
             session,
             world["run"],
-            config=normalize({"judge": {"prompt_id": "hier_batch_v1"}}),
+            config=normalize({"judge": {"prompt_id": "hier_batch_v2"}}),
             judge_body_limit=2000,
             **kwargs,
         )
@@ -137,8 +137,9 @@ def verdicts(world) -> dict[str, bool | None]:
 def test_descent_asks_each_sibling_set_once(world, monkeypatch):
     provider = FakeJudge(world["names"], yes={"Trade", "Sanction", "Ban"})
     result = judge(world, provider, monkeypatch)
-    assert provider.calls == [{"Trade", "Sanction", "Hack"}, {"Tariff", "Ban"}, {"Embargo"}]
-    assert result["calls"] == 3
+    # Routing first, then one deciding call per offered sibling set.
+    assert provider.calls == [{"Trade", "Sanction"}, {"Hack"}, {"Tariff", "Ban"}, {"Embargo"}]
+    assert result["calls"] == 4
     assert verdicts(world) == {
         "Trade": True,
         "Sanction": True,
@@ -163,18 +164,19 @@ def test_nothing_below_a_no_is_asked(world, monkeypatch):
 
 
 def test_nothing_below_a_failed_call_is_asked(world, monkeypatch):
-    """The top-level call fails: its classes are recorded as errors, and no
-    branch is opened on the strength of an answer that never came."""
+    """The top-level routing call fails: its parents are recorded as errors, and
+    no branch is opened on the strength of an answer that never came. The
+    top-level leaf is still decided, in its own call."""
     provider = FakeJudge(world["names"], yes={"Trade", "Sanction"}, fail_on={"Trade"})
     result = judge(world, provider, monkeypatch)
-    assert len(provider.calls) == 1
-    assert result["errors"] == 3
+    assert provider.calls == [{"Trade", "Sanction"}, {"Hack"}]
+    assert result["errors"] == 2
     assert set(verdicts(world)) == {"Trade", "Sanction", "Hack"}
 
 
 def test_a_restart_finishes_without_re_asking(world, monkeypatch):
-    """A crash after the top level; the resumed run continues below it and the
-    final verdicts equal an uninterrupted run's."""
+    """A crash after routing; the resumed run decides what routing offered
+    without routing again, and the final verdicts equal an uninterrupted run's."""
 
     class Crash(Exception):
         pass
@@ -189,11 +191,11 @@ def test_a_restart_finishes_without_re_asking(world, monkeypatch):
         judge(
             world, CrashingJudge(world["names"], yes={"Trade", "Sanction", "Ban"}), monkeypatch
         )
-    assert set(verdicts(world)) == {"Trade", "Sanction", "Hack"}
+    assert set(verdicts(world)) == {"Trade", "Sanction"}
 
     resumed = FakeJudge(world["names"], yes={"Trade", "Sanction", "Ban"})
     judge(world, resumed, monkeypatch)
-    assert {"Trade", "Sanction", "Hack"}.isdisjoint(set().union(*resumed.calls))
+    assert {"Trade", "Sanction"}.isdisjoint(set().union(*resumed.calls))
     assert set(verdicts(world)) == {"Trade", "Sanction", "Hack", "Tariff", "Ban", "Embargo"}
 
 
@@ -215,8 +217,9 @@ def test_cost_is_recorded_per_answered_class(world, monkeypatch):
         rows = session.execute(
             select(Verdict.input_tokens).where(Verdict.run_id == world["run"])
         ).all()
-    # Two calls of 100 input tokens each, split exactly across their classes.
-    assert sum(tokens for (tokens,) in rows) == 200
+    # Routing, the top-level leaf and Trade's leaves: three calls of 100 input
+    # tokens each, split exactly across their classes.
+    assert sum(tokens for (tokens,) in rows) == 300
 
 
 def test_reused_retrieval_copies_only_the_window_once(world):
@@ -321,7 +324,7 @@ def test_a_sample_is_judged_with_reused_retrieval_once(world, monkeypatch):
             name="arm",
             ontology_id=source.ontology_id,
             ontology_version="v1",
-            config=normalize({"judge": {"prompt_id": "hier_batch_v1"}}),
+            config=normalize({"judge": {"prompt_id": "hier_batch_v2"}}),
             candidates_key="c3",
             judge_key="j3_c3",
             status="running",
@@ -351,7 +354,7 @@ def test_a_sample_is_judged_with_reused_retrieval_once(world, monkeypatch):
             session.scalars(select(Verdict.document_id).where(Verdict.run_id == arm.id))
         )
     assert first["retrieved"] == 1
-    assert first["judge"]["calls"] == 2  # top level, then Trade's children
+    assert first["judge"]["calls"] == 3  # routing, the top-level leaf, Trade's leaves
     assert again["judge"]["calls"] == 0
     assert judged == {world["document"]}
 
@@ -416,3 +419,18 @@ def test_a_routing_question_is_the_parents_text(world, monkeypatch):
     judge_v2(world, provider, monkeypatch)
     assert "question: Trade." in prompts_seen[0]
     assert "=== Questions ===" in prompts_seen[0]
+
+
+def test_a_prompt_that_routes_and_decides_in_one_call_is_refused(world, monkeypatch):
+    """hier_batch_v1 asks parents and leaves together, so what it retrieved
+    cannot be told apart from what it decided."""
+    from hontology.pipeline.retrieve.strategies import Unsplittable
+
+    monkeypatch.setattr(judge_module, "get_provider", lambda name, **kw: FakeJudge({}, set()))
+    with session_scope() as session, pytest.raises(Unsplittable):
+        judge_module.judge_run(
+            session,
+            world["run"],
+            config=normalize({"judge": {"prompt_id": "hier_batch_v1"}}),
+            judge_body_limit=2000,
+        )

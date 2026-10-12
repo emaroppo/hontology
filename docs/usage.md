@@ -29,7 +29,7 @@ body.
 | **Home** | Every judged run scored end to end on the labelled sample (human labels or a machine annotation set), as the arms report scores it. Tabs: **Leaderboard** (stage versions, coverage of the sample, F1 with intervals, cost; calendar recall on request), **Comparison** (arms against a baseline, paired, the `eval arms` tables), **Single run** (end to end, a couple of numbers per stage, disagreements, funnel, detections) |
 | **Ontology** | Author a flat event set in place; for a hierarchy, view the tree and edit leaf wording (structure comes from Protégé via OWL import); import/export, version history, health checks |
 | **Filtering** | Link classes to feed codes (CAMEO, GKG themes), ticking similarity candidates; preview what the pre-download filter would keep. **Evaluation**: a version of the links (a snapshot, or the live ones) scored link by link against the labels (TP, FP, FN, TN, unique TP), the calendar, and corpus cost (articles admitted, and admitted by no other link) |
-| **Retrieval** | Laid out as Judgement is. **Try a cutoff**: the ranking for your own pasted text (embedded and dropped, never stored), a corpus article, or the articles that rank one class highest, as the run chosen in Settings ranks them, under a cutoff in a collapsible section that starts from the run's own. **Evaluation**: a retrieval version (ranking settings, leaf wording, ranking code) under any cutoff, set by hand or loaded from a run: recall computed live on every labelled article, at each depth and by class, and cost, the pairs sent to the judge, on the articles of the run whose ranking it is |
+| **Retrieval** | Laid out as Judgement is. **Try retrieval**: the ranking for your own pasted text (embedded and dropped, never stored), a corpus article, or the articles that rank one class highest, as the run chosen in Settings ranks them, under a cutoff in a collapsible section that starts from the run's own; or a routing or extraction strategy's steps and the classes each deciding call would be shown. **Evaluation**: a retrieval version (ranking settings, leaf wording, ranking code) under any cutoff, set by hand or loaded from a run: recall computed live on every labelled article, at each depth and by class, and cost, the pairs sent to the judge, on the articles of the run whose ranking it is |
 | **Judgement** | **Evaluation**: a judge version across the runs that used it, on the pairs it was responsible for or only on those retrieval selected, with calibration. Pick a class and a few articles and see what the model says, asked exactly as a chosen run asks; edit the prompt's system text and the class wording and see each answer beside the original, the label and the run's recorded verdict. Nothing is stored; wording that works can be saved to the class. Per-pair prompts only. A trial can ask about pasted text instead of corpus articles, the same text Retrieval's Your text tab ranked; it is sent to the run's judge and never stored |
 | **Runs** | Put a run together in a form or as JSON, switching freely between the two (the same config either way), starting from the defaults or any run's config; preview its stage keys before paying for it; start and watch runs |
 | **Labelling** | Two tabs: **Sample**, blind whole-document labelling of a frozen sample, in order; **Queue**, single pairs ranked by what a label would teach, adjudication of machine proposals, bank import/export |
@@ -350,17 +350,27 @@ array is visible rather than silently shrinking the denominator. Sampling does
 not apply to batched runs — repeating the call re-rolls every verdict together,
 so the votes are not independent.
 
-**Or top-down through the hierarchy.** `hier_batch_v1` judges an article by
-descending the class hierarchy: every top-level class in one batched call, then,
-for each class answered yes, its children as one call per sibling set. Nothing
-below a no, or below a failed call, is asked, and a class with two parents that
-both said yes is asked once. The wording is `strict_batch_v1`'s, unchanged; only
-the list of classes in each call differs, so a flat and a hierarchical run
-answer the same question per leaf. Retrieval serves only as a gate: an article
-is judged if retrieval selected any leaf for it, and the descent may reach
-leaves retrieval did not pick. Descent state is rebuilt from stored verdicts, so
-an interrupted run resumes without asking anything twice, and each call's
-tokens are split exactly across the classes it answered.
+**Or top-down through the hierarchy.** `hier_batch_v2` routes an article down
+the class hierarchy, then judges the leaves routing reached. Routing asks the
+top-level parents in one call, then, for each parent answered yes, the parents
+among its children, leaning to yes. The leaves of each sibling set become one
+deciding call, worded exactly as `strict_batch_v1`, so a flat and a
+hierarchical run answer the same question per leaf. Nothing below a no, or below
+a failed call, is offered, and a class with two parents that both said yes is
+offered once. The embedding cutoff serves only as a gate: an article is routed
+if it selected any leaf. Stored answers are not asked again, so an interrupted
+run resumes, and each call's tokens are split exactly across the classes it
+answered. `hier_batch_v1`, which asked parents and leaves in the same call, can
+no longer be run: what it retrieved cannot be told apart from what it decided.
+
+**Retrieval is what the judge is shown.** Each prompt mode implies a retrieval
+strategy (`pipeline.retrieve.strategies`): an article in, the leaves each
+deciding call is shown out, with steps in between that vary: the embedding
+cutoff alone for flat prompts; a gate and routing for `hier_batch_v2`; a gate,
+event extraction and event routing (or leaf ranking) for `extract_v1` and
+`extract_embed_v1`. Retrieval → Try runs any of them on one article or pasted
+text and shows each step; routing and extraction ask the run's judge model there,
+so they cost model calls.
 
 **Document embeddings are cached.** Bodies are embedded once and stored
 content-addressed, so a sweep over selection parameters — which change nothing

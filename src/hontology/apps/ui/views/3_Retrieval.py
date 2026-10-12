@@ -4,12 +4,13 @@ Retrieval ranks an ontology's leaves against each article by embedding
 similarity, and a cutoff decides which pairs go on to the judge. Laid out as
 Judgement is:
 
-**Try a cutoff** shows the ranking for one thing at a time, your own pasted
+**Try retrieval** shows the ranking for one thing at a time, your own pasted
 text first, or a corpus article, or the articles that rank one class highest,
 as the run chosen in Settings ranks them. The cutoff sits in a collapsible
 section, starting from that run's own. Corpus articles need no embedding: every
 run stores its whole ranked pool, so a cutoff is a different line through a
-ranking that already exists.
+ranking that already exists. A routing or extraction strategy adds its own steps
+after the cutoff.
 
 **Evaluation** scores a retrieval *version* rather than a run: the embedding
 settings, the leaves' wording and the ranking code. A cutoff is a parameter, set
@@ -38,5 +39,5 @@ ctx = Context(api, ontology, params.annotator, run)
 
 shared.lazy_tabs(
     "retrieval_tab",
-    {"Try a cutoff": partial(show_try, ctx), "Evaluation": partial(show_evaluation, ctx)},
+    {"Try retrieval": partial(show_try, ctx), "Evaluation": partial(show_evaluation, ctx)},
 )

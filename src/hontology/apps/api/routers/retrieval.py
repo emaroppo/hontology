@@ -198,3 +198,59 @@ def rank_text(payload: TextIn, db: Session = Depends(get_db)):
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, f"embedding model unavailable: {exc}"
         ) from exc
+
+
+class StrategyIn(BaseModel):
+    run_id: int
+    # None is the run's own prompt.
+    prompt_id: str | None = None
+    # Pasted text, or a corpus article.
+    text: str | None = None
+    document_id: int | None = None
+    cutoff: CutoffIn | None = None
+
+
+@router.post("/strategy")
+def try_strategy(payload: StrategyIn, db: Session = Depends(get_db)):
+    """Run a prompt's retrieval strategy on one article or pasted text, through
+    *run_id*'s embedding and judge model. Routing and extraction ask the model;
+    nothing is stored."""
+    from hontology.pipeline.judge import prompts
+    from hontology.pipeline.judge.providers.base import ProviderError
+    from hontology.pipeline.retrieve import tryout
+
+    run = run_or_404(db, payload.run_id)
+    prompt_id = payload.prompt_id or run.config["judge"]["prompt_id"]
+    if prompt_id not in prompts.available():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no prompt {prompt_id!r}")
+    cutoff = (
+        tuning.Cutoff(**payload.cutoff.model_dump())
+        if payload.cutoff is not None
+        else tuning.run_cutoff(versions.source_run(db, run))
+    )
+    try:
+        return tryout.try_strategy(
+            db, run, prompt_id, cutoff, text=payload.text, document_id=payload.document_id
+        )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    except ProviderError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, f"model unavailable: {exc}"
+        ) from exc
+
+
+@router.get("/strategies")
+def list_strategies():
+    """Prompts whose retrieval can be tried, with the steps each implies."""
+    from hontology.pipeline.judge import prompts
+
+    out = []
+    for prompt_id in prompts.available():
+        template = prompts.get(prompt_id)
+        if template.mode == prompts.HIERARCHICAL and template.build_route is None:
+            continue  # routing and deciding share one call: nothing to try apart
+        out.append({"prompt_id": prompt_id, "mode": template.mode})
+    return out

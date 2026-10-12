@@ -33,7 +33,7 @@ from hontology.pipeline.judge.providers.base import GenerationConfig, ProviderEr
 from hontology.pipeline.judge.providers.llamacpp import LlamaCppChatProvider
 from hontology.pipeline.judge.providers.ollama import OllamaChatProvider
 from hontology.pipeline.judge.providers.openrouter import OpenRouterChatProvider
-from hontology.pipeline.retrieve import embed
+from hontology.pipeline.retrieve import embed, strategies
 from hontology.pipeline.runs import fingerprints
 
 # Readers live in judge.parse; these names are kept here for existing callers.
@@ -123,6 +123,11 @@ def judge_run(
     run = session.get(Run, run_id)
     assert run is not None
     check_wording(run, template.prompt_id)
+    if template.mode == prompts.HIERARCHICAL and template.build_route is None:
+        raise strategies.Unsplittable(
+            f"prompt {template.prompt_id!r} asks parents and leaves in one call, so its "
+            "routing cannot run apart from its judging; use hier_batch_v2"
+        )
 
     query = select(Candidate).where(Candidate.run_id == run_id, Candidate.selected.is_(True))
     if document_ids is not None:

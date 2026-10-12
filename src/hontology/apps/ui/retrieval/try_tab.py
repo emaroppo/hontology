@@ -15,6 +15,7 @@ from hontology.apps.ui.cutoff import (
     seed_cutoff,
 )
 from hontology.apps.ui.retrieval.context import Context
+from hontology.apps.ui.retrieval.try_strategy import show_strategy, strategy_picker
 from hontology.apps.ui.retrieval.try_views import show_article, show_class, show_own_text
 
 
@@ -108,8 +109,11 @@ def show_try(ctx: Context) -> None:
             "model, class wording and article length."
         )
 
+    prompt_id = strategy_picker(ctx, st) if leaf is None else None
     cutoff = cutoff_controls(run)
-    if look == "Your text":
+    if prompt_id is not None:
+        show_strategy(ctx, prompt_id, cutoff, document_id=document_id)
+    elif look == "Your text":
         show_own_text(ctx, cutoff)
     elif document_id is not None:
         show_article(ctx, document_id, cutoff)
