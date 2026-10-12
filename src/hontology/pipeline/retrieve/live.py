@@ -93,9 +93,10 @@ def _live_pools(
     concept_keys = [
         embed.content_key(fields, text) for text in leaf_texts(leaves, fields).values()
     ]
+    provider = embed.provider_key(settings["embed_provider"], settings.get("embed_routing"))
     model = session.scalar(
         select(EmbeddingModel).where(
-            EmbeddingModel.key == f"{settings['embed_provider']}/{settings['embed_model']}"
+            EmbeddingModel.key == f"{provider}/{settings['embed_model']}"
         )
     )
     pools: dict[int, list[tuple[int, float]]] = {}

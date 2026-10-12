@@ -160,7 +160,9 @@ class TestApi:
         assert systems["gkg-themes"]["levels"] == [{"level": "theme", "n_codes": len(LOOKUP)}]
 
     def test_similarity_picks_the_level_and_links_nothing(self, client, loaded, monkeypatch):
-        monkeypatch.setattr(embed, "get_provider", lambda name, **kw: FakeEmbedder())
+        monkeypatch.setattr(
+            embed, "get_provider", lambda name, routing=None, **kw: FakeEmbedder()
+        )
         response = client.post(
             "/taxonomy/similarity",
             json={"ontology_id": loaded["ontology"], "system": "gkg-themes"},

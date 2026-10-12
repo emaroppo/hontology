@@ -7,7 +7,7 @@ limit), but nothing is recorded: see `pipeline.judge.trial`.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -34,8 +34,8 @@ class TrialIn(BaseModel):
     text: str | None = None
     title: str | None = None
     url: str | None = None
-    # None keeps the run's own (provider, model).
-    decoder: tuple[str, str] | None = None
+    # None keeps the run's own; else (provider, model), plus the host pinned for openrouter.
+    decoder: list[str] | None = Field(None, min_length=2, max_length=3)
 
 
 class ArticlesIn(BaseModel):
@@ -46,7 +46,10 @@ class ArticlesIn(BaseModel):
 
 
 def _trial(payload: TrialIn) -> trial.Trial:
-    return trial.Trial(**payload.model_dump())
+    fields = payload.model_dump()
+    if fields["decoder"] is not None:
+        fields["decoder"] = tuple(fields["decoder"])
+    return trial.Trial(**fields)
 
 
 def _refuse(exc: Exception) -> HTTPException:
@@ -83,6 +86,7 @@ def runs(ontology_id: int, db: Session = Depends(get_db)):
                 "verdicts": judged[run.id],
                 "provider": judge["provider"],
                 "model": judge["model"],
+                "host": (judge.get("routing") or {}).get("provider"),
                 "prompt_id": judge["prompt_id"],
             }
         )

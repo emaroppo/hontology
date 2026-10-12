@@ -114,9 +114,10 @@ every class of a flat ontology is a leaf, so adding structure leaves a flat run
 exactly as it was. The judge has four modes: one call per pair, one per article,
 top-down through the hierarchy, or event by event.
 
-**The judge is pluggable.** Ollama and llama.cpp serve local models; OpenRouter
-serves hosted ones, pinned to one host so two calls in a run are never served by
-different setups. Prompt wording lives in a data file
+**Both models are pluggable.** The embedding model and the decoder are picked
+apart, each from Ollama or llama.cpp locally or OpenRouter hosted. A hosted model
+is pinned to one host, so two calls in a run are never served by different
+setups; a hosted embedding model's vectors are cached under its host. Prompt wording lives in a data file
 (`pipeline/judge/prompts.toml`), exactly as the model sees it.
 
 **Runs are content-addressed by stage.** A run config is sectioned

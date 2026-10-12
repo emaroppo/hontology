@@ -25,11 +25,13 @@ from hontology.pipeline.retrieve.embedders import (
     EmbeddingProvider,
     LlamaCppEmbeddingProvider,
     OllamaEmbeddingProvider,
+    OpenRouterEmbeddingProvider,
 )
 from hontology.pipeline.retrieve.model_text import document_prefix, normalize_for_embedding
 
 
-def get_provider(name: str) -> EmbeddingProvider:
+def get_provider(name: str, routing: dict | None = None) -> EmbeddingProvider:
+    """The embedding provider *name*; *routing* pins the host for openrouter."""
     settings = get_settings()
     if name == "ollama":
         return OllamaEmbeddingProvider(settings.ollama_host)
@@ -38,7 +40,19 @@ def get_provider(name: str) -> EmbeddingProvider:
             settings.llamacpp_embed_host or settings.llamacpp_host,
             settings.llamacpp_api_key,
         )
+    if name == "openrouter":
+        return OpenRouterEmbeddingProvider(
+            settings.openrouter_api_key, routing, base_url=settings.openrouter_base_url
+        )
     raise ProviderError(f"unknown embedding provider {name!r}")
+
+
+def provider_key(name: str, routing: dict | None = None) -> str:
+    """How a provider is named in the embedding cache: a hosted one with its
+    pinned host, so two hosts' vectors are never mixed."""
+    if name == "openrouter" and routing and routing.get("provider"):
+        return f"openrouter@{str(routing['provider']).lower()}"
+    return name
 
 
 # ---------------------------------------------------------------------------

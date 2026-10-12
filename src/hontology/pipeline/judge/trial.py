@@ -52,7 +52,7 @@ class Trial:
     title: str | None = None
     url: str | None = None
     # A (provider, model) in place of the run's decoder; its decoding settings stay.
-    decoder: tuple[str, str] | None = None
+    decoder: tuple[str, ...] | None = None
 
 
 def per_pair_templates() -> list[dict]:
@@ -120,7 +120,9 @@ def ask(session: Session, trial: Trial) -> dict:
     assert run is not None
     judge_config, _ = _judge_config(run)
     if trial.decoder is not None:
-        judge_config = judge_config | {"provider": trial.decoder[0], "model": trial.decoder[1]}
+        from hontology.pipeline import catalog
+
+        judge_config = catalog.with_decoder(judge_config, trial.decoder)
     provider = get_provider(judge_config["provider"], routing=judge_config.get("routing"))
     out = rendered | {
         "provider": judge_config["provider"],

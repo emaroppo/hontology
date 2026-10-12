@@ -33,7 +33,7 @@ def draw_form(api: Api, options: dict, versions: list[str]) -> None:
         cols[0].text_input("Run name", key=key("name"))
         cols[1].text_input("Description", key=key("description"))
     with section("models", "Models", summary["models"]):
-        provider = _model_fields(api, choices)
+        embed_provider, provider = _model_fields(api, choices)
     with section("ontology", "Ontology and article text", summary["ontology"]):
         _ontology_fields(version_options)
     with section("retrieval", "Retrieval", summary["retrieval"]):
@@ -42,9 +42,12 @@ def draw_form(api: Api, options: dict, versions: list[str]) -> None:
         _judge_fields(choices)
     with section("decoding", "Decoding", summary["decoding"]):
         _decoding_fields()
+    if embed_provider == "openrouter":
+        with section("embed_routing", "Hosted embedding routing", summary["embed_routing"]):
+            _routing_fields(choices, "candidates.embed_routing")
     if provider == "openrouter":
-        with section("routing", "Hosted model routing", summary["routing"]):
-            _routing_fields(choices)
+        with section("routing", "Hosted decoder routing", summary["routing"]):
+            _routing_fields(choices, "judge.routing")
 
 
 def _ontology_fields(version_options: list[str]) -> None:
@@ -67,26 +70,28 @@ def _ontology_fields(version_options: list[str]) -> None:
     )
 
 
-def _model_fields(api: Api, choices: dict) -> str:
-    """The two models a run needs, picked apart; returns the decoder's provider."""
+def _model_fields(api: Api, choices: dict) -> tuple[str, str]:
+    """The two models a run needs, picked apart; returns their two providers."""
     cols = st.columns(2)
     with cols[0]:
-        model_picker(
+        embedding = model_picker(
             api,
             EMBEDDING,
             choices["embed_providers"],
             key("candidates.embed_provider"),
             key("candidates.embed_model"),
+            key("candidates.embed_routing.provider"),
         )
     with cols[1]:
-        provider, _ = model_picker(
+        decoder = model_picker(
             api,
             DECODER,
             choices["judge_providers"],
             key("judge.provider"),
             key("judge.model"),
+            key("judge.routing.provider"),
         )
-    return provider
+    return embedding[0], decoder[0]
 
 
 def _retrieval_fields(choices: dict) -> None:
@@ -190,18 +195,21 @@ def _decoding_fields() -> None:
     )
 
 
-def _routing_fields(choices: dict) -> None:
-    st.caption("Hosts of one model can run it at different precisions, so the host is pinned.")
-    cols = st.columns(4)
-    cols[0].text_input("Host", key=key("judge.routing.provider"), placeholder="required")
-    cols[1].text_input(
+def _routing_fields(choices: dict, path: str) -> None:
+    """How a hosted model is routed, under *path*; its host is pinned in Models."""
+    st.caption(
+        "Hosts of one model can run it at different precisions, so the host is pinned "
+        "(in Models) and these narrow how it may serve the model."
+    )
+    cols = st.columns(3)
+    cols[0].text_input(
         "Quantizations",
-        key=key("judge.routing.quantizations"),
+        key=key(f"{path}.quantizations"),
         placeholder="e.g. fp8, bf16",
     )
-    cols[2].toggle("Allow fallbacks", key=key("judge.routing.allow_fallbacks"))
-    cols[3].selectbox(
+    cols[1].toggle("Allow fallbacks", key=key(f"{path}.allow_fallbacks"))
+    cols[2].selectbox(
         "Data collection",
         choices["data_collection"],
-        key=key("judge.routing.data_collection"),
+        key=key(f"{path}.data_collection"),
     )

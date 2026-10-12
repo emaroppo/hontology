@@ -179,8 +179,8 @@ class TextIn(BaseModel):
     document_id: int | None = None
     cutoff: CutoffIn | None = None
     pool_size: int = Field(20, ge=1, le=100)
-    # None keeps the run's own (provider, model).
-    embedding: tuple[str, str] | None = None
+    # None keeps the run's own; else (provider, model), plus the host pinned for openrouter.
+    embedding: list[str] | None = Field(None, min_length=2, max_length=3)
 
 
 @router.post("/text")
@@ -211,7 +211,7 @@ def rank_text(payload: TextIn, db: Session = Depends(get_db)):
             text or "",
             cutoff,
             pool_size=payload.pool_size,
-            embedding=payload.embedding,
+            embedding=tuple(payload.embedding) if payload.embedding else None,
         )
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
@@ -229,9 +229,9 @@ class StrategyIn(BaseModel):
     text: str | None = None
     document_id: int | None = None
     cutoff: CutoffIn | None = None
-    # None keeps the run's own (provider, model) for each.
-    embedding: tuple[str, str] | None = None
-    decoder: tuple[str, str] | None = None
+    # None keeps the run's own; else (provider, model), plus the host pinned for openrouter.
+    embedding: list[str] | None = Field(None, min_length=2, max_length=3)
+    decoder: list[str] | None = Field(None, min_length=2, max_length=3)
 
 
 @router.post("/strategy")
@@ -260,8 +260,8 @@ def try_strategy(payload: StrategyIn, db: Session = Depends(get_db)):
             cutoff,
             text=payload.text,
             document_id=payload.document_id,
-            embedding=payload.embedding,
-            decoder=payload.decoder,
+            embedding=tuple(payload.embedding) if payload.embedding else None,
+            decoder=tuple(payload.decoder) if payload.decoder else None,
         )
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
@@ -294,6 +294,12 @@ def _models(run: Run) -> dict:
     config = run_config.normalize(run.config or {})
     candidates, judge = config["candidates"], config["judge"]
     return {
-        "embedding": [candidates["embed_provider"], candidates["embed_model"]],
-        "decoder": [judge["provider"], judge["model"]],
+        "embedding": [candidates["embed_provider"], candidates["embed_model"]]
+        + _host(candidates.get("embed_routing")),
+        "decoder": [judge["provider"], judge["model"]] + _host(judge.get("routing")),
     }
+
+
+def _host(routing: dict | None) -> list[str]:
+    """The pinned host, as a third value, for a model served by openrouter."""
+    return [routing["provider"]] if routing and routing.get("provider") else []

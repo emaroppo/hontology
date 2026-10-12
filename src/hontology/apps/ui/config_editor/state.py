@@ -29,7 +29,6 @@ def load(config: dict) -> None:
 def seed_form(config: dict) -> None:
     common, candidates, judge = config["common"], config["candidates"], config["judge"]
     generation = judge.get("generation") or {}
-    routing = judge.get("routing") or {}
     values: dict[str, Any] = {
         "name": config.get("name", ""),
         "description": config.get("description", ""),
@@ -56,10 +55,8 @@ def seed_form(config: dict) -> None:
         "judge.generation.context_window": generation.get("context_window", 8192),
         "judge.generation.max_output_tokens": generation.get("max_output_tokens"),
         "judge.generation.seed": generation.get("seed"),
-        "judge.routing.provider": routing.get("provider", ""),
-        "judge.routing.quantizations": ", ".join(routing.get("quantizations") or []),
-        "judge.routing.allow_fallbacks": bool(routing.get("allow_fallbacks", False)),
-        "judge.routing.data_collection": routing.get("data_collection", "deny"),
+        **_routing_values("judge.routing", judge.get("routing")),
+        **_routing_values("candidates.embed_routing", candidates.get("embed_routing")),
     }
     for path, value in values.items():
         st.session_state[key(path)] = value
@@ -85,15 +82,7 @@ def from_form() -> dict:
         },
     }
     if judge["provider"] == "openrouter":
-        quantizations = [
-            q.strip() for q in value("judge.routing.quantizations").split(",") if q.strip()
-        ]
-        judge["routing"] = {
-            "provider": value("judge.routing.provider").strip(),
-            "allow_fallbacks": value("judge.routing.allow_fallbacks"),
-            "data_collection": value("judge.routing.data_collection"),
-            **({"quantizations": quantizations} if quantizations else {}),
-        }
+        judge["routing"] = _routing_from("judge.routing")
     return {
         "name": value("name").strip() or "unnamed",
         "description": value("description").strip(),
@@ -114,6 +103,35 @@ def from_form() -> dict:
             "min_score": float(value("candidates.min_score")),
             "rel_margin": float(value("candidates.rel_margin")),
             "max_k": int(value("candidates.max_k")),
+            **(
+                {"embed_routing": _routing_from("candidates.embed_routing")}
+                if value("candidates.embed_provider") == "openrouter"
+                else {}
+            ),
         },
         "judge": judge,
+    }
+
+
+def _routing_values(path: str, routing: dict | None) -> dict[str, Any]:
+    """A hosted model's routing as form fields under *path*."""
+    routing = routing or {}
+    return {
+        f"{path}.provider": routing.get("provider", ""),
+        f"{path}.quantizations": ", ".join(routing.get("quantizations") or []),
+        f"{path}.allow_fallbacks": bool(routing.get("allow_fallbacks", False)),
+        f"{path}.data_collection": routing.get("data_collection", "deny"),
+    }
+
+
+def _routing_from(path: str) -> dict[str, Any]:
+    """The routing under *path*, read back from the form."""
+    quantizations = [
+        q.strip() for q in (st.session_state.get(key(f"{path}.quantizations")) or "").split(",")
+    ]
+    return {
+        "provider": (st.session_state.get(key(f"{path}.provider")) or "").strip(),
+        "allow_fallbacks": bool(st.session_state.get(key(f"{path}.allow_fallbacks"))),
+        "data_collection": st.session_state.get(key(f"{path}.data_collection")) or "deny",
+        **({"quantizations": [q for q in quantizations if q]} if any(quantizations) else {}),
     }

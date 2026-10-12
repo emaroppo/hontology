@@ -60,7 +60,7 @@ class RetrievalCalls(ApiBase):
         pool_size: int = 20,
         *,
         document_id: int | None = None,
-        embedding: tuple[str, str] | None = None,
+        embedding: tuple[str, ...] | None = None,
     ) -> dict:
         """Pasted text, or a corpus article, ranked live as *run_id*'s retrieval
         ranks an article, with *embedding* in place of its own if given."""
@@ -89,8 +89,8 @@ class RetrievalCalls(ApiBase):
         *,
         text: str | None = None,
         document_id: int | None = None,
-        embedding: tuple[str, str] | None = None,
-        decoder: tuple[str, str] | None = None,
+        embedding: tuple[str, ...] | None = None,
+        decoder: tuple[str, ...] | None = None,
     ) -> dict:
         """A prompt's retrieval run on one article or pasted text; not stored."""
         return self._request(

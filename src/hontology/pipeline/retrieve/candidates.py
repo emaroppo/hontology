@@ -137,7 +137,7 @@ def build_semantic(
     refresh_embeddings: bool = False,
 ) -> CandidateStats:
     """Rank concepts against each document body by cosine similarity."""
-    provider = embed.get_provider(config["embed_provider"])
+    provider = embed.get_provider(config["embed_provider"], config.get("embed_routing"))
     model = config["embed_model"]
 
     model_id, concept_keys = embed.embed_concepts(

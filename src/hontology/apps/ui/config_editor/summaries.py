@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from hontology.apps.ui.config_editor.state import value
+import streamlit as st
+
+from hontology.apps.ui.config_editor.state import key, value
 from hontology.apps.ui.cutoff import CUTOFF_FIELDS, describe_cutoff
 
 
@@ -30,5 +32,12 @@ def summaries() -> dict[str, str]:
         f"{value('judge.generation.context_window'):,}"
         + (f" · at most {max_tokens:,} tokens" if max_tokens else "")
         + (f" · seed {seed}" if seed is not None else ""),
-        "routing": value("judge.routing.provider") or "no host pinned yet",
+        "routing": _host("judge.routing"),
+        "embed_routing": _host("candidates.embed_routing"),
     }
+
+
+def _host(path: str) -> str:
+    """The pinned host under *path*, which the Models section may not have drawn."""
+    host = st.session_state.get(key(f"{path}.provider"))
+    return f"host {host}" if host else "no host pinned yet"

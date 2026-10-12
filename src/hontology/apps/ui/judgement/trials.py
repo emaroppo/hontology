@@ -31,7 +31,7 @@ class _Asking:
     system: str
     wording: dict
     own: dict[str, str]  # pasted text, when that is the source
-    decoder: tuple[str, str]
+    decoder: tuple[str, ...]
 
     def trial(self, document_id: int | None, *, mine: bool) -> dict:
         return {
@@ -82,7 +82,7 @@ def show_trials(ctx: Context) -> None:
     decoder = model_widgets(
         ctx.api,
         run["id"],
-        {DECODER: [run["provider"], run["model"]]},
+        {DECODER: [run["provider"], run["model"]] + ([run["host"]] if run.get("host") else [])},
         [DECODER],
         "trial",
     )[DECODER]

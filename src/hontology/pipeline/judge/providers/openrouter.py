@@ -70,6 +70,57 @@ def _retry_after(response: httpx.Response | None, attempt: int) -> float:
     return min(60.0, 2.0**attempt)
 
 
+def post(url: str, payload: dict, *, headers: dict, timeout_s: float, sleep=time.sleep) -> dict:
+    """POST to OpenRouter, retrying rate limits and server errors with backoff.
+
+    Shared by chat and embeddings. A refused request (bad parameters, no
+    credit) is not retried; an error inside a 200, from the host, is raised.
+    """
+    last: ProviderError | None = None
+    for attempt in range(MAX_ATTEMPTS):
+        response: httpx.Response | None = None
+        try:
+            response = httpx.post(url, json=payload, headers=headers, timeout=timeout_s)
+            if response.status_code in RETRY_STATUS:
+                last = ProviderError(
+                    f"openrouter returned {response.status_code}: {response.text[:300]}",
+                    retryable=True,
+                )
+            else:
+                response.raise_for_status()
+                body = response.json()
+                if body.get("error"):
+                    error = body["error"]
+                    code = error.get("code") if isinstance(error, dict) else None
+                    raise ProviderError(
+                        f"openrouter error: {str(error)[:300]}",
+                        retryable=code in RETRY_STATUS,
+                    )
+                return body
+        except httpx.TimeoutException:
+            last = ProviderError(f"openrouter timed out after {timeout_s}s", retryable=True)
+        except httpx.HTTPStatusError as exc:
+            raise ProviderError(
+                f"openrouter returned {exc.response.status_code}: {exc.response.text[:300]}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            last = ProviderError(f"openrouter transport error: {exc}", retryable=True)
+        if attempt < MAX_ATTEMPTS - 1:
+            sleep(_retry_after(response, attempt))
+    assert last is not None
+    raise last
+
+
+def check_served_by(body: dict, routing: dict, model: str) -> None:
+    """Refuse a reply from any host but the pinned one."""
+    served_by = body.get("provider")
+    if served_by and served_by.lower() != str(routing["provider"]).lower():
+        raise ProviderError(
+            f"openrouter served {model!r} from {served_by!r}, not the pinned "
+            f"{routing['provider']!r}"
+        )
+
+
 class OpenRouterChatProvider(ChatProvider):
     name = "openrouter"
 
@@ -112,12 +163,7 @@ class OpenRouterChatProvider(ChatProvider):
         started = time.monotonic()
         body = self._post(payload, config.timeout_s)
 
-        served_by = body.get("provider")
-        if served_by and served_by.lower() != str(self.routing["provider"]).lower():
-            raise ProviderError(
-                f"openrouter served {model!r} from {served_by!r}, not the pinned "
-                f"{self.routing['provider']!r}"
-            )
+        check_served_by(body, self.routing, model)
         return read_chat(
             body,
             label="openrouter",
@@ -130,45 +176,13 @@ class OpenRouterChatProvider(ChatProvider):
         )
 
     def _post(self, payload: dict, timeout_s: float) -> dict:
-        last: ProviderError | None = None
-        for attempt in range(MAX_ATTEMPTS):
-            response: httpx.Response | None = None
-            try:
-                response = httpx.post(
-                    f"{self.base_url}/chat/completions",
-                    json=payload,
-                    headers=self._headers(),
-                    timeout=timeout_s,
-                )
-                if response.status_code in RETRY_STATUS:
-                    last = ProviderError(
-                        f"openrouter returned {response.status_code}: {response.text[:300]}",
-                        retryable=True,
-                    )
-                else:
-                    response.raise_for_status()
-                    body = response.json()
-                    # Errors can also come back inside a 200, from the host.
-                    if body.get("error"):
-                        error = body["error"]
-                        code = error.get("code") if isinstance(error, dict) else None
-                        raise ProviderError(
-                            f"openrouter error: {str(error)[:300]}",
-                            retryable=code in RETRY_STATUS,
-                        )
-                    return body
-            except httpx.TimeoutException:
-                last = ProviderError(f"openrouter timed out after {timeout_s}s", retryable=True)
-            except httpx.HTTPStatusError as exc:
-                raise ProviderError(
-                    f"openrouter returned {exc.response.status_code}: {exc.response.text[:300]}"
-                ) from exc
-            except httpx.HTTPError as exc:
-                last = ProviderError(f"openrouter transport error: {exc}", retryable=True)
-            if attempt < MAX_ATTEMPTS - 1:
-                self._sleep(_retry_after(response, attempt))
-        assert last is not None
-        raise last
+        return post(
+            f"{self.base_url}/chat/completions",
+            payload,
+            headers=self._headers(),
+            timeout_s=timeout_s,
+            sleep=self._sleep,
+        )
 
     def health(self) -> str:
         key = get_json(

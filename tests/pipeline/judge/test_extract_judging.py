@@ -314,7 +314,7 @@ def judge_ranked(world, provider, monkeypatch, prompt_id="extract_embed_v1"):
     from hontology.pipeline.retrieve import embed
 
     embedder = FakeEmbedder()
-    monkeypatch.setattr(embed, "get_provider", lambda name: embedder)
+    monkeypatch.setattr(embed, "get_provider", lambda name, routing=None: embedder)
     offered: list[list[str]] = []
     original = provider.complete
 

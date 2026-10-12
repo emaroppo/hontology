@@ -302,7 +302,7 @@ def test_pasted_text_ranks_as_a_stored_article_would(embedded, monkeypatch):
         def dimension(self, model):
             return 3
 
-    monkeypatch.setattr(embed, "get_provider", lambda name, **kw: Provider())
+    monkeypatch.setattr(embed, "get_provider", lambda name, routing=None, **kw: Provider())
     with session_scope() as session:
         before = session.scalar(select(func.count(Embedding.id)))
         run = session.get(Run, embedded["run"])
@@ -337,7 +337,7 @@ def test_the_text_endpoint_cuts_with_the_runs_own_cutoff_by_default(embedded, mo
         def dimension(self, model):
             return 3
 
-    monkeypatch.setattr(embed, "get_provider", lambda name, **kw: Provider())
+    monkeypatch.setattr(embed, "get_provider", lambda name, routing=None, **kw: Provider())
     response = TestClient(app).post(
         "/retrieval/text", json={"run_id": embedded["run"], "text": "Dockworkers stopped work."}
     )
@@ -371,7 +371,7 @@ def test_a_corpus_article_ranks_live_with_another_embedding_model(
         def dimension(self, model):
             return 3
 
-    monkeypatch.setattr(embed, "get_provider", lambda name, **kw: Provider(name))
+    monkeypatch.setattr(embed, "get_provider", lambda name, routing=None, **kw: Provider(name))
     response = TestClient(app).post(
         "/retrieval/text",
         json={

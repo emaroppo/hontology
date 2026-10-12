@@ -25,7 +25,7 @@ def label_mark(value: bool | None) -> str:
 
 
 def show_article(
-    ctx: Context, document_id: int, cutoff: dict, embedding: tuple[str, str]
+    ctx: Context, document_id: int, cutoff: dict, embedding: tuple[str, ...]
 ) -> None:
     run = ctx.run
     assert run is not None
@@ -60,7 +60,7 @@ def show_article(
 
 
 def _show_article_live(
-    ctx: Context, document_id: int, cutoff: dict, embedding: tuple[str, str]
+    ctx: Context, document_id: int, cutoff: dict, embedding: tuple[str, ...]
 ) -> None:
     """A corpus article ranked live with an embedding model other than the run's,
     with its labels from the stored pool beside each class."""
@@ -102,7 +102,7 @@ def _show_article_live(
     )
 
 
-def show_own_text(ctx: Context, cutoff: dict, embedding: tuple[str, str]) -> None:
+def show_own_text(ctx: Context, cutoff: dict, embedding: tuple[str, ...]) -> None:
     run = ctx.run
     assert run is not None
     _, body = shared.own_text("The text is sent to the embedding model, ranked and dropped.")

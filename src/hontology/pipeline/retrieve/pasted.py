@@ -38,18 +38,24 @@ def rank_text(
     cutoff: Cutoff,
     *,
     pool_size: int = 20,
-    embedding: tuple[str, str] | None = None,
+    embedding: tuple[str, ...] | None = None,
 ) -> dict:
     """The leaves ranked against *body* as *run*'s retrieval would rank them.
 
-    *embedding* replaces the version's (provider, model); classes the new model
+    *embedding* replaces the version's (provider, model[, pinned host]); classes the new model
     has not embedded yet are embedded once and cached.
     """
     if not body.strip():
         raise ValueError("there is no text to rank")
     version, source, settings, leaves = version_leaves(session, run)
-    provider_name, model = embedding or (settings["embed_provider"], settings["embed_model"])
-    provider = embed.get_provider(provider_name)
+    if embedding:
+        from hontology.pipeline import catalog
+
+        provider_name, model, routing = catalog.picked(embedding)
+    else:
+        provider_name, model = settings["embed_provider"], settings["embed_model"]
+        routing = settings.get("embed_routing")
+    provider = embed.get_provider(provider_name, routing)
     fields = settings["concept_fields"]
     items = leaf_texts(leaves, fields)
     # The run's own class embeddings: cached as usual, computed if missing.

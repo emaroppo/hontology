@@ -87,6 +87,9 @@ def retrieval_version(session: Session, run: Run) -> dict:
         "concept_fields": candidates["concept_fields"],
         "embed_body_limit": config["common"]["embed_body_limit"],
     }
+    if candidates.get("embed_routing"):
+        # Only where present, so versions without a hosted embedder keep their hash.
+        settings["embed_routing"] = candidates["embed_routing"]
     leaves = leaf_wording(session, source)
     code = (source.manifest or {}).get("versions", {}).get("retrieval_code")
     code = code or retrieval_code_hash()

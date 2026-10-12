@@ -125,7 +125,7 @@ def show_try(ctx: Context) -> None:
 
 def _models(
     ctx: Context, run: dict, prompt_id: str | None, *, ranked_live: bool
-) -> dict[str, tuple[str, str]]:
+) -> dict[str, tuple[str, ...]]:
     """The models to try with, seeded from the run's: the embedding model, and
     the decoder when a strategy asks one."""
     own = {kind: run["models"][kind] for kind in (EMBEDDING, DECODER)}

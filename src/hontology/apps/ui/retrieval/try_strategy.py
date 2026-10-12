@@ -40,7 +40,7 @@ def show_strategy(
     ctx: Context,
     prompt_id: str,
     cutoff: dict,
-    models: dict[str, tuple[str, str]],
+    models: dict[str, tuple[str, ...]],
     *,
     document_id: int | None = None,
 ) -> None:

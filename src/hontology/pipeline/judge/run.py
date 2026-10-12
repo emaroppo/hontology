@@ -166,8 +166,11 @@ def judge_run(
             )
         embedder = None
         if template.leaf_top_k is not None:
-            embed_provider = config.get("candidates", {}).get("embed_provider", "ollama")
-            embedder = embed.get_provider(embed_provider)
+            candidates_config = config.get("candidates", {})
+            embedder = embed.get_provider(
+                candidates_config.get("embed_provider", "ollama"),
+                candidates_config.get("embed_routing"),
+            )
         return judge_extract(
             judging,
             ontology_id=run.ontology_id,

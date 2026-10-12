@@ -125,7 +125,8 @@ def normalize(config: dict) -> dict:
             f"unknown judge.aggregation {judge['aggregation']!r}; "
             f"expected one of {AGGREGATIONS}"
         )
-    _check_routing(judge)
+    _check_routing(judge, "provider", "routing", "judge.routing")
+    _check_routing(candidates, "embed_provider", "embed_routing", "candidates.embed_routing")
 
     # A single body_limit is the usual knob; the per-stage ones override it.
     base = common["body_limit"]
@@ -146,30 +147,29 @@ def normalize(config: dict) -> dict:
 ROUTING_KEYS = {"provider", "quantizations", "allow_fallbacks", "data_collection"}
 
 
-def _check_routing(judge: dict) -> None:
-    """A hosted judge must say which host serves it; nothing else may route.
+def _check_routing(section: dict, provider_key: str, routing_key: str, label: str) -> None:
+    """A hosted model, decoder or embedding, must say which host serves it;
+    nothing else may route.
 
     Routing is behavior: hosts of one model run it at different precisions, and
-    their answers can differ. It is absent from configs that do not use it, so
-    their hashes are unchanged.
+    their answers, or vectors, can differ. It is absent from configs that do not
+    use it, so their hashes are unchanged.
     """
-    routing = judge.get("routing")
-    if judge["provider"] == "openrouter":
+    routing = section.get(routing_key)
+    if section[provider_key] == "openrouter":
         if not routing or not routing.get("provider"):
             raise ConfigError(
-                "judge.routing.provider is required for openrouter: pin the host, "
+                f"{label}.provider is required for openrouter: pin the host, "
                 "or calls in one run may be served by different setups"
             )
     elif routing is not None:
-        raise ConfigError(
-            f"judge.routing applies only to openrouter, not {judge['provider']!r}"
-        )
+        raise ConfigError(f"{label} applies only to openrouter, not {section[provider_key]!r}")
     if routing is not None:
         unknown = set(routing) - ROUTING_KEYS
         if unknown:
-            raise ConfigError(f"unknown judge.routing keys: {sorted(unknown)}")
+            raise ConfigError(f"unknown {label} keys: {sorted(unknown)}")
         if routing.get("data_collection", "deny") not in ("deny", "allow"):
-            raise ConfigError("judge.routing.data_collection must be deny or allow")
+            raise ConfigError(f"{label}.data_collection must be deny or allow")
 
 
 def stable_hash(payload: Any, n: int = 12) -> str:

@@ -5,6 +5,10 @@ labelled, each picked on its own: embeddings may come from a local Ollama and
 answers from a llama.cpp server elsewhere. The models offered are the ones the
 provider serves now; one it cannot be asked about is typed instead, and a
 value already chosen stays on offer even when the provider no longer lists it.
+
+A hosted provider (OpenRouter) also needs the host pinned, since hosts of one
+model run it at different precisions; the widget then asks for it, and what is
+picked is (provider, model, host) rather than (provider, model).
 """
 
 from __future__ import annotations
@@ -14,12 +18,16 @@ import streamlit as st
 from hontology.apps.ui.client import Api, ApiError
 
 EMBEDDING, DECODER = "embedding", "decoder"
+HOSTED = "openrouter"
 LABELS = {EMBEDDING: "Embedding model", DECODER: "Decoder model"}
 HELPS = {
     EMBEDDING: "Ranks the classes against an article: retrieval's first step.",
     DECODER: "Answers the judge's questions, and routes or extracts events where "
     "the prompt does.",
 }
+
+Picked = tuple[str, ...]
+NAMES = ("provider", "model", "host")
 
 
 def _same(a: str, b: str) -> bool:
@@ -35,16 +43,18 @@ def _served(_api: Api, provider: str, kind: str) -> tuple[list[str], str | None]
 
 
 def model_picker(
-    api: Api, kind: str, providers: list[str], provider_key: str, model_key: str
-) -> tuple[str, str]:
-    """Draw the widget; returns the provider and model chosen.
+    api: Api, kind: str, providers: list[str], provider_key: str, model_key: str, host_key: str
+) -> Picked:
+    """Draw the widget; returns (provider, model), or (provider, model, host)
+    for a hosted provider.
 
-    *provider_key* and *model_key* are the session-state keys holding the two
-    values, so a form can seed them and read them back.
+    The keys are the session-state keys holding the values, so a form can seed
+    them and read them back.
     """
     with st.container(border=True):
         st.markdown(f"**{LABELS[kind]}**", help=HELPS[kind])
-        cols = st.columns([1, 2])
+        provider = st.session_state.get(provider_key)
+        cols = st.columns([3, 4, 2] if provider == HOSTED else [1, 2])
         provider = cols[0].selectbox("Provider", providers, key=provider_key)
         served, error = _served(api, provider, kind)
         current = st.session_state.get(model_key) or ""
@@ -69,7 +79,19 @@ def model_picker(
                 key=model_key,
                 format_func=lambda m: m if m in served else f"{m} (not served now)",
             )
-    return provider, st.session_state.get(model_key) or ""
+        model = st.session_state.get(model_key) or ""
+        if provider != HOSTED:
+            return provider, model
+        # The provider is read before its widget is drawn, to make room for the
+        # host; Streamlit has already applied a change of provider by then.
+        (cols[2] if len(cols) == 3 else st).text_input(
+            "Host",
+            key=host_key,
+            placeholder="required",
+            help="The company serving the model, pinned so every call in a run is "
+            "served the same way; a reply from another host is refused.",
+        )
+    return provider, model, (st.session_state.get(host_key) or "").strip()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -80,9 +102,9 @@ def _providers(_api: Api) -> dict[str, list[str]]:
 
 def model_widgets(
     api: Api, run_id: int, own: dict[str, list[str]], kinds: list[str], prefix: str
-) -> dict[str, tuple[str, str]]:
+) -> dict[str, Picked]:
     """The labelled widgets for *kinds*, side by side, each seeded from *own*,
-    the run's (provider, model) per kind; returns what is picked per kind.
+    the run's (provider, model[, host]) per kind; returns what is picked per kind.
 
     Choosing another run starts again from its models; a widget hidden for a
     while comes back with the run's model rather than an empty one.
@@ -90,8 +112,8 @@ def model_widgets(
     marker = f"{prefix}:models_for"
     fresh = st.session_state.get(marker) != run_id
     st.session_state[marker] = run_id
-    for kind, (provider, model) in own.items():
-        for name, seed in (("provider", provider), ("model", model)):
+    for kind, seeds in own.items():
+        for name, seed in zip(("provider", "model", "host"), [*seeds, "", ""][:3], strict=True):
             if fresh or f"{prefix}:{kind}:{name}" not in st.session_state:
                 st.session_state[f"{prefix}:{kind}:{name}"] = seed
     try:
@@ -103,15 +125,16 @@ def model_widgets(
     for column, kind in zip(st.columns(len(kinds)), kinds, strict=True):
         with column:
             picked[kind] = model_picker(
-                api,
-                kind,
-                providers[kind],
-                f"{prefix}:{kind}:provider",
-                f"{prefix}:{kind}:model",
+                api, kind, providers[kind], *(f"{prefix}:{kind}:{n}" for n in NAMES)
             )
     return picked
 
 
-def is_own(picked: tuple[str, str], own: list[str]) -> bool:
-    """Whether *picked* is the run's own (provider, model)."""
-    return picked[0] == own[0] and _same(picked[1], own[1])
+def is_own(picked: Picked, own: list[str]) -> bool:
+    """Whether *picked* is the run's own (provider, model[, host])."""
+    return (
+        len(picked) == len(own)
+        and picked[0] == own[0]
+        and _same(picked[1], own[1])
+        and picked[2:] == tuple(own[2:])
+    )

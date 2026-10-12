@@ -6,7 +6,7 @@ from typing import Protocol, runtime_checkable
 
 import httpx
 
-from hontology.pipeline.judge.providers import llamacpp
+from hontology.pipeline.judge.providers import llamacpp, openrouter
 from hontology.pipeline.judge.providers.base import ProviderError
 
 
@@ -138,3 +138,56 @@ class LlamaCppEmbeddingProvider(_BatchedEmbedder):
         # The API carries an index per vector; order by it rather than trust
         # the response order.
         return [item["embedding"] for item in sorted(data, key=lambda d: d["index"])]
+
+
+class OpenRouterEmbeddingProvider(_BatchedEmbedder):
+    """``/embeddings`` on OpenRouter, from one pinned host.
+
+    Hosts of one embedding model can run it at different precisions, and their
+    vectors differ, so the host is pinned as for the hosted judge and a reply
+    from any other host is refused. The pinned host is also part of the
+    provider's name, so vectors from two hosts never share a cache entry.
+    """
+
+    def __init__(
+        self,
+        api_key: str | None,
+        routing: dict | None,
+        base_url: str = openrouter.DEFAULT_BASE_URL,
+        *,
+        batch_size: int = 64,
+        timeout: float = 120.0,
+        sleep=None,
+    ) -> None:
+        if not api_key:
+            raise ProviderError("openrouter needs HONTOLOGY_OPENROUTER_API_KEY")
+        if not routing or not routing.get("provider"):
+            raise ProviderError(
+                "openrouter embeddings need candidates.embed_routing.provider: pin the host"
+            )
+        self.api_key, self.routing = api_key, routing
+        self.base_url = base_url.rstrip("/")
+        self.name = f"openrouter@{str(routing['provider']).lower()}"
+        self.batch_size, self.timeout = batch_size, timeout
+        self._sleep = sleep
+
+    def _embed_chunk(self, chunk: list[str], model: str) -> list[list[float]]:
+        body = openrouter.post(
+            f"{self.base_url}/embeddings",
+            {
+                "model": model,
+                "input": chunk,
+                "provider": openrouter.routing_payload(self.routing),
+            },
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            timeout_s=self.timeout,
+            **({"sleep": self._sleep} if self._sleep else {}),
+        )
+        openrouter.check_served_by(body, self.routing, model)
+        data = body.get("data") or []
+        if len(data) != len(chunk):
+            raise ProviderError(
+                f"openrouter embed: sent {len(chunk)} texts to {model!r}, got "
+                f"{len(data)} vectors back"
+            )
+        return [item["embedding"] for item in sorted(data, key=lambda d: d.get("index", 0))]

@@ -64,13 +64,15 @@ def try_strategy(
     *,
     text: str | None = None,
     document_id: int | None = None,
-    embedding: tuple[str, str] | None = None,
-    decoder: tuple[str, str] | None = None,
+    embedding: tuple[str, ...] | None = None,
+    decoder: tuple[str, ...] | None = None,
 ) -> dict:
     """Run *prompt_id*'s retrieval on one article or pasted text, and describe it.
 
-    *embedding* and *decoder* replace the run's (provider, model) for each.
+    *embedding* and *decoder* replace the run's (provider, model) for each, with
+    the pinned host as a third value for a hosted provider.
     """
+    from hontology.pipeline import catalog
     from hontology.pipeline.judge.run import get_provider
 
     template = prompts.get(prompt_id)
@@ -78,7 +80,7 @@ def try_strategy(
     judge_config, body_limit = config["judge"], config["common"]["judge_body_limit"]
     candidates = config.get("candidates", {})
     if decoder is not None:
-        judge_config = judge_config | {"provider": decoder[0], "model": decoder[1]}
+        judge_config = catalog.with_decoder(judge_config, decoder)
     if text is not None:
         if not text.strip():
             raise ValueError("there is no text to retrieve for")
@@ -108,10 +110,13 @@ def try_strategy(
     ranker = None
     if template.leaf_top_k is not None:
         assert template.leaf_embed_model is not None
+        if embedding:
+            embed_provider, _, embed_routing = catalog.picked(embedding)
+        else:
+            embed_provider = candidates.get("embed_provider", "ollama")
+            embed_routing = candidates.get("embed_routing")
         ranker = strategies.LeafRanker(
-            embed.get_provider(
-                embedding[0] if embedding else candidates.get("embed_provider", "ollama")
-            ),
+            embed.get_provider(embed_provider, embed_routing),
             template.leaf_embed_model,
             model.concepts(sorted(hierarchy.leaves(session, run.ontology_id))),
             template.leaf_top_k,

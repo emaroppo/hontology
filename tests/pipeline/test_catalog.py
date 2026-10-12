@@ -52,7 +52,7 @@ def test_each_kind_of_model_is_listed_from_its_own_host(hosts):
 
 def test_a_provider_that_serves_no_such_kind_is_refused(hosts):
     with pytest.raises(ValueError):
-        catalog.list_models("openrouter", catalog.EMBEDDING)
+        catalog.list_models("ollama", "reranker")
 
 
 def test_the_api_says_why_a_provider_could_not_list(hosts):
@@ -61,3 +61,39 @@ def test_the_api_says_why_a_provider_could_not_list(hosts):
     assert ok.status_code == 200 and "gemma3:4b" in ok.json()
     down = client.get("/runs/models", params={"provider": "openrouter", "kind": "decoder"})
     assert down.status_code == 503 and "unreachable" in down.json()["detail"]
+
+
+def test_openrouter_lists_embedding_models_apart_from_chat_models(monkeypatch, hosts):
+    asked: list[str] = []
+
+    def get_json(url, **kwargs):
+        asked.append(url)
+        return {"data": [{"id": "qwen/qwen3-embedding-8b"}]}
+
+    monkeypatch.setattr(catalog, "get_json", get_json)
+    assert catalog.list_models("openrouter", catalog.EMBEDDING) == ["qwen/qwen3-embedding-8b"]
+    catalog.list_models("openrouter", catalog.DECODER)
+    assert asked == [
+        "https://openrouter.test/api/v1/embeddings/models",
+        "https://openrouter.test/api/v1/models",
+    ]
+
+
+def test_a_picked_model_carries_its_pinned_host():
+    assert catalog.picked(["openrouter", "m", "DeepInfra"]) == (
+        "openrouter",
+        "m",
+        {"provider": "DeepInfra"},
+    )
+    assert catalog.picked(["ollama", "m"]) == ("ollama", "m", None)
+    judge = {
+        "provider": "openrouter",
+        "model": "x",
+        "routing": {"provider": "A"},
+        "think": False,
+    }
+    assert catalog.with_decoder(judge, ["llamacpp", "y"]) == {
+        "provider": "llamacpp",
+        "model": "y",
+        "think": False,
+    }
