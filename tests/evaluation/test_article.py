@@ -13,6 +13,7 @@ from hontology.evaluation.article import bootstrap, sample_design, verdicts
 from hontology.evaluation.labels import sample
 from hontology.evaluation.labels.document_labels import import_document_labels
 from hontology.ontology import service
+from hontology.pipeline.retrieve.strategies import store
 
 
 def docs(n: int, window: str, band: str, start: int = 0) -> list[sample.SampledDocument]:
@@ -193,7 +194,6 @@ def test_predictions_treat_errors_and_absences_as_no():
         session.flush()
         keys = {(document.id, concept.id), (document.id, other.id)}
         assert verdicts.predictions(session, run.id, keys) == {key: False for key in keys}
-        assert verdicts.judged_keys(session, run.id, keys) == set()
 
 
 @pytest.mark.requires_db
@@ -359,12 +359,13 @@ def test_one_run_is_scored_on_the_sample_with_its_mistakes():
                 matched=matched,
                 ontology_id=ontology.id,
             )
-        # Right on the first document; on the second, Riot wrongly yes and Flood never judged.
+        # Right on the first document; on the second, Riot wrongly yes and Flood never shown.
         for doc_id, concept_id, matched in (
             (first, riot, True),
             (first, flood, False),
             (second, riot, True),
         ):
+            store.record_offer(session, run.id, doc_id, [concept_id])
             session.add(
                 Verdict(
                     run_id=run.id,

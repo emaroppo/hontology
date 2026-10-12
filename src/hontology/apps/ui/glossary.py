@@ -39,16 +39,28 @@ GLOSSARY: dict[str, str] = {
         "this number is not a measurement."
     ),
     # --- retrieval -----------------------------------------------------------
+    "retrieved": (
+        "A pair is retrieved if its class was shown to a deciding judge call for "
+        "the article, in every prompt mode. The embedding cutoff, routing and "
+        "event extraction are how a class comes to be shown; a class they never "
+        "show is retrieval's miss, never the judge's."
+    ),
+    "retrieval_recall": (
+        "Of the labelled positives on the articles a run ranked, the share it "
+        "showed its judge. On those positives, end-to-end recall is retrieval "
+        "recall times the judge's recall."
+    ),
     "retrieval_precision": (
-        "Of the candidates retrieval proposed, the share that carry a positive "
-        "label. Measured **only over labelled candidates** — see coverage."
+        "Of the pairs a run showed its judge, the share that carry a positive "
+        "label. Measured **only over labelled pairs** — see coverage."
     ),
     "coverage": (
-        "The share of proposed candidates that carry any label at all, and so "
-        "the denominator retrieval precision is computed over. An unlabelled "
-        "candidate is *unknown*, never counted as wrong. Low coverage means the "
-        "precision figure above it is based on very little."
+        "The share of shown pairs that carry any label at all, and so the "
+        "denominator retrieval precision is computed over. An unlabelled pair is "
+        "*unknown*, never counted as wrong. Low coverage means the precision "
+        "figure above it is based on very little."
     ),
+    # The embedding ranking, retrieval's first step, over its pre-cutoff pool.
     "recall_at_k": (
         "Of the known positive pairs, the share whose concept appeared in the "
         "top k of its document's pre-cutoff pool. Measures *ranking*, "

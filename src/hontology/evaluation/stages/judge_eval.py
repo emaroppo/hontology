@@ -1,26 +1,22 @@
-"""A judge version scored on what it was given, across the runs that used it.
+"""A judge version scored on what it was shown, across the runs that used it.
 
-End-to-end recall mixes two failures: retrieval never offered the judge a true
-match, or the judge saw it and said no. Only the second is the judge's, so a
-judge is scored on the pairs it was responsible for:
+End-to-end recall mixes two failures: retrieval never showed the judge a true
+match, or the judge was shown it and said no. Only the second is the judge's,
+so a judge is scored on the labelled pairs it was shown (`evaluation.shown`),
+in every prompt mode alike:
 
-- **Per-pair and batched prompts** answer exactly the pairs retrieval selected,
-  so a judge is responsible for the labelled pairs it returned a verdict on.
-- **Top-down prompts** (hierarchical, extraction) choose for themselves which
-  leaves to descend to, and write no row for a leaf they never reached. For
-  them, every labelled leaf of every article they processed counts, an
-  unreached leaf as "no"; otherwise a miss at the top of the hierarchy would
-  vanish from their recall.
+- **Per-pair and batched prompts** are shown the pairs their selection kept.
+- **Top-down prompts** are shown the leaves routing or extraction offered. A
+  leaf they never reached was not shown; it is retrieval's miss, not theirs.
+- **A failed call counts as "no".** The pair was shown; liveness reports it.
 
-Those two are not comparable across prompt styles: a top-down judge answers for
-true matches retrieval never offered. The **retrieved** scope scores every judge
-on the same footing instead: only the pairs retrieval selected (in the run whose
-candidates it used), and of those only the ones it answered or, top-down, the
-ones on articles it processed. Judges sharing a retrieval version are then
-compared on the same pairs.
+Judges are then compared on one footing whatever their prompt mode, and two
+runs sharing a retrieval key are compared on the very same pairs.
 
 Runs with the same judge version are pooled; a pair judged by several of them
-is counted once, from the newest run.
+is counted once, from the newest run. A run without a shown record (made
+before the record existed, and not yet backfilled) contributes no pairs, and
+says so.
 """
 
 from __future__ import annotations
@@ -28,12 +24,11 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hontology.db.models import Candidate, Run, Verdict
+from hontology.db.models import Run, Verdict
+from hontology.evaluation import shown as shown_module
 from hontology.evaluation.article.bootstrap import document_bootstrap
 from hontology.evaluation.metrics.calibration import calibration_bins
 from hontology.ontology import hierarchy
-from hontology.pipeline.judge import prompts
-from hontology.pipeline.runs import config as run_config
 from hontology.pipeline.runs import versions
 
 Key = tuple[int, int]
@@ -57,50 +52,24 @@ def list_versions(session: Session, ontology_id: int) -> list[dict]:
 
 
 def _given(
-    session: Session, run: Run, truth: dict[Key, bool], leaves: set[int], scope: str
+    session: Session, run: Run, truth: dict[Key, bool]
 ) -> tuple[dict[Key, bool], dict[Key, float]]:
-    """The labelled pairs *run*'s judge is scored on, with its answers, and the
+    """The labelled pairs *run*'s judge was shown, with its answers, and the
     confidence it stated where it actually answered."""
     documents = {doc for doc, _ in truth}
-    verdicts = {
-        (v.document_id, v.concept_id): v
+    shown = shown_module.shown_pairs(session, run.id, documents) & set(truth)
+    given = shown_module.judge_answers(session, run.id, shown)
+    confidence = {
+        (v.document_id, v.concept_id): stated
         for v in session.scalars(
             select(Verdict).where(
-                Verdict.run_id == run.id, Verdict.document_id.in_(sorted(documents))
+                Verdict.run_id == run.id,
+                Verdict.error.is_(None),
+                Verdict.matched.is_not(None),
+                Verdict.document_id.in_(sorted(documents)),
             )
         )
-    }
-    mode = prompts.get(run_config.normalize(run.config or {})["judge"]["prompt_id"]).mode
-    answer = {
-        key: bool(v.matched)
-        for key, v in verdicts.items()
-        if v.error is None and v.matched is not None
-    }
-    if mode in prompts.TOP_DOWN_MODES:
-        processed = {doc for doc, _ in verdicts}
-        given = {
-            key: answer.get(key, False)
-            for key in truth
-            if key[0] in processed and key[1] in leaves
-        }
-    else:
-        given = {key: answer[key] for key in truth if key in answer}
-    if scope == "retrieved":
-        source = versions.source_run(session, run)
-        selected = set(
-            session.execute(
-                select(Candidate.document_id, Candidate.concept_id).where(
-                    Candidate.run_id == source.id,
-                    Candidate.selected.is_(True),
-                    Candidate.document_id.in_(sorted(documents)),
-                )
-            ).tuples()
-        )
-        given = {key: matched for key, matched in given.items() if key in selected}
-    confidence = {
-        key: stated
-        for key in given
-        if key in answer and (stated := verdicts[key].confidence) is not None
+        if (v.document_id, v.concept_id) in shown and (stated := v.confidence) is not None
     }
     return given, confidence
 
@@ -110,10 +79,9 @@ def evaluate(
     run_ids: list[int],
     truth: dict[Key, bool],
     *,
-    scope: str = "responsible",
     seed: int = 0,
 ) -> dict:
-    """Per-run and pooled precision and recall on the pairs each judge was given."""
+    """Per-run and pooled precision and recall on the pairs each judge was shown."""
     runs = [
         run for run_id in sorted(run_ids, reverse=True) if (run := session.get(Run, run_id))
     ]
@@ -126,16 +94,23 @@ def evaluate(
     pooled: dict[Key, bool] = {}
     stated: dict[Key, float] = {}
     for run in runs:  # newest first, so a pair keeps the newest run's answer
-        given, confidence = _given(session, run, truth, leaves, scope)
+        given, confidence = _given(session, run, truth)
         scores = document_bootstrap({k: truth[k] for k in given}, given, seed=seed)
-        per_run.append({"run_id": run.id, "name": run.name, "pairs": len(given), **scores})
+        per_run.append(
+            {
+                "run_id": run.id,
+                "name": run.name,
+                "pairs": len(given),
+                "shown_record": shown_module.has_record(session, run.id),
+                **scores,
+            }
+        )
         for key, matched in given.items():
             if key not in pooled:
                 pooled[key] = matched
                 if key in confidence:
                     stated[key] = confidence[key]
     return {
-        "scope": scope,
         "truth_pairs": len(truth),
         "pooled": {
             "pairs": len(pooled),

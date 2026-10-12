@@ -14,13 +14,23 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
-from hontology.db.models import Candidate, Document, FeedEvent, FeedSlice, Locus, Run, Verdict
+from hontology.db.models import (
+    ArticleRetrieval,
+    Candidate,
+    Document,
+    FeedEvent,
+    FeedSlice,
+    Locus,
+    Run,
+    Verdict,
+)
 from hontology.db.session import session_scope
 from hontology.evaluation.labels import bank
 from hontology.evaluation.outputs import detection_rows
 from hontology.evaluation.outputs import detections as det
 from hontology.evaluation.outputs import funnel as funnel_module
 from hontology.ontology import service
+from hontology.pipeline.retrieve.strategies import store
 
 pytestmark = pytest.mark.requires_db
 
@@ -92,8 +102,9 @@ def run_with_output():
                     )
                 )
 
-        # Two documents match Riot; the other two do not.
+        # Each document was shown Riot; two match it, the other two do not.
         for index, document_id in enumerate(docs):
+            store.record_offer(session, run.id, document_id, [riot.id])
             session.add(
                 Verdict(
                     run_id=run.id,
@@ -241,12 +252,25 @@ class TestFunnel:
         assert result["documents"][0]["of_previous"] is None
         assert result["pairs"][0]["of_previous"] is None
 
-    def test_unjudged_selected_pairs_are_surfaced(self, run_with_output):
+    def test_articles_never_retrieved_for_are_surfaced(self, run_with_output):
         """A run that stopped early looks identical to a working one otherwise."""
         with session_scope() as session:
             result = funnel_module.funnel(session, run_with_output["run"])
-        # 4 selected, 4 judged, so nothing outstanding.
-        assert result["unjudged_selected"] == 0
+            # 4 selected, 4 retrieved for, so nothing outstanding.
+            assert result["unretrieved_documents"] == 0
+            assert [s["count"] for s in result["pairs"]] == [8, 4, 4, 4, 2]
+            for retrieval in session.scalars(
+                select(ArticleRetrieval).where(
+                    ArticleRetrieval.run_id == run_with_output["run"],
+                    ArticleRetrieval.document_id == run_with_output["docs"][0],
+                )
+            ):
+                session.delete(retrieval)
+            session.flush()
+            assert (
+                funnel_module.funnel(session, run_with_output["run"])["unretrieved_documents"]
+                == 1
+            )
 
     def test_errored_verdicts_are_counted_separately(self, run_with_output):
         with session_scope() as session:

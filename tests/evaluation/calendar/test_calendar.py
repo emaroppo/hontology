@@ -20,12 +20,14 @@ from hontology.db.models import (
     FeedEvent,
     FeedSlice,
     Run,
+    ShownLeaf,
     Verdict,
 )
 from hontology.db.session import session_scope
 from hontology.evaluation.calendar import events, score
 from hontology.ontology import service
 from hontology.pipeline.ingest.codes.loci import by_fips
+from hontology.pipeline.retrieve.strategies import store
 
 HEADER = "id,kind,concept,country_iso3,date,end_date,precursor_of,description,sources,notes\n"
 
@@ -194,6 +196,7 @@ class TestEvaluate:
                 (away, closure.id, True),
                 (seen, warning.id, True),
             ):
+                store.record_offer(session, run.id, doc_id, [concept_id])
                 session.add(
                     Verdict(
                         run_id=run.id,
@@ -400,30 +403,30 @@ class TestEvaluate:
             reviews = list(session.scalars(select(CalendarReview)))
         assert [(r.confirmed, r.note) for r in reviews] == [(True, "second look")]
 
-    def test_a_hierarchical_run_counts_a_leaf_it_descended_to(self, world):
-        """The hierarchical arm reaches a concept by descending, not because
-        retrieval selected it; scored as flat, its match would be invisible."""
+    def test_a_leaf_never_shown_is_lost_at_retrieval_in_any_mode(self, world):
+        """Retrieved means shown to the judge: a matched verdict on a leaf the
+        run has no record of showing is retrieval's miss, flat or top-down."""
         run_id, _ = world
         with session_scope() as session:
+            seen = session.scalar(
+                select(Document.id).where(Document.url == "https://cal.test/seen")
+            )
             storm = session.scalar(
                 select(Verdict.concept_id).where(
                     Verdict.matched.is_(True),
                     Verdict.run_id == run_id,
-                    Verdict.document_id
-                    == session.scalar(
-                        select(Document.id).where(Document.url == "https://cal.test/seen")
-                    ),
+                    Verdict.document_id == seen,
                 )
             )
-            for candidate in session.scalars(
-                select(Candidate).where(
-                    Candidate.run_id == run_id, Candidate.concept_id == storm
+            for leaf in session.scalars(
+                select(ShownLeaf).where(
+                    ShownLeaf.run_id == run_id, ShownLeaf.concept_id == storm
                 )
             ):
-                session.delete(candidate)
+                session.delete(leaf)
         flat = {r["id"]: r for r in self._result(world)["entries"]}
         assert flat["storm"]["lost_at"] == "retrieved"
 
-        self._set_run(run_id, config={"judge": {"prompt_id": "hier_batch_v1"}})
+        self._set_run(run_id, config={"judge": {"prompt_id": "hier_batch_v2"}})
         hier = {r["id"]: r for r in self._result(world)["entries"]}
-        assert hier["storm"]["detected"] is True
+        assert hier["storm"]["lost_at"] == "retrieved"

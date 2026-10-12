@@ -21,11 +21,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from hontology.db.lookups import count, get_run
-from hontology.db.models import Candidate, Document, Verdict
+from hontology.db.models import ArticleRetrieval, Candidate, Document, Verdict
+from hontology.evaluation import shown as shown_module
 
 
 @dataclass
@@ -48,18 +49,20 @@ def funnel(session: Session, run_id: int) -> dict:
     """Document and pair counts at each stage of one run."""
     run = get_run(session, run_id)
     documents = _document_steps(session, run_id)
-    pairs = _pair_steps(session, run_id)
-    selected, judged = pairs[1].count, pairs[2].count
-    errored = count(session, Verdict.id, Verdict.run_id == run_id, Verdict.error.is_not(None))
+    shown = shown_module.shown_pairs(session, run_id)
+    pairs = _pair_steps(session, run_id, shown)
+    recorded = shown_module.has_record(session, run_id)
     return {
         "run_id": run_id,
         "run_name": run.name,
         "documents": _render(documents),
         "pairs": _render(pairs),
-        "errored_verdicts": errored,
-        # A judged count short of selected, with no errors to explain it, means
-        # the run stopped early rather than the model failing.
-        "unjudged_selected": max(0, selected - judged - errored),
+        "shown_record": recorded,
+        # Shown pairs whose call failed: they count as a no from the judge.
+        "errored_verdicts": pairs[2].count - pairs[3].count,
+        # Articles the cutoff let through that were never retrieved for: the
+        # run stopped early, or a budget stopped it, rather than the model failing.
+        "unretrieved_documents": _unretrieved(session, run_id) if recorded else None,
     }
 
 
@@ -92,26 +95,14 @@ def _document_steps(session: Session, run_id: int) -> list[Step]:
     ]
 
 
-def _pair_steps(session: Session, run_id: int) -> list[Step]:
-    """Pool, selected, judged and matched, in that order."""
+def _pair_steps(session: Session, run_id: int, shown: set) -> list[Step]:
+    """Pool, selected, shown, judged and matched, in that order."""
     pool = count(session, Candidate.id, Candidate.run_id == run_id)
     selected = count(
         session, Candidate.id, Candidate.run_id == run_id, Candidate.selected.is_(True)
     )
-    judged = count(
-        session,
-        Verdict.id,
-        Verdict.run_id == run_id,
-        Verdict.error.is_(None),
-        Verdict.matched.is_not(None),
-    )
-    matched = count(
-        session,
-        Verdict.id,
-        Verdict.run_id == run_id,
-        Verdict.matched.is_(True),
-        Verdict.error.is_(None),
-    )
+    usable = _usable(session, run_id, shown)
+    judged, matched = len(usable), sum(usable.values())
     return [
         Step("candidate pairs (pool)", pool, "every concept ranked per document"),
         Step(
@@ -119,7 +110,12 @@ def _pair_steps(session: Session, run_id: int) -> list[Step]:
             selected,
             "the cutoff is supposed to discard most of the pool",
         ),
-        Step("judged", judged, "pairs the model returned a usable verdict for"),
+        Step(
+            "shown to the judge",
+            len(shown),
+            "what each deciding call was shown: retrieved, in every prompt mode",
+        ),
+        Step("judged", judged, "shown pairs the model returned a usable verdict for"),
         Step(
             "matched",
             matched,
@@ -156,14 +152,43 @@ def format_funnel(result: dict) -> str:
                 lines.append(f"  {'':<26} {'':>8}  {step['note']}")
         lines.append("")
 
+    if not result["shown_record"]:
+        lines.append(
+            "! no record of what this run showed its judge: it was made before the "
+            "record existed, so the shown, judged and matched steps are empty"
+        )
     if result["errored_verdicts"]:
         lines.append(
-            f"! {result['errored_verdicts']} verdict(s) errored — these leave the "
-            "denominator without moving any rate"
+            f"! {result['errored_verdicts']} shown pair(s) got no usable verdict — "
+            "they count as a no, and liveness says why"
         )
-    if result["unjudged_selected"]:
+    if result["unretrieved_documents"]:
         lines.append(
-            f"! {result['unjudged_selected']} selected pair(s) were never judged — "
-            "the run stopped early rather than the model failing"
+            f"! {result['unretrieved_documents']} article(s) the cutoff let through were "
+            "never retrieved for — the run stopped early rather than the model failing"
         )
     return "\n".join(lines)
+
+
+def _usable(session: Session, run_id: int, shown: set) -> dict[tuple[int, int], bool]:
+    """Each shown pair with a usable verdict, and whether it matched."""
+    rows = session.execute(
+        select(Verdict.document_id, Verdict.concept_id, Verdict.matched).where(
+            Verdict.run_id == run_id,
+            Verdict.error.is_(None),
+            Verdict.matched.is_not(None),
+        )
+    )
+    return {(d, c): bool(m) for d, c, m in rows if (d, c) in shown}
+
+
+def _unretrieved(session: Session, run_id: int) -> int:
+    """Articles with a selected candidate but no stored retrieval."""
+    retrieved = select(ArticleRetrieval.document_id).where(ArticleRetrieval.run_id == run_id)
+    return count(
+        session,
+        func.distinct(Candidate.document_id),
+        Candidate.run_id == run_id,
+        Candidate.selected.is_(True),
+        Candidate.document_id.not_in(retrieved),
+    )

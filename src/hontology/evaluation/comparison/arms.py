@@ -22,9 +22,10 @@ from sqlalchemy.orm import Session
 
 from hontology.db.lookups import get_run
 from hontology.db.models import Run
+from hontology.evaluation import shown
 from hontology.evaluation.article.bootstrap import document_bootstrap, paired_document_bootstrap
 from hontology.evaluation.article.sample_design import sample_status, window_weights
-from hontology.evaluation.article.verdicts import judged_keys, predictions
+from hontology.evaluation.article.verdicts import predictions
 from hontology.evaluation.calendar import events, score
 from hontology.evaluation.calendar.entry_score import judging_cost
 from hontology.evaluation.comparison.hierarchy_diagnostics import hierarchy_diagnostics
@@ -162,7 +163,9 @@ def _article_scores(
     *,
     judge_only: bool = True,
 ) -> dict:
-    judged = judged_keys(session, run_id, set(truth))
+    # The judge is scored on the labelled pairs it was shown (`evaluation.shown`);
+    # a shown pair whose call failed is a no, through `predicted`.
+    judged = shown.shown_pairs(session, run_id, {doc_id for doc_id, _ in truth}) & set(truth)
     return {
         "end_to_end": document_bootstrap(
             truth, predicted, seed=seed, weights=weights, groups=groups
@@ -175,6 +178,7 @@ def _article_scores(
         if judge_only
         else None,
         "pairs_judged": len(judged),
+        "shown_record": shown.has_record(session, run_id),
         # On the labelled documents only, so arms that judged different
         # amounts of the calendar are compared on the same articles.
         "cost_on_sample": judging_cost(session, run_id, {doc_id for doc_id, _ in truth}),

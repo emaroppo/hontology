@@ -134,8 +134,8 @@ def _comparison_section(comparisons: dict) -> list[str]:
             f"{h['internal_false_positives']} with no labelled leaf below "
             "(gap candidates). "
             f"Correct leaf matches: {cov['true_positives']}, of which "
-            f"{cov['beyond_baseline_retrieval']} on pairs the baseline's retrieval had "
-            "not selected (coverage, not structure)."
+            f"{cov['beyond_baseline_retrieval']} on pairs the baseline never showed its "
+            "judge (coverage, not structure)."
         )
     return out
 

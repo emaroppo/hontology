@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from hontology.db.base import among
-from hontology.db.models import Candidate, Document, Verdict
+from hontology.db.models import Document, ShownLeaf, Verdict
 from hontology.evaluation.calendar.entry_result import EntryResult
 from hontology.evaluation.calendar.events import Entry
 from hontology.pipeline.ingest.articles.dedup import representative_of
@@ -98,7 +98,6 @@ def score_entry(
     *,
     has_filter: bool,
     passed: set[int],
-    hierarchical: bool,
     reviews: dict[tuple[str, str], bool],
 ) -> EntryResult:
     """One entry's window, followed stage by stage from the feed to a match."""
@@ -119,19 +118,18 @@ def score_entry(
     # A near-duplicate is never retrieved or judged itself; it reads its
     # representative's results, wherever that representative was seen.
     reads = representative_of(session, sorted(fetched)) if fetched else {}
-    # A flat run judges a concept only where retrieval selected it. A
-    # hierarchical run judges every document retrieval let through, and
-    # reaches the concept by descending, so there "retrieved" means any
-    # selected leaf at all.
-    retrieval_gate = [
-        Candidate.run_id == run_id,
-        Candidate.selected.is_(True),
-        among(Candidate.document_id, set(reads.values())),
-    ]
-    if not hierarchical:
-        retrieval_gate.append(Candidate.concept_id == concept_id)
+    # Retrieved means the judge was shown this entry's leaf for the article,
+    # in every prompt mode (`evaluation.shown`).
     retrieved_reps = (
-        set(session.scalars(select(Candidate.document_id).where(*retrieval_gate)))
+        set(
+            session.scalars(
+                select(ShownLeaf.document_id).where(
+                    ShownLeaf.run_id == run_id,
+                    ShownLeaf.concept_id == concept_id,
+                    among(ShownLeaf.document_id, set(reads.values())),
+                )
+            )
+        )
         if reads
         else set()
     )

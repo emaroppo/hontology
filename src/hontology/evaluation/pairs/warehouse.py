@@ -1,5 +1,8 @@
 """The leaderboard: run results kept somewhere they can be compared over time.
 
+The retrieval_* and cutoff_recall columns describe the embedding ranking's pool;
+shown_recall and shown_precision describe what the judge was actually shown.
+
 Metrics live in DuckDB rather than in the operational database because the
 questions asked of them are analytical — rank these twenty runs, show F1 against
 token cost, group by prompt — and because a leaderboard is a derived artifact.
@@ -36,6 +39,8 @@ CREATE TABLE IF NOT EXISTS run_metrics (
     retrieval_coverage DOUBLE,
     retrieval_mrr      DOUBLE,
     cutoff_recall      DOUBLE,
+    shown_recall       DOUBLE,
+    shown_precision    DOUBLE,
     liveness_clean     INTEGER,
     liveness_errors    INTEGER,
     candidates_key     VARCHAR,
@@ -46,6 +51,9 @@ CREATE TABLE IF NOT EXISTS run_metrics (
     input_tokens       BIGINT,
     output_tokens      BIGINT
 );
+-- Added after the first warehouses were written; IF NOT EXISTS keeps them usable.
+ALTER TABLE run_metrics ADD COLUMN IF NOT EXISTS shown_recall DOUBLE;
+ALTER TABLE run_metrics ADD COLUMN IF NOT EXISTS shown_precision DOUBLE;
 """
 
 
@@ -70,7 +78,7 @@ def record(
 ) -> None:
     """Append one run's results. Re-recording a run replaces its row."""
     judge = evaluation.judge
-    retrieval = evaluation.retrieval
+    embedding, retrieval = evaluation.embedding, evaluation.retrieval
     f1_lo, f1_hi = judge.get("f1_ci", (None, None))
     judge_config = config.get("judge", {})
 
@@ -83,10 +91,13 @@ def record(
                 run_id, run_name, ontology_version, n_labels,
                 tp, fp, tn, fn, precision, recall, f1, f1_lo, f1_hi,
                 retrieval_coverage, retrieval_mrr, cutoff_recall,
+                shown_recall, shown_precision,
                 liveness_clean, liveness_errors,
                 candidates_key, judge_key, provider, model, prompt_id,
                 input_tokens, output_tokens
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
             """,
             [
                 evaluation.run_id,
@@ -102,9 +113,11 @@ def record(
                 judge["f1"],
                 f1_lo,
                 f1_hi,
-                retrieval["coverage"],
-                retrieval["mrr"],
-                retrieval["cutoff_recall"],
+                embedding["coverage"],
+                embedding["mrr"],
+                embedding["cutoff_recall"],
+                retrieval["recall"],
+                retrieval["precision"],
                 evaluation.liveness["clean"],
                 evaluation.liveness["errors"],
                 candidates_key,

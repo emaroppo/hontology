@@ -35,26 +35,15 @@ def show_evaluation(ctx: Context) -> None:
         default=list(run_labels),
         key=f"ev_runs_{judge['version']}",
     )
-    scope = st.radio(
-        "Score on",
-        ["responsible", "retrieved"],
-        format_func=lambda s: {
-            "responsible": "Everything this judge was responsible for",
-            "retrieved": "Only pairs retrieval selected",
-        }[s],
-        horizontal=True,
-        key="ev_scope",
-        help="A per-pair or batched judge answers only what retrieval selected; a "
-        "top-down judge answers for every leaf of the articles it processed, true "
-        "matches retrieval never offered included. To compare judges of different "
-        "styles, score them on what retrieval selected.",
+    st.caption(
+        "Scored on the labelled pairs each run showed its judge, in every prompt "
+        "mode alike. A true match never shown is retrieval's miss; a call that "
+        "failed counts as a no."
     )
     if not chosen:
         return
     try:
-        result = ctx.api.judgement_evaluate(
-            [run_labels[c] for c in chosen], scope, ctx.annotator
-        )
+        result = ctx.api.judgement_evaluate([run_labels[c] for c in chosen], ctx.annotator)
     except ApiError as exc:
         st.error(exc.detail)
         return
@@ -63,6 +52,13 @@ def show_evaluation(ctx: Context) -> None:
 
 def _results(result: dict) -> None:
     """The pooled scores, calibration and the per-run table."""
+    unrecorded = [str(r["run_id"]) for r in result["runs"] if not r["shown_record"]]
+    if unrecorded:
+        st.warning(
+            f"Run(s) {', '.join(unrecorded)} have no record of what they showed the "
+            "judge: they were made before it existed and are not backfilled yet, so "
+            "they contribute no pairs."
+        )
     pooled = result["pooled"]
     if not pooled["pairs"]:
         st.info(

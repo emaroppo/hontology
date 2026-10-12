@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hontology.db.base import among
-from hontology.db.models import Candidate
+from hontology.evaluation import shown
 from hontology.evaluation.article import verdicts
 from hontology.ontology import hierarchy
 
@@ -32,8 +28,8 @@ def hierarchy_diagnostics(
       with no labelled leaf beneath it may be a gap in the ontology rather
       than a judge error;
     - **coverage**, the run's correct leaf matches split by whether the
-      baseline's retrieval had selected that pair. A gain from reaching
-      leaves retrieval missed is coverage, not structure.
+      baseline had shown its judge that pair. A gain on pairs the baseline
+      never showed its judge is coverage, not structure.
     """
     parent_map = hierarchy.parents(session, ontology_id)
     child_map = hierarchy.children(session, ontology_id)
@@ -48,7 +44,7 @@ def hierarchy_diagnostics(
     internal_answers = [
         (key, yes) for key, yes in answered.items() if key[1] in internal and yes
     ]
-    selected = _baseline_selected(session, baseline_id, documents)
+    baseline_shown = shown.shown_pairs(session, baseline_id, documents)
     true_leaf_hits = [
         key for key, expected in truth.items() if expected and answered.get(key, False)
     ]
@@ -63,9 +59,9 @@ def hierarchy_diagnostics(
         ),
         "coverage": {
             "true_positives": len(true_leaf_hits),
-            "baseline_had_selected": sum(1 for key in true_leaf_hits if key in selected),
+            "baseline_had_shown": sum(1 for key in true_leaf_hits if key in baseline_shown),
             "beyond_baseline_retrieval": sum(
-                1 for key in true_leaf_hits if key not in selected
+                1 for key in true_leaf_hits if key not in baseline_shown
             ),
         },
     }
@@ -114,16 +110,3 @@ def _level_counts(
         level["n"] += 1
         level["hits"] += int(answered.get((doc_id, class_id), False))
     return levels
-
-
-def _baseline_selected(session: Session, baseline_id: int, documents: set[int]) -> set[Any]:
-    """The pairs the baseline's retrieval selected on these documents, as rows."""
-    return set(
-        session.execute(
-            select(Candidate.document_id, Candidate.concept_id).where(
-                Candidate.run_id == baseline_id,
-                Candidate.selected.is_(True),
-                among(Candidate.document_id, documents),
-            )
-        ).all()
-    )

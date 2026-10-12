@@ -288,7 +288,7 @@ def test_diagnostics_locate_hits_by_level_and_coverage(world, monkeypatch):
     assert result["internal_false_positives"] == 0
     assert result["coverage"] == {
         "true_positives": 1,
-        "baseline_had_selected": 1,
+        "baseline_had_shown": 1,
         "beyond_baseline_retrieval": 0,
     }
 

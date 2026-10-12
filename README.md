@@ -37,9 +37,10 @@ concepts? It is answered with a comparison stated before any result was seen:
 | **Extract + embeddings** | As Extract, but below the top level each event is offered the leaves closest to it in embedding space |
 
 Every arm sees the same articles, the same model and the same leaf wording. The
-baseline judges exactly the pairs retrieval selected; the top-down arms use
-retrieval only to decide which articles to read, then reach classes their own
-way. They are scored two ways: on an event calendar of supply-chain
+baseline judges the pairs its embedding cutoff selected; the top-down arms use
+the cutoff only to decide which articles to read, then route to classes their
+own way. In every arm a pair counts as retrieved when its class was shown to a
+deciding judge call, so retrieval and the judge are scored on one definition. They are scored two ways: on an event calendar of supply-chain
 disruptions, their precursors and quiet control days, with every detection
 verified by a person; and on a labelled sample of articles drawn in a frozen
 order, where an arm counts as better only when the paired interval on its F1
@@ -72,10 +73,11 @@ score against.
 **3. Retrieval failure and judgment failure need separate numbers.** A pipeline
 that misses an event because the retriever never surfaced the concept needs a
 completely different fix from one whose retriever ranked it first and whose judge
-then said no. Reporting a single F1 conflates them. Candidates are stored as the
-full pre-cutoff pool, so retrieval is scored with recall@k and MRR, and a
-different cutoff can be tried after the fact, while the judge is scored on
-precision and recall over what actually reached it.
+then said no. Reporting a single F1 conflates them. Retrieval is scored on what each
+deciding call was actually shown, recorded per article, and the judge on
+precision and recall over those same pairs. Candidates are also stored as the
+full pre-cutoff pool, so the embedding ranking is scored with recall@k and MRR,
+and a different cutoff can be tried after the fact.
 
 **4. A result must say exactly what produced it.** Every stage is versioned by
 what decides its output: the retrieval version by the embedding settings, the

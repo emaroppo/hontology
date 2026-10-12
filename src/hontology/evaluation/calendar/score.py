@@ -23,7 +23,6 @@ from hontology.evaluation.calendar.events import (
 )
 from hontology.evaluation.calendar.summary import lead_times, summarize
 from hontology.pipeline.ingest.articles import filter as ingest_filter
-from hontology.pipeline.judge import prompts
 
 
 def processed_ids(run: Run, entries: list[Entry]) -> set[str]:
@@ -78,11 +77,6 @@ def evaluate(
         if has_filter and in_windows
         else set()
     )
-    hierarchical = (
-        prompts.get(run.config["judge"]["prompt_id"]).mode in prompts.TOP_DOWN_MODES
-        if run.config.get("judge")
-        else False
-    )
     reviews = {
         (review.entry_id, review.document_url): review.confirmed
         for review in session.scalars(
@@ -99,7 +93,6 @@ def evaluate(
             window_documents(session, entry, loci, before=before, after=after),
             has_filter=has_filter,
             passed=passed,
-            hierarchical=hierarchical,
             reviews=reviews,
         )
         for entry in entries

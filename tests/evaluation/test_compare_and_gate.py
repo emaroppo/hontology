@@ -10,6 +10,7 @@ from hontology.db.session import session_scope
 from hontology.evaluation.labels import bank
 from hontology.evaluation.pairs import compare, evaluate, regression, warehouse
 from hontology.ontology import service
+from hontology.pipeline.retrieve.strategies import store
 
 pytestmark = pytest.mark.requires_db
 
@@ -66,8 +67,10 @@ def label_all(ids, truths: list[bool]) -> None:
 
 
 def judge_all(ids, run_index: int, predictions: list[bool]) -> None:
+    """Each article shown the concept, and the judge's answer on it."""
     with session_scope() as session:
         for document_id, predicted in zip(ids["docs"], predictions, strict=True):
+            store.record_offer(session, ids["runs"][run_index], document_id, [ids["concept"]])
             session.add(
                 Verdict(
                     run_id=ids["runs"][run_index],
@@ -93,9 +96,12 @@ class TestEvaluate:
         assert judge["recall"] == pytest.approx(2 / 3)
         assert result.n_labels == 6
 
-    def test_errored_verdicts_are_not_predictions(self, two_runs):
+    def test_a_shown_pair_whose_call_failed_is_a_no(self, two_runs):
         label_all(two_runs, [True] * 6)
         with session_scope() as session:
+            store.record_offer(
+                session, two_runs["runs"][0], two_runs["docs"][0], [two_runs["concept"]]
+            )
             session.add(
                 Verdict(
                     run_id=two_runs["runs"][0],
@@ -108,7 +114,7 @@ class TestEvaluate:
             session.flush()
         with session_scope() as session:
             result = evaluate.evaluate_run(session, two_runs["runs"][0])
-            assert result.judge["n"] == 0
+            assert (result.judge["n"], result.judge["fn"]) == (1, 1)
             # And liveness says why, which accuracy never would.
             assert result.liveness["ok"] is False
             assert result.liveness["errors"] == 1
@@ -193,7 +199,7 @@ class TestConsistency:
 
 class TestRegressionGate:
     def test_liveness_fails_independently_of_accuracy(self, two_runs):
-        """A malformed-output bug leaves rates healthy and shrinks the denominator."""
+        """A malformed-output bug fails liveness, whatever it does to the rates."""
         label_all(two_runs, [True] * 6)
         judge_all(two_runs, 0, [True] * 6)
 

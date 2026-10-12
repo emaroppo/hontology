@@ -128,19 +128,18 @@ def versions(ontology_id: int, db: Session = Depends(get_db)):
 
 class VersionEvalIn(BaseModel):
     run_ids: list[int]
-    scope: str = "responsible"
     annotator: str | None = None
 
 
 @router.post("/versions/evaluate")
 def evaluate_version(payload: VersionEvalIn, db: Session = Depends(get_db)):
     """A judge version's precision and recall, per run and pooled, on the pairs
-    it was responsible for or only on those retrieval selected."""
+    it was shown."""
     if not payload.run_ids:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "no runs given")
     run = run_or_404(db, payload.run_ids[0])
     labels = truth_or_404(db, run.ontology_id, payload.annotator)
     try:
-        return judge_eval.evaluate(db, payload.run_ids, labels, scope=payload.scope)
+        return judge_eval.evaluate(db, payload.run_ids, labels)
     except (LookupError, ValueError) as exc:
         raise _refuse(exc) from exc

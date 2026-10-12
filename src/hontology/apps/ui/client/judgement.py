@@ -42,11 +42,9 @@ class JudgementCalls(ApiBase):
     def judgement_versions(self, ontology_id: int) -> list[dict]:
         return self._request("GET", "/judgement/versions", params={"ontology_id": ontology_id})
 
-    def judgement_evaluate(
-        self, run_ids: list[int], scope: str = "responsible", annotator: str | None = None
-    ) -> dict:
+    def judgement_evaluate(self, run_ids: list[int], annotator: str | None = None) -> dict:
         return self._request(
             "POST",
             "/judgement/versions/evaluate",
-            json={"run_ids": run_ids, "scope": scope, "annotator": annotator},
+            json={"run_ids": run_ids, "annotator": annotator},
         )

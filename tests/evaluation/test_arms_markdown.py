@@ -85,7 +85,7 @@ REPORT = {
                 "internal_false_positives": 25,
                 "coverage": {
                     "true_positives": 45,
-                    "baseline_had_selected": 40,
+                    "baseline_had_shown": 40,
                     "beyond_baseline_retrieval": 5,
                 },
             },
@@ -116,7 +116,7 @@ def test_provenance_and_stopping_rule_are_stated():
 def test_hierarchy_diagnostics_and_calendar_are_reported():
     text = render_markdown(REPORT)
     assert "25 with no labelled leaf below (gap candidates)" in text
-    assert "5 on pairs the baseline's retrieval had not selected" in text
+    assert "5 on pairs the baseline never showed its judge" in text
     assert "| 566 (baseline) | raw | 10/14 = 0.71 (0.20–0.90)" in text
     assert "| | verified | 10/14" in text
 

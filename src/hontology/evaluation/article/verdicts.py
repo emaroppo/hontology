@@ -44,10 +44,6 @@ def predictions(session: Session, run_id: int, keys: set[Key]) -> dict[Key, bool
     return {key: judged.get(key, False) for key in keys}
 
 
-def judged_keys(session: Session, run_id: int, keys: set[Key]) -> set[Key]:
-    return keys & answered(session, run_id, {doc_id for doc_id, _ in keys}).keys()
-
-
 def confusion(truth: dict[Key, bool], predicted: dict[Key, bool], keys=None) -> Confusion:
     result = Confusion()
     for key in keys if keys is not None else truth:
