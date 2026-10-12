@@ -10,7 +10,7 @@ import signal
 
 import typer
 
-from hontology.apps.cli.runs import calendar, execute, listing
+from hontology.apps.cli.runs import backfill, calendar, execute, listing
 
 app = typer.Typer(help="Configure and execute detection runs.")
 
@@ -37,5 +37,6 @@ for name, command in (
     ("sample", execute.run_sample),
     ("calendar", calendar.run_calendar),
     ("resume", execute.run_resume),
+    ("backfill-shown", backfill.run_backfill_shown),
 ):
     app.command(name)(command)

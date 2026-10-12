@@ -378,6 +378,15 @@ record. A run that stops after retrieving resumes from it, and a top-down run
 sharing another's retrieval key adopts that run's stored retrievals instead of
 routing again.
 
+Runs made before the shown record existed are rebuilt from their verdicts with
+`hontology run backfill-shown [RUN_ID...]` (`--dry-run` reports first). Every
+judge loop commits once per deciding call, so a run's verdicts grouped by
+article and transaction time recover its calls. An extraction run's offers come
+back per article, since which event each leaf was offered for was not stored;
+its placeholder rows for articles with no events, and rows written without a
+call, are left out. Backfilled runs get no retrieval key, so no new run adopts a
+rebuilt retrieval.
+
 **Document embeddings are cached.** Bodies are embedded once and stored
 content-addressed, so a sweep over selection parameters — which change nothing
 about the text — costs no embedding calls at all. `--refresh-embeddings` forces a
