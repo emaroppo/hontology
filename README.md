@@ -16,14 +16,14 @@ go.
 > against a faked API only: it has not served a run yet.
 >
 > **In progress: does an ontology's structure help a model detect events?** A
-> pre-registered comparison of judging a 44-concept supply-chain ontology flat,
+> planned comparison of judging a 44-concept supply-chain ontology flat,
 > top-down through its class hierarchy, and event by event, on the same
 > articles, model and leaf wording. All four arms have been judged on the first
 > 320 articles of a frozen labelled sample. The reference labels are blind
 > annotations by a Claude model, audited against 22 human-labelled articles,
 > and the sample's stopping rule is not met yet. Only the baseline has run on
 > the pilot event calendar, and none of its detections has been checked by a
-> person yet. No results are published.
+> person yet. Interim results, with their caveats, are [below](#interim-results).
 
 ---
 
@@ -58,6 +58,70 @@ They are scored two ways:
 Tokens and model time are reported beside the scores. The baseline also differs
 from the other arms in its 500-pair cap, so a gain against it is not due to
 structure alone.
+
+---
+
+## Interim results
+
+As of 12 Oct 2026, on the first 320 articles of the labelled sample, all three
+structured arms score a higher F1 than the flat baseline, and the paired
+interval on each difference lies above zero. These are interim numbers, not a
+finding: the sample has not reached its stopping rule, and the reference labels
+come from one model. The caveats below say how much weight each number can bear.
+
+Scores are weighted by calendar window, with 95% intervals from resampling whole
+articles; 87 positive (article, class) pairs.
+
+| Arm | Precision | Recall | F1 | F1 vs baseline | Tokens on sample |
+|---|---|---|---|---|---|
+| Baseline (flat, batched) | 0.47 (0.27–0.68) | 0.11 (0.04–0.22) | 0.18 (0.07–0.32) | | 182,844 |
+| Hierarchical | 0.35 (0.27–0.46) | 0.91 (0.83–0.96) | 0.51 (0.42–0.61) | +0.33 (0.13–0.49) | 2,307,082 |
+| Extract | 0.58 (0.42–0.75) | 0.86 (0.73–0.93) | 0.69 (0.55–0.81) | +0.51 (0.28–0.70) | 1,676,957 |
+| Extract + embeddings | 0.51 (0.38–0.65) | 0.82 (0.68–0.91) | 0.63 (0.50–0.74) | +0.45 (0.25–0.61) | 1,149,584 |
+
+Where recall is lost, unweighted. Retrieval recall is the share of positives a
+run showed its judge, and judge recall the share of those it said yes to; their
+product is the end-to-end recall.
+
+| Arm | Positives shown | Retrieval recall | Judge recall | End-to-end recall |
+|---|---|---|---|---|
+| Baseline | 24 of 87 | 0.28 | 0.92 | 0.25 |
+| Hierarchical | 82 of 87 | 0.94 | 0.83 | 0.78 |
+| Extract | 79 of 87 | 0.91 | 0.78 | 0.71 |
+| Extract + embeddings | 70 of 87 | 0.80 | 0.83 | 0.67 |
+
+The baseline's judge does well on what it is shown; its low recall comes from
+retrieval. The structured arms gain mostly by showing their judge far more of
+the positives.
+
+Caveats:
+
+- **Interim, not a result.** The stopping rule asks for the baseline's intervals
+  to reach ±0.05; they are ±0.21 on precision and ±0.09 on recall. The planned
+  decision rule applies only to the final report.
+- **The reference labels are one model's reading.** They are blind annotations
+  by Claude agents working from the written class definitions. On 22 articles
+  also labelled by a person, they agreed exactly on 20. The numbers measure
+  agreement with that reading, not ground truth.
+- **The baseline comparison is confounded.** The baseline is capped at 500 pairs
+  per calendar window, and the structured arms are not, so the gains mix
+  structure with removing the cap. Among the structured arms the setup matches,
+  but they have not yet been compared with each other with a paired interval.
+- **Weighted and unweighted views disagree for the hierarchical arm.** On
+  unweighted (article, class) pairs, only the baseline was right on 133 and only
+  the hierarchical arm on 52 (McNemar p < 0.001). It says yes far more often,
+  and its extra false positives outnumber its extra hits. For the extract arms
+  the unweighted counts are close (p ≈ 0.7–0.8).
+- **One model.** Every arm used the same locally served model, a Q8
+  build of Gemma 4 26B A4B. No hosted model has run yet.
+- **Cost.** The structured arms spent 6 to 13 times the baseline's tokens on the
+  sample.
+- **Ontology versions.** The baseline ran on version 1 of the ontology and the
+  arms on version 3, which adds the class hierarchy. The 44 leaves are worded
+  identically in both.
+- **Calendar.** Only the baseline has run on the event calendar: raw, it found 8
+  of 14 events and 4 of 7 precursors, with 1 false alarm on 12 quiet days. None
+  of its detections has been checked by a person yet.
 
 ---
 
