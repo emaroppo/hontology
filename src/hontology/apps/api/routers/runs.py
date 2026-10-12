@@ -153,6 +153,7 @@ def start_run(payload: RunIn, background: BackgroundTasks, db: Session = Depends
 @router.get("/options")
 def config_options():
     """What a run config can say, for a form: every default and every choice."""
+    from hontology.pipeline import catalog
     from hontology.pipeline.judge import prompts
     from hontology.pipeline.retrieve import embed
 
@@ -162,8 +163,8 @@ def config_options():
         "choices": {
             "selection": ["adaptive", "top-k"],
             "concept_fields": list(embed.CONCEPT_FIELD_SETS),
-            "embed_providers": ["ollama", "llamacpp"],
-            "judge_providers": ["ollama", "llamacpp", "openrouter"],
+            "embed_providers": catalog.PROVIDERS[catalog.EMBEDDING],
+            "judge_providers": catalog.PROVIDERS[catalog.DECODER],
             "aggregation": list(run_config.AGGREGATIONS),
             "prompts": [
                 {"prompt_id": prompt_id, "mode": prompts.get(prompt_id).mode}
@@ -172,6 +173,19 @@ def config_options():
             "data_collection": ["deny", "allow"],
         },
     }
+
+
+@router.get("/models")
+def provider_models(provider: str, kind: str):
+    """The models *provider* serves as an embedding model or a decoder."""
+    from hontology.pipeline import catalog
+
+    try:
+        return catalog.list_models(provider, kind)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    except catalog.ProviderError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
 
 
 @router.get("/{run_id}/config")

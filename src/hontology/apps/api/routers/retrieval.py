@@ -70,6 +70,7 @@ def list_runs(ontology_id: int, db: Session = Depends(get_db)):
             "status": run.status,
             "documents": counts[run.id],
             "cutoff": asdict(tuning.run_cutoff(run)),
+            "models": _models(run),
         }
         for run in runs
     ]
@@ -173,9 +174,13 @@ def evaluate_version(payload: LiveIn, db: Session = Depends(get_db)):
 
 class TextIn(BaseModel):
     run_id: int
-    text: str = Field(min_length=1)
+    # Pasted text, or a corpus article ranked live from its stored text.
+    text: str | None = None
+    document_id: int | None = None
     cutoff: CutoffIn | None = None
     pool_size: int = Field(20, ge=1, le=100)
+    # None keeps the run's own (provider, model).
+    embedding: tuple[str, str] | None = None
 
 
 @router.post("/text")
@@ -190,8 +195,24 @@ def rank_text(payload: TextIn, db: Session = Depends(get_db)):
         if payload.cutoff is not None
         else tuning.run_cutoff(versions.source_run(db, run))
     )
+    text = payload.text
+    if payload.document_id is not None:
+        from hontology.db.models import Document
+        from hontology.pipeline.retrieve.candidates import document_body
+
+        document = db.get(Document, payload.document_id)
+        if document is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "no such article")
+        text = document_body(document, 100_000) or ""
     try:
-        return pasted.rank_text(db, run, payload.text, cutoff, pool_size=payload.pool_size)
+        return pasted.rank_text(
+            db,
+            run,
+            text or "",
+            cutoff,
+            pool_size=payload.pool_size,
+            embedding=payload.embedding,
+        )
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except ProviderError as exc:
@@ -208,6 +229,9 @@ class StrategyIn(BaseModel):
     text: str | None = None
     document_id: int | None = None
     cutoff: CutoffIn | None = None
+    # None keeps the run's own (provider, model) for each.
+    embedding: tuple[str, str] | None = None
+    decoder: tuple[str, str] | None = None
 
 
 @router.post("/strategy")
@@ -230,7 +254,14 @@ def try_strategy(payload: StrategyIn, db: Session = Depends(get_db)):
     )
     try:
         return tryout.try_strategy(
-            db, run, prompt_id, cutoff, text=payload.text, document_id=payload.document_id
+            db,
+            run,
+            prompt_id,
+            cutoff,
+            text=payload.text,
+            document_id=payload.document_id,
+            embedding=payload.embedding,
+            decoder=payload.decoder,
         )
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
@@ -254,3 +285,15 @@ def list_strategies():
             continue  # routing and deciding share one call: nothing to try apart
         out.append({"prompt_id": prompt_id, "mode": template.mode})
     return out
+
+
+def _models(run: Run) -> dict:
+    """The run's embedding model and decoder, each as provider and model."""
+    from hontology.pipeline.runs import config as run_config
+
+    config = run_config.normalize(run.config or {})
+    candidates, judge = config["candidates"], config["judge"]
+    return {
+        "embedding": [candidates["embed_provider"], candidates["embed_model"]],
+        "decoder": [judge["provider"], judge["model"]],
+    }

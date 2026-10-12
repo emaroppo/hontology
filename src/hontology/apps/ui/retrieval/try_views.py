@@ -7,6 +7,7 @@ import streamlit as st
 
 from hontology.apps.ui import shared
 from hontology.apps.ui.client import ApiError
+from hontology.apps.ui.model_picker import EMBEDDING, is_own
 from hontology.apps.ui.retrieval.context import Context
 
 
@@ -23,9 +24,14 @@ def label_mark(value: bool | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def show_article(ctx: Context, document_id: int, cutoff: dict) -> None:
+def show_article(
+    ctx: Context, document_id: int, cutoff: dict, embedding: tuple[str, str]
+) -> None:
     run = ctx.run
     assert run is not None
+    if not is_own(embedding, run["models"][EMBEDDING]):
+        _show_article_live(ctx, document_id, cutoff, embedding)
+        return
     try:
         pool = ctx.api.retrieval_document(run["id"], document_id, cutoff, ctx.annotator)
     except ApiError as exc:
@@ -53,12 +59,53 @@ def show_article(ctx: Context, document_id: int, cutoff: dict) -> None:
         st.text(pool["body"] or "No text stored for this article.")
 
 
-def show_own_text(ctx: Context, cutoff: dict) -> None:
+def _show_article_live(
+    ctx: Context, document_id: int, cutoff: dict, embedding: tuple[str, str]
+) -> None:
+    """A corpus article ranked live with an embedding model other than the run's,
+    with its labels from the stored pool beside each class."""
     run = ctx.run
     assert run is not None
-    _, body = shared.own_text(
-        "The text is sent to this run's embedding model, ranked and dropped."
+    cache = st.session_state.setdefault("own:rankings", {})
+    key = (run["id"], "article", document_id, tuple(sorted(cutoff.items())), embedding)
+    try:
+        stored = ctx.api.retrieval_document(run["id"], document_id, cutoff, ctx.annotator)
+        if key not in cache:
+            with st.spinner("Embedding and ranking…"):
+                cache[key] = ctx.api.retrieval_text(
+                    run["id"], None, cutoff, document_id=document_id, embedding=embedding
+                )
+    except ApiError as exc:
+        st.error(exc.detail)
+        return
+    result = cache[key]
+    labels = {row["name"]: row["label"] for row in stored["pool"]}
+    st.markdown(f"**[{stored['title'] or stored['url']}]({stored['url']})**")
+    st.caption(
+        f"Ranked live with {result['embed_provider']} · {result['embed_model']}, not the "
+        f"run's own model, on the first {result['characters_used']:,} characters. A label "
+        "shows only for classes the run's own pool also ranked."
     )
+    st.dataframe(
+        [
+            {
+                "Rank": row["rank"],
+                "Class": row["name"],
+                "Score": row["score"],
+                "This cutoff": mark(row["kept"]),
+                "Label": label_mark(labels.get(row["name"])),
+            }
+            for row in result["ranking"]
+        ],
+        hide_index=True,
+        column_config={"Score": st.column_config.NumberColumn(format="%.3f")},
+    )
+
+
+def show_own_text(ctx: Context, cutoff: dict, embedding: tuple[str, str]) -> None:
+    run = ctx.run
+    assert run is not None
+    _, body = shared.own_text("The text is sent to the embedding model, ranked and dropped.")
     if not body.strip():
         st.info(
             "Paste an article to see how this run's retrieval ranks the classes against "
@@ -67,11 +114,13 @@ def show_own_text(ctx: Context, cutoff: dict) -> None:
         return
     # Ranking costs an embedding call; keep each result for its text, run and cutoff.
     cache = st.session_state.setdefault("own:rankings", {})
-    key = (run["id"], body, tuple(sorted(cutoff.items())))
+    key = (run["id"], body, tuple(sorted(cutoff.items())), embedding)
     if key not in cache:
         try:
             with st.spinner("Embedding and ranking…"):
-                cache[key] = ctx.api.retrieval_text(run["id"], body, cutoff)
+                cache[key] = ctx.api.retrieval_text(
+                    run["id"], body, cutoff, embedding=embedding
+                )
         except ApiError as exc:
             st.error(exc.detail)
             return
@@ -86,7 +135,8 @@ def show_own_text(ctx: Context, cutoff: dict) -> None:
         else ""
     )
     st.caption(
-        f"Ranked with retrieval version {result['version']} (run {result['source_run']}'s), "
+        f"Ranked with retrieval version {result['version']} (run {result['source_run']}'s) "
+        f"and {result['embed_provider']} · {result['embed_model']}, "
         f"on the first {result['characters_used']:,} characters{cut_note}, as an "
         "article would be."
     )

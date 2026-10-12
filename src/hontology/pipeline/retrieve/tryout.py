@@ -64,13 +64,21 @@ def try_strategy(
     *,
     text: str | None = None,
     document_id: int | None = None,
+    embedding: tuple[str, str] | None = None,
+    decoder: tuple[str, str] | None = None,
 ) -> dict:
-    """Run *prompt_id*'s retrieval on one article or pasted text, and describe it."""
+    """Run *prompt_id*'s retrieval on one article or pasted text, and describe it.
+
+    *embedding* and *decoder* replace the run's (provider, model) for each.
+    """
     from hontology.pipeline.judge.run import get_provider
 
     template = prompts.get(prompt_id)
     config = run_config.normalize(run.config or {})
     judge_config, body_limit = config["judge"], config["common"]["judge_body_limit"]
+    candidates = config.get("candidates", {})
+    if decoder is not None:
+        judge_config = judge_config | {"provider": decoder[0], "model": decoder[1]}
     if text is not None:
         if not text.strip():
             raise ValueError("there is no text to retrieve for")
@@ -94,14 +102,16 @@ def try_strategy(
     flat = template.mode in (prompts.PER_PAIR, prompts.PER_DOCUMENT)
 
     def choose(_: strategies.Article) -> list[int]:
-        ranked = pasted.rank_text(session, run, full, cutoff)["ranking"]
+        ranked = pasted.rank_text(session, run, full, cutoff, embedding=embedding)["ranking"]
         return [row["concept_id"] for row in ranked if row["kept"]]
 
     ranker = None
     if template.leaf_top_k is not None:
         assert template.leaf_embed_model is not None
         ranker = strategies.LeafRanker(
-            embed.get_provider(config.get("candidates", {}).get("embed_provider", "ollama")),
+            embed.get_provider(
+                embedding[0] if embedding else candidates.get("embed_provider", "ollama")
+            ),
             template.leaf_embed_model,
             model.concepts(sorted(hierarchy.leaves(session, run.ontology_id))),
             template.leaf_top_k,
@@ -118,6 +128,8 @@ def try_strategy(
         "prompt_id": prompt_id,
         "provider": judge_config["provider"],
         "model": judge_config["model"],
+        "embed_provider": embedding[0] if embedding else candidates.get("embed_provider"),
+        "embed_model": embedding[1] if embedding else candidates.get("embed_model"),
     }
 
 

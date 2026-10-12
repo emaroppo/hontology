@@ -55,8 +55,9 @@ def prompt_panel(ctx: Context, leaf: dict) -> tuple[str, str, dict, bool]:
         cols = st.columns([2, 3])
         cols[0].selectbox("Template", prompt_ids, key=prompt_key)
         cols[1].caption(
-            f"Asked as run {run['id']}: {run['provider']} · {run['model']}, with its "
-            "decoding settings and article text limit."
+            f"Asked as run {run['id']} asks, with the decoder picked above (its own is "
+            f"{run['provider']} · {run['model']}), and its decoding settings and article "
+            "text limit."
             + (
                 ""
                 if run["prompt_id"] in templates

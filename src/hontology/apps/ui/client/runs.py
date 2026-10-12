@@ -23,6 +23,12 @@ class RunCalls(ApiBase):
     def run_options(self) -> dict:
         return self._request("GET", "/runs/options")
 
+    def provider_models(self, provider: str, kind: str) -> list[str]:
+        """The models *provider* serves as an embedding model or a decoder."""
+        return self._request(
+            "GET", "/runs/models", params={"provider": provider, "kind": kind}, timeout=20
+        )
+
     def run_config(self, run_id: int) -> dict:
         return self._request("GET", f"/runs/{run_id}/config")
 

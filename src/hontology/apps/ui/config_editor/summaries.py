@@ -15,14 +15,15 @@ def summaries() -> dict[str, str]:
     seed = value("judge.generation.seed")
     return {
         "run": value("name") or "unnamed",
+        "models": f"embedding {value('candidates.embed_provider')} · "
+        f"{value('candidates.embed_model')}; decoder {value('judge.provider')} · "
+        f"{value('judge.model')}",
         "ontology": f"{value('common.ontology_version')} · "
         f"{value('common.embed_body_limit'):,} characters embedded, "
         f"{value('common.judge_body_limit'):,} judged",
-        "retrieval": f"{value('candidates.embed_model')} · "
-        f"{value('candidates.concept_fields')} · "
+        "retrieval": f"{value('candidates.concept_fields')} · "
         f"pool {value('candidates.pool_size')} · {cut}",
-        "judge": f"{value('judge.provider')} · {value('judge.model')} · "
-        f"{value('judge.prompt_id')}"
+        "judge": f"{value('judge.prompt_id')}"
         + (" · thinking" if value("judge.think") else "")
         + (f" · {samples} samples, {value('judge.aggregation')}" if samples > 1 else ""),
         "decoding": f"temperature {value('judge.generation.temperature'):g} · context "

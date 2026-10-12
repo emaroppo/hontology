@@ -53,13 +53,28 @@ class RetrievalCalls(ApiBase):
         )
 
     def retrieval_text(
-        self, run_id: int, text: str, cutoff: dict | None = None, pool_size: int = 20
+        self,
+        run_id: int,
+        text: str | None,
+        cutoff: dict | None = None,
+        pool_size: int = 20,
+        *,
+        document_id: int | None = None,
+        embedding: tuple[str, str] | None = None,
     ) -> dict:
-        """Pasted text ranked as *run_id*'s retrieval ranks an article; not stored."""
+        """Pasted text, or a corpus article, ranked live as *run_id*'s retrieval
+        ranks an article, with *embedding* in place of its own if given."""
         return self._request(
             "POST",
             "/retrieval/text",
-            json={"run_id": run_id, "text": text, "cutoff": cutoff, "pool_size": pool_size},
+            json={
+                "run_id": run_id,
+                "text": text,
+                "document_id": document_id,
+                "cutoff": cutoff,
+                "pool_size": pool_size,
+                "embedding": embedding,
+            },
             timeout=300,
         )
 
@@ -74,6 +89,8 @@ class RetrievalCalls(ApiBase):
         *,
         text: str | None = None,
         document_id: int | None = None,
+        embedding: tuple[str, str] | None = None,
+        decoder: tuple[str, str] | None = None,
     ) -> dict:
         """A prompt's retrieval run on one article or pasted text; not stored."""
         return self._request(
@@ -85,6 +102,8 @@ class RetrievalCalls(ApiBase):
                 "cutoff": cutoff,
                 "text": text,
                 "document_id": document_id,
+                "embedding": embedding,
+                "decoder": decoder,
             },
             timeout=600,
         )

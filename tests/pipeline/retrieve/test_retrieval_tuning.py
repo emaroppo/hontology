@@ -343,3 +343,45 @@ def test_the_text_endpoint_cuts_with_the_runs_own_cutoff_by_default(embedded, mo
     )
     assert response.status_code == 200
     assert response.json()["ranking"][0]["name"] == "Strike"
+
+
+def test_a_corpus_article_ranks_live_with_another_embedding_model(
+    embedded, monkeypatch, tmp_path
+):
+    """The article's stored text is embedded with the model picked on the page;
+    the classes are embedded with it once, and the ranking says which model."""
+    from hontology.config import get_settings
+    from hontology.pipeline.retrieve import embed
+
+    settings = get_settings()
+    monkeypatch.setattr(type(settings), "scrape_cache_dir", property(lambda self: tmp_path))
+    (tmp_path / "strike.txt").write_text("Dockworkers stopped work.")
+    with session_scope() as session:
+        session.get(Document, embedded["documents"]["strike"]).body_path = "strike.txt"
+    asked: list[tuple[str, str]] = []
+
+    class Provider:
+        def __init__(self, name):
+            self.name = name
+
+        def embed(self, texts, *, model):
+            asked.append((self.name, model))
+            return [[1.0, 0.0, 0.0] if "Stop" in t else [0.0, 1.0, 0.0] for t in texts]
+
+        def dimension(self, model):
+            return 3
+
+    monkeypatch.setattr(embed, "get_provider", lambda name, **kw: Provider(name))
+    response = TestClient(app).post(
+        "/retrieval/text",
+        json={
+            "run_id": embedded["run"],
+            "document_id": embedded["documents"]["strike"],
+            "embedding": ["llamacpp", "other-embedder"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert (result["embed_provider"], result["embed_model"]) == ("llamacpp", "other-embedder")
+    assert {pair for pair in asked} == {("llamacpp", "other-embedder")}
+    assert len(result["ranking"]) == 2

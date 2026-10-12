@@ -66,7 +66,7 @@ def editor(api: Api, ontology_id: int, versions: list[str]) -> tuple[dict, str |
         st.session_state[SHOWN] = view
 
     if view == FORM:
-        draw_form(options, versions)
+        draw_form(api, options, versions)
         st.session_state[CONFIG] = from_form()
         problem = None
     else:

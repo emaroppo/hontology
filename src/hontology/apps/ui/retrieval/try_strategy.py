@@ -2,7 +2,8 @@
 
 The embedding cutoff is the first step; what the strategy's later steps do with
 it is shown step by step, ending in what each deciding call would be shown.
-Those steps ask the judge model, so the page runs them only on request.
+Those steps ask a decoder, so the page runs them only on request. The
+embedding model and the decoder are picked apart, starting from the run's own.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import streamlit as st
 
 from hontology.apps.ui import shared
 from hontology.apps.ui.client import ApiError
+from hontology.apps.ui.model_picker import DECODER, EMBEDDING
 from hontology.apps.ui.retrieval.context import Context
 
 EMBEDDING_ONLY = "Embedding cutoff only"
@@ -29,16 +31,22 @@ def strategy_picker(ctx: Context, column) -> str | None:
         [EMBEDDING_ONLY, *top_down],
         key="retrieval_strategy",
         help="A routing or extraction prompt adds its own steps after the embedding "
-        "cutoff, and asks the run's judge model to take them.",
+        "cutoff, and asks the decoder to take them.",
     )
     return None if picked == EMBEDDING_ONLY else picked
 
 
 def show_strategy(
-    ctx: Context, prompt_id: str, cutoff: dict, *, document_id: int | None = None
+    ctx: Context,
+    prompt_id: str,
+    cutoff: dict,
+    models: dict[str, tuple[str, str]],
+    *,
+    document_id: int | None = None,
 ) -> None:
     run = ctx.run
     assert run is not None
+    embedding, decoder = models[EMBEDDING], models[DECODER]
     text = None
     if document_id is None:
         _, text = shared.own_text("The text is sent to this run's models and dropped.")
@@ -46,17 +54,29 @@ def show_strategy(
             st.info("Paste an article to see what this strategy would show the judge.")
             return
     cache = st.session_state.setdefault("own:strategies", {})
-    key = (run["id"], prompt_id, text, document_id, tuple(sorted(cutoff.items())))
+    key = (
+        run["id"],
+        prompt_id,
+        text,
+        document_id,
+        tuple(sorted(cutoff.items())),
+        embedding,
+        decoder,
+    )
     if key not in cache:
-        st.caption(
-            f"Routing and extraction ask run {run['id']}'s judge model: this costs model calls."
-        )
+        st.caption("Routing and extraction ask the decoder: this costs model calls.")
         if not st.button("Run retrieval", type="primary"):
             return
         try:
             with st.spinner("Retrieving…"):
                 cache[key] = ctx.api.retrieval_strategy(
-                    run["id"], prompt_id, cutoff, text=text, document_id=document_id
+                    run["id"],
+                    prompt_id,
+                    cutoff,
+                    text=text,
+                    document_id=document_id,
+                    embedding=embedding,
+                    decoder=decoder,
                 )
         except ApiError as exc:
             st.error(exc.detail)
@@ -69,7 +89,8 @@ def _show_result(result: dict) -> None:
     st.caption(
         f"{result['strategy']}: {' → '.join(result['steps'])} · {spend['calls']} model "
         f"call(s), {spend['input_tokens']:,} tokens in, {spend['output_tokens']:,} out, "
-        f"{spend['seconds']:.1f} s · {result['provider']} {result['model']}"
+        f"{spend['seconds']:.1f} s · embedding {result['embed_provider']} "
+        f"{result['embed_model']}, decoder {result['provider']} {result['model']}"
     )
     if result["error"]:
         st.error(f"Stopped: {result['error']}")

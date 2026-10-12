@@ -38,13 +38,18 @@ def rank_text(
     cutoff: Cutoff,
     *,
     pool_size: int = 20,
+    embedding: tuple[str, str] | None = None,
 ) -> dict:
-    """The leaves ranked against *body* as *run*'s retrieval would rank them."""
+    """The leaves ranked against *body* as *run*'s retrieval would rank them.
+
+    *embedding* replaces the version's (provider, model); classes the new model
+    has not embedded yet are embedded once and cached.
+    """
     if not body.strip():
         raise ValueError("there is no text to rank")
     version, source, settings, leaves = version_leaves(session, run)
-    model = settings["embed_model"]
-    provider = embed.get_provider(settings["embed_provider"])
+    provider_name, model = embedding or (settings["embed_provider"], settings["embed_model"])
+    provider = embed.get_provider(provider_name)
     fields = settings["concept_fields"]
     items = leaf_texts(leaves, fields)
     # The run's own class embeddings: cached as usual, computed if missing.
@@ -78,6 +83,8 @@ def rank_text(
     names = {leaf["id"]: leaf["name"] for leaf in leaves}
     return {
         "version": version["version"],
+        "embed_provider": provider_name,
+        "embed_model": model,
         "source_run": source.id,
         "characters_used": min(len(body), limit),
         "characters_given": len(body),

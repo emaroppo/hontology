@@ -223,3 +223,20 @@ def test_the_ask_endpoint_takes_pasted_text(world, judge):
         "/judgement/ask", json={"run_id": world["run"], "concept_id": world["concept"]}
     )
     assert neither.status_code == 422
+
+
+def test_a_trial_can_be_asked_of_another_decoder(world, monkeypatch):
+    """The decoder picked on the page replaces the run's provider and model."""
+    fake = FakeJudge()
+    providers: list[str] = []
+
+    def get_provider(name, routing=None):
+        providers.append(name)
+        return fake
+
+    monkeypatch.setattr(trial, "get_provider", get_provider)
+    with session_scope() as session:
+        answer = trial.ask(session, _trial(world, decoder=("llamacpp", "other-model")))
+    assert providers == ["llamacpp"]
+    assert [call["model"] for call in fake.calls] == ["other-model"]
+    assert (answer["provider"], answer["model"]) == ("llamacpp", "other-model")

@@ -34,6 +34,8 @@ class TrialIn(BaseModel):
     text: str | None = None
     title: str | None = None
     url: str | None = None
+    # None keeps the run's own (provider, model).
+    decoder: tuple[str, str] | None = None
 
 
 class ArticlesIn(BaseModel):

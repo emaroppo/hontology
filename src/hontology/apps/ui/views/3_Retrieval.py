@@ -10,7 +10,7 @@ as the run chosen in Settings ranks them. The cutoff sits in a collapsible
 section, starting from that run's own. Corpus articles need no embedding: every
 run stores its whole ranked pool, so a cutoff is a different line through a
 ranking that already exists. A routing or extraction strategy adds its own steps
-after the cutoff.
+after the cutoff, with an embedding model and a decoder picked apart.
 
 **Evaluation** scores a retrieval *version* rather than a run: the embedding
 settings, the leaves' wording and the ranking code. A cutoff is a parameter, set

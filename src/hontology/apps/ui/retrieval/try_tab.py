@@ -14,6 +14,7 @@ from hontology.apps.ui.cutoff import (
     read_cutoff,
     seed_cutoff,
 )
+from hontology.apps.ui.model_picker import DECODER, EMBEDDING, model_widgets
 from hontology.apps.ui.retrieval.context import Context
 from hontology.apps.ui.retrieval.try_strategy import show_strategy, strategy_picker
 from hontology.apps.ui.retrieval.try_views import show_article, show_class, show_own_text
@@ -105,17 +106,36 @@ def show_try(ctx: Context) -> None:
         leaf = by_name[cols[0].selectbox("Class", list(by_name), key="retrieval_class")]
     else:
         cols[0].caption(
-            f"Ranked as run {run['id']}'s retrieval ranks an article: its embedding "
-            "model, class wording and article length."
+            f"Ranked as run {run['id']}'s retrieval ranks an article: its class wording "
+            "and article length, with the embedding model picked below."
         )
 
     prompt_id = strategy_picker(ctx, st) if leaf is None else None
     cutoff = cutoff_controls(run)
+    models = _models(ctx, run, prompt_id, ranked_live=leaf is None)
     if prompt_id is not None:
-        show_strategy(ctx, prompt_id, cutoff, document_id=document_id)
+        show_strategy(ctx, prompt_id, cutoff, models, document_id=document_id)
     elif look == "Your text":
-        show_own_text(ctx, cutoff)
+        show_own_text(ctx, cutoff, models[EMBEDDING])
     elif document_id is not None:
-        show_article(ctx, document_id, cutoff)
+        show_article(ctx, document_id, cutoff, models[EMBEDDING])
     elif leaf is not None:
         show_class(ctx, leaf, cutoff)
+
+
+def _models(
+    ctx: Context, run: dict, prompt_id: str | None, *, ranked_live: bool
+) -> dict[str, tuple[str, str]]:
+    """The models to try with, seeded from the run's: the embedding model, and
+    the decoder when a strategy asks one."""
+    own = {kind: run["models"][kind] for kind in (EMBEDDING, DECODER)}
+    if not ranked_live:
+        provider, model = own[EMBEDDING]
+        st.caption(
+            f"A class's articles are read from run {run['id']}'s stored ranking "
+            f"({provider} · {model}): another embedding model would have to embed "
+            "every article first."
+        )
+        return {}
+    kinds = [EMBEDDING, DECODER] if prompt_id is not None else [EMBEDDING]
+    return model_widgets(ctx.api, run["id"], own, kinds, "try")

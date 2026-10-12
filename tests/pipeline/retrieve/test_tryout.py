@@ -26,7 +26,7 @@ def tried(world, monkeypatch):  # noqa: F811
     monkeypatch.setattr(judge_module, "get_provider", lambda name, **kw: provider)
     kept = {"value": [world["ids"]["Ban"]]}
 
-    def rank_text(session, run, body, cutoff, *, pool_size=20):
+    def rank_text(session, run, body, cutoff, *, pool_size=20, embedding=None):
         return {"ranking": [{"concept_id": c, "kept": True} for c in kept["value"]]}
 
     monkeypatch.setattr(pasted, "rank_text", rank_text)
@@ -71,3 +71,27 @@ def test_only_prompts_whose_routing_runs_apart_are_offered(world):  # noqa: F811
     listed = {s["prompt_id"] for s in TestClient(app).get("/retrieval/strategies").json()}
     assert {"hier_batch_v2", "extract_v1", "extract_embed_v1"} <= listed
     assert "hier_batch_v1" not in listed
+
+
+def test_the_decoder_and_embedding_model_can_be_picked_apart(world, tried, monkeypatch):  # noqa: F811
+    post, provider, _ = tried
+    picked: dict = {}
+    monkeypatch.setattr(
+        judge_module,
+        "get_provider",
+        lambda name, **kw: picked.setdefault("decoder", name) and provider,
+    )
+
+    def rank_text(session, run, body, cutoff, *, pool_size=20, embedding=None):
+        picked["embedding"] = embedding
+        return {"ranking": [{"concept_id": world["ids"]["Ban"], "kept": True}]}
+
+    monkeypatch.setattr(pasted, "rank_text", rank_text)
+    result = post(
+        text="A government raised tariffs.",
+        embedding=["ollama", "nomic-embed-text"],
+        decoder=["llamacpp", "gemma-4"],
+    ).json()
+    assert picked == {"decoder": "llamacpp", "embedding": ("ollama", "nomic-embed-text")}
+    assert (result["provider"], result["model"]) == ("llamacpp", "gemma-4")
+    assert (result["embed_provider"], result["embed_model"]) == ("ollama", "nomic-embed-text")
