@@ -57,6 +57,9 @@ class Run(Base, OwnedMixin, TimestampMixin):
     # Composed per-stage keys. Two runs sharing candidates_key share the
     # retrieval artifact and it is not recomputed.
     candidates_key: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # Retrieval: the candidates plus, for top-down prompts, the routing and
+    # extraction that pick what the judge is shown. None on runs made before it.
+    retrieval_key: Mapped[str | None] = mapped_column(String, index=True)
     judge_key: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
     # "pending" | "running" | "done" | "failed" | "cancelled"

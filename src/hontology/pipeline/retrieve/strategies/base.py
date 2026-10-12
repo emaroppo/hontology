@@ -93,6 +93,8 @@ class Retrieval:
     """One article's retrieval, as its steps build it up."""
 
     article: Article
+    # The strategy that made it, by name.
+    strategy: str = ""
     offers: list[Offer] = field(default_factory=list)
     # Routing calls over parent classes, in the order they were made.
     asked: list[Asked] = field(default_factory=list)
@@ -130,7 +132,7 @@ class Strategy:
     steps: list[Step]
 
     def retrieve(self, article: Article) -> Retrieval:
-        retrieval = Retrieval(article)
+        retrieval = Retrieval(article, strategy=self.name)
         if not article.body:
             retrieval.stopped = retrieval.error = NO_BODY
             return retrieval

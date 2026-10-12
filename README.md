@@ -126,11 +126,15 @@ upstream:
 
 ```
 key(candidates) = hash(candidates + relevant common + ontology_version)
-key(judge)      = hash(judge + relevant common + ontology_version) + "_" + key(candidates)
+key(retrieval)  = key(candidates), for a flat prompt
+                = hash(key(candidates) + routing wording + routing decoder), top-down
+key(judge)      = hash(judge + relevant common + ontology_version) + "_" + key(retrieval)
 ```
 
 Change only the prompt and `key(candidates)` is unchanged, so retrieval is reused
-instead of recomputed. Behavior is hashed; infrastructure is not — the same run
+instead of recomputed. Change only what a top-down prompt's deciding calls say, and
+`key(retrieval)` is unchanged too: the second run adopts the first's stored
+retrievals and is shown exactly the same leaves. Behavior is hashed; infrastructure is not — the same run
 against a model served from a different host is *the same run*, and treating a
 host change as a new experiment would make cross-machine comparison impossible.
 

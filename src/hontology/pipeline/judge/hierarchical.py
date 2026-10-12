@@ -8,8 +8,10 @@ parent; each offer is one deciding call, asked exactly as the flat arm asks.
 - **Routing answers are verdicts too.** Each parent gets a row with its
   routing call's answer and cost, so recall per level can be read back.
 - **Leaves never offered get no row.** Metrics read them as negatives.
-- **Resumable.** Parent answers already stored are not asked again, and an
-  offer whose leaves are all stored is not decided again.
+- **Stored before deciding.** Each document's retrieval is saved, with its
+  routing answers, before any leaf is decided. A restart, or a run that
+  adopted another's retrieval, decides from the stored one without routing
+  again, and an offer whose leaves are all stored is not decided again.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from hontology.ontology import hierarchy
 from hontology.pipeline.judge.batched import judge_call, record_batch
 from hontology.pipeline.judge.context import Judging
 from hontology.pipeline.retrieve import strategies
+from hontology.pipeline.retrieve.strategies import store
 
 log = logging.getLogger(__name__)
 
@@ -50,23 +53,31 @@ def judge_hierarchical(
         if document is None:
             continue
         stored = _stored(judging, document_id)
-        known = {c: yes for c, yes in stored.items() if children.get(c)}
-        strategy = strategies.for_template(judging, top=top, children=children, known=known)
-        retrieval = strategy.retrieve(strategies.Article(document, judging.body(document)))
+        body = judging.body(document)
+        retrieval = store.load(session, judging.run_id, document, body)
+        fresh = retrieval is None
+        if retrieval is None:
+            known = {c: yes for c, yes in stored.items() if children.get(c)}
+            strategy = strategies.for_template(judging, top=top, children=children, known=known)
+            retrieval = strategy.retrieve(strategies.Article(document, body))
+            store.save(session, judging.run_id, retrieval)
 
         if retrieval.error:
             unasked = [c for c in top if c not in stored]
             if unasked:
                 session.add_all(judging.failed(document_id, unasked, retrieval.error))
-                session.commit()
+            session.commit()
             continue
+        # Routing answers, unless already written: in the commit that saved the
+        # retrieval, or by an older run that stored no retrieval.
         for asked in retrieval.asked:
+            if any(c in stored for c in asked.concept_ids):
+                continue
             _, omitted = record_batch(judging, document_id, asked)
             omitted_total += omitted
             processed += len(asked.concept_ids)
-            calls += 1
+            calls += int(fresh)
         session.commit()
-        body = retrieval.article.body
         assert body is not None
         for offer in retrieval.offers:
             if all(c in stored for c in offer.concept_ids):

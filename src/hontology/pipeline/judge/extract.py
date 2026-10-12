@@ -17,9 +17,11 @@ The article's verdicts are derived from its events:
   carries the extraction call's cost.
 
 Every call's tokens, retrieval's included, are split exactly across the
-article's verdict rows, so a run's recorded cost is what it spent. An article
-is written whole, with its events, in one commit; a restart skips articles
-already written.
+article's verdict rows, so a run's recorded cost is what it spent. An article's
+retrieval is saved before its choosing calls, and its verdicts and events are
+written whole in one commit after them: a restart skips articles already
+written, and chooses from the stored retrieval for one retrieved but not
+written.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from hontology.pipeline.judge import prompts
 from hontology.pipeline.judge.context import Judging, share
 from hontology.pipeline.judge.events import decide_events
 from hontology.pipeline.retrieve import strategies
+from hontology.pipeline.retrieve.strategies import store
 
 log = logging.getLogger(__name__)
 
@@ -82,7 +85,13 @@ def judge_extract(
         if document is None:
             continue
         processed += 1
-        retrieval = strategy.retrieve(strategies.Article(document, judging.body(document)))
+        body = judging.body(document)
+        retrieval = store.load(session, judging.run_id, document, body)
+        if retrieval is None:
+            retrieval = strategy.retrieve(strategies.Article(document, body))
+            # Saved before choosing, so a restart chooses without extracting again.
+            store.save(session, judging.run_id, retrieval)
+            session.commit()
         if retrieval.error:
             rows = judging.failed(document_id, top, retrieval.error)
             event_rows: list[ExtractedEvent] = []

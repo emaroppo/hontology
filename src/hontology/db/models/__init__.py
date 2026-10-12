@@ -31,6 +31,7 @@ from hontology.db.models.ontology import (
     Ontology,
     Owner,
 )
+from hontology.db.models.retrieval import ArticleRetrieval, ShownLeaf
 from hontology.db.models.runs import Candidate, ExtractedEvent, Run, Verdict
 from hontology.db.models.snapshot import LinkSnapshot, OntologySnapshot
 from hontology.db.models.taxonomy import Code, CodeSystem, ConceptCode
@@ -44,6 +45,7 @@ from hontology.db.models.vectors import (
 __all__ = [
     "ALL_SOURCES",
     "AnnotationSet",
+    "ArticleRetrieval",
     "CalendarReview",
     "TRUSTED_SOURCES",
     "Base",
@@ -73,6 +75,7 @@ __all__ = [
     "Owner",
     "PairLabel",
     "Run",
+    "ShownLeaf",
     "SimilarityRun",
     "SimilarityScore",
     "Verdict",

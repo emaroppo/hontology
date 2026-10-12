@@ -71,6 +71,7 @@ def create_run(
         config=normalized,
         manifest=run_config.manifest(normalized, version, infra=_infra_snapshot()),
         candidates_key=keys["candidates"],
+        retrieval_key=keys["retrieval"],
         judge_key=keys["judge"],
         status="pending",
     )

@@ -9,6 +9,7 @@ from hontology.db.models import Candidate, Concept, Document
 from hontology.pipeline.judge.context import NO_BODY, Judging
 from hontology.pipeline.judge.parse import aggregate, parse_verdict
 from hontology.pipeline.judge.providers.base import ProviderError
+from hontology.pipeline.retrieve.strategies import store
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +52,8 @@ def judge_pairs(
 
         prompt = template.build_pair(document, concept, body, judging.body_limit)
         parsed_samples, reasoning, cost, error = _sample(judging, prompt, samples)
+        # The pair was shown, whether or not the call came back.
+        store.record_offer(session, judging.run_id, document.id, [concept.id])
         if parsed_samples and not error:
             result = aggregate(
                 parsed_samples, judging.judge_config.get("aggregation", "majority")

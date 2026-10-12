@@ -11,6 +11,7 @@ import logging
 from hontology.db.models import Candidate, Concept, Document
 from hontology.pipeline.judge.context import NO_BODY, Judging, share
 from hontology.pipeline.judge.parse import parse_batch
+from hontology.pipeline.retrieve.strategies import store
 from hontology.pipeline.retrieve.strategies.base import CALL_ERRORS, Asked, Model
 
 log = logging.getLogger(__name__)
@@ -151,6 +152,8 @@ def judge_batched(
             continue
 
         _, omitted = judge_call(judging, document, concepts, body)
+        # The flat arm's retrieval is its selection: what this call was shown.
+        store.record_offer(session, judging.run_id, document_id, [c.id for c in concepts])
         omitted_total += omitted
 
         processed += len(concepts)

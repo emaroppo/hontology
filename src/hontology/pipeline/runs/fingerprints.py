@@ -42,14 +42,47 @@ def prompt_fingerprint(prompt_id: str) -> str:
     from hontology.pipeline.judge import prompts
 
     template = prompts.get(prompt_id)
+    return stable_hash([template.prompt_id, template.mode, *_rendered(template)], 12)
+
+
+# The parts of a template that pick what the judge is shown: routing, event
+# extraction and leaf ranking. The deciding calls' wording is not among them.
+RETRIEVAL_FIELDS = (
+    "route_system",
+    "build_route",
+    "extract_system",
+    "build_extract",
+    "event_top_system",
+    "event_route_system",
+    "build_event_route",
+    "leaf_embed_model",
+    "leaf_top_k",
+)
+
+
+@functools.cache
+def retrieval_fingerprint(prompt_id: str) -> str:
+    """A hash of what a template sends when retrieving, rendered as in
+    `prompt_fingerprint`. Two templates that retrieve alike share it, whatever
+    their deciding calls say."""
+    from hontology.pipeline.judge import prompts
+
+    template = prompts.get(prompt_id)
+    return stable_hash([template.mode, *_rendered(template, RETRIEVAL_FIELDS)], 12)
+
+
+def _rendered(template, names=None) -> list[Any]:
+    """Each field of *template* (or those in *names*), a builder by its output."""
     document = Document(url="https://example.test/a", title="Title")
     concepts = [
         Concept(id=1, name="Alpha", definition="D1", inclusion_criteria="I1"),
         Concept(id=2, name="Beta", definition="D2", exclusion_criteria="E2"),
     ]
     event = {"description": "An event.", "country": "XX", "quote": "A quote."}
-    parts: list[Any] = [template.prompt_id, template.mode]
+    parts: list[Any] = []
     for name, value in vars(template).items():
+        if names is not None and name not in names:
+            continue
         if isinstance(value, str | int) or value is None:
             parts.append((name, value))
             continue
@@ -67,7 +100,7 @@ def prompt_fingerprint(prompt_id: str) -> str:
                 continue
         else:
             parts.append((name, inspect.getsource(value)))
-    return stable_hash(parts, 12)
+    return parts
 
 
 def recorded(run: Run) -> dict:

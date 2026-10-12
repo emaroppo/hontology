@@ -17,6 +17,8 @@ malformed-output bug is invisible to accuracy metrics until you look for it.
 
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -34,7 +36,10 @@ from hontology.pipeline.judge.providers.llamacpp import LlamaCppChatProvider
 from hontology.pipeline.judge.providers.ollama import OllamaChatProvider
 from hontology.pipeline.judge.providers.openrouter import OpenRouterChatProvider
 from hontology.pipeline.retrieve import embed, strategies
-from hontology.pipeline.runs import fingerprints
+from hontology.pipeline.retrieve.strategies import store
+from hontology.pipeline.runs import fingerprints, reuse
+
+log = logging.getLogger(__name__)
 
 # Readers live in judge.parse; these names are kept here for existing callers.
 __all__ = [
@@ -128,6 +133,7 @@ def judge_run(
             f"prompt {template.prompt_id!r} asks parents and leaves in one call, so its "
             "routing cannot run apart from its judging; use hier_batch_v2"
         )
+    _adopt_retrievals(session, run, document_ids)
 
     query = select(Candidate).where(Candidate.run_id == run_id, Candidate.selected.is_(True))
     if document_ids is not None:
@@ -188,6 +194,18 @@ def judge_run(
     return judge_pairs(
         judging, candidates=candidates, done=done, limit=limit, progress=progress
     )
+
+
+def _adopt_retrievals(session: Session, run: Run, document_ids: set[int] | None) -> None:
+    """Copy an earlier run's stored retrievals when it shares this run's
+    retrieval key, so the judge decides on exactly what that run was shown."""
+    donor = reuse.reusable_retrieval_run(session, run)
+    if donor is None:
+        return
+    copied = store.copy(session, donor.id, run.id, document_ids)
+    if copied:
+        session.commit()
+        log.info("retrievals of %s articles adopted from run %s", copied, donor.id)
 
 
 def liveness(session: Session, run_id: int) -> dict:

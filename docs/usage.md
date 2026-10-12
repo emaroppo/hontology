@@ -372,6 +372,12 @@ event extraction and event routing (or leaf ranking) for `extract_v1` and
 text and shows each step; routing and extraction ask the run's judge model there,
 so they cost model calls.
 
+Each article's retrieval is stored before any deciding call: its trace, its
+routing answers or events, and one row per leaf per deciding call, the shown
+record. A run that stops after retrieving resumes from it, and a top-down run
+sharing another's retrieval key adopts that run's stored retrievals instead of
+routing again.
+
 **Document embeddings are cached.** Bodies are embedded once and stored
 content-addressed, so a sweep over selection parameters — which change nothing
 about the text — costs no embedding calls at all. `--refresh-embeddings` forces a

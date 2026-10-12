@@ -133,12 +133,18 @@ GLOSSARY: dict[str, str] = {
         "— it silently removes pairs from the denominator."
     ),
     "candidates_key": (
-        "Content hash of the retrieval settings. Two runs sharing it share their "
-        "retrieval artifact, so the second reuses it instead of re-embedding."
+        "Content hash of the embedding settings. Two runs sharing it share their "
+        "ranked candidates, so the second reuses them instead of re-embedding."
+    ),
+    "retrieval_key": (
+        "Content hash of everything that picks what the judge is shown: the "
+        "candidates, and for a routing or extraction prompt its routing wording and "
+        "the decoder that routes. Two runs sharing it are shown the same leaves; "
+        "for a flat prompt it is the candidates key."
     ),
     "judge_key": (
-        "Content hash of the judge settings, chained to the candidates key. "
-        "Changing only the prompt leaves the candidates key untouched."
+        "Content hash of the judge settings, chained to the retrieval key. "
+        "Changing only the deciding prompt leaves the retrieval key untouched."
     ),
     "lag_slices": (
         "How many 15-minute feed slices behind the ingester is. `null` before "

@@ -49,13 +49,15 @@ if version == "latest":
 if problem is None:
     try:
         keys = api.preview_keys(config, version)
-        cols = st.columns(2)
+        cols = st.columns(3)
         cols[0].metric("candidates key", keys["candidates"])
-        cols[1].metric("judge key", keys["judge"].split("_")[0])
+        cols[1].metric("retrieval key", keys["retrieval"])
+        cols[2].metric("judge key", keys["judge"].split("_")[0])
         st.caption(
-            f"On ontology {version}. Two configs sharing a candidates key share retrieval: "
-            "the second run copies it instead of re-embedding. Change only the prompt or "
-            "the judge model and this key stays put."
+            f"On ontology {version}. Two configs sharing a candidates key share the "
+            "embedding ranking: the second run copies it instead of re-embedding. Two "
+            "sharing a retrieval key also share routing or extraction, so their judges "
+            "are shown the same leaves. For a flat prompt the two keys are the same."
         )
     except ApiError as exc:
         problem = exc.detail
@@ -115,10 +117,11 @@ for run in runs[:25]:
         f"{icon} {run['id']}: {run['name']} — {run['status']}"
         + (" ← just started" if run["id"] == watching else "")
     ):
-        cols = st.columns(3)
+        cols = st.columns(4)
         cols[0].markdown(f"ontology version `{run['ontology_version']}`")
         cols[1].markdown(f"candidates `{run['candidates_key']}`")
-        cols[2].markdown(f"judge `{run['judge_key'].split('_')[0]}`")
+        cols[2].markdown(f"retrieval `{run['retrieval_key'] or 'not keyed'}`")
+        cols[3].markdown(f"judge `{run['judge_key'].split('_')[0]}`")
 
         if run["error"]:
             st.error(run["error"])

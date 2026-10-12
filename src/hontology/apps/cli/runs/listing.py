@@ -35,6 +35,7 @@ def run_keys(config_path: Path, ontology_version: str = "v1") -> None:
 
     keys = run_config.stage_keys(run_config.normalize(read_json(config_path)), ontology_version)
     typer.echo(f"candidates  {keys['candidates']}")
+    typer.echo(f"retrieval   {keys['retrieval']}")
     typer.echo(f"judge       {keys['judge']}")
 
 
@@ -51,5 +52,6 @@ def run_list() -> None:
             typer.echo(
                 f"{run.id:>4}  {run.status:<10} {run.name:<24} "
                 f"{run.ontology_version:<5} cand={run.candidates_key} "
+                f"retr={run.retrieval_key or '-'} "
                 f"judge={run.judge_key.split('_')[0]}"
             )

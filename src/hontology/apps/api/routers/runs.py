@@ -48,6 +48,7 @@ class RunOut(BaseModel):
     ontology_id: int
     ontology_version: str
     candidates_key: str
+    retrieval_key: str | None
     judge_key: str
     progress_done: int
     progress_total: int
@@ -63,6 +64,7 @@ class RunOut(BaseModel):
             ontology_id=run.ontology_id,
             ontology_version=run.ontology_version,
             candidates_key=run.candidates_key,
+            retrieval_key=run.retrieval_key,
             judge_key=run.judge_key,
             progress_done=run.progress_done,
             progress_total=run.progress_total,

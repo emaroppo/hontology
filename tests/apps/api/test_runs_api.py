@@ -225,5 +225,9 @@ def test_a_runs_config_comes_back_to_start_another_from(client, fixture):
         "/runs/keys",
         json={"config": stored, "ontology_version": stored["common"]["ontology_version"]},
     ).json()
-    assert keys == {"candidates": started["candidates_key"], "judge": started["judge_key"]}
+    assert keys == {
+        "candidates": started["candidates_key"],
+        "retrieval": started["retrieval_key"],
+        "judge": started["judge_key"],
+    }
     assert client.get("/runs/987654/config").status_code == 404

@@ -195,6 +195,7 @@ def stage_keys(normalized: dict, ontology_version: str) -> dict[str, str]:
             "candidates": normalized["candidates"],
         }
     )
+    retrieval_key = _retrieval_key(normalized, candidates_key)
     judge_key = stable_hash(
         {
             "ontology_version": ontology_version,
@@ -202,8 +203,37 @@ def stage_keys(normalized: dict, ontology_version: str) -> dict[str, str]:
             "judge": normalized["judge"],
         }
     )
-    # Chained: the judge artifact is only meaningful for the candidates it judged.
-    return {"candidates": candidates_key, "judge": f"{judge_key}_{candidates_key}"}
+    # Chained: the judge artifact is only meaningful for what it was shown.
+    return {
+        "candidates": candidates_key,
+        "retrieval": retrieval_key,
+        "judge": f"{judge_key}_{retrieval_key}",
+    }
+
+
+def _retrieval_key(normalized: dict, candidates_key: str) -> str:
+    """What picks the leaves the judge is shown.
+
+    For a flat prompt that is the candidates alone, so its key is theirs and
+    flat runs keep their keys. A top-down prompt adds its routing, extraction
+    and ranking wording, the decoder that routes and how it decodes, and the
+    article length routing reads.
+    """
+    from hontology.pipeline.judge import prompts
+    from hontology.pipeline.runs.fingerprints import retrieval_fingerprint
+
+    judge = normalized["judge"]
+    if prompts.get(judge["prompt_id"]).mode not in prompts.TOP_DOWN_MODES:
+        return candidates_key
+    decoder = {k: judge.get(k) for k in ("provider", "model", "routing", "generation", "think")}
+    return stable_hash(
+        {
+            "candidates": candidates_key,
+            "prompt": retrieval_fingerprint(judge["prompt_id"]),
+            "decoder": decoder,
+            "judge_body_limit": normalized["common"]["judge_body_limit"],
+        }
+    )
 
 
 def manifest(normalized: dict, ontology_version: str, *, infra: dict[str, Any]) -> dict:
